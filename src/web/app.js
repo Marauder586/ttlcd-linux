@@ -257,11 +257,38 @@ async function fetchPreview() {
 
 setInterval(fetchStatus,  2000);
 setInterval(fetchSysinfo, 3000);
-setInterval(fetchPreview, 4000);  // fallback
+setInterval(fetchPreview, 5000);  // fallback if SSE is absent
 
 fetchStatus();
 fetchSysinfo();
 setTimeout(fetchPreview, 800);
+
+// ── Server-Sent Events (real-time frame push) ─────────────────────────────────
+let evtSource = null;
+
+function connectEvents() {
+  if (evtSource) { evtSource.close(); evtSource = null; }
+  try {
+    evtSource = new EventSource('/api/events');
+    evtSource.addEventListener('frame', e => {
+      const seq = parseInt(e.data, 10);
+      if (!isNaN(seq) && seq !== lastFrameSeq) {
+        lastFrameSeq = seq;
+        fetchPreview();
+      }
+    });
+    evtSource.onerror = () => {
+      // On error, back off for 10 s and reconnect (SSE auto-reconnects anyway,
+      // but this ensures we don't hammer on initial failures)
+      if (evtSource) { evtSource.close(); evtSource = null; }
+      setTimeout(connectEvents, 10_000);
+    };
+  } catch (_) {
+    // Browser doesn't support EventSource (very unlikely), fall back to polling
+  }
+}
+
+connectEvents();
 
 // ── Mode switching ────────────────────────────────────────────────────────────
 modeBtns.forEach(btn => {
@@ -415,7 +442,7 @@ txtSendBtn.addEventListener('click', async () => {
     const r = await sendTextPayload(buildTextPayload());
     if (r.ok) {
       txtStatus.textContent = '✓ Text sent'; txtStatus.className = 'status-ok';
-      logEntry(`Text sent: "${title || '(no title)'}"`, 'ok'); fetchStatus();
+      logEntry(`Text sent: "${title || '(no title)'}"`, 'ok'); fetchStatus(); refreshHistory();
     } else {
       const err = await r.text();
       txtStatus.textContent = `✗ ${err}`; txtStatus.className = 'status-err';
@@ -491,7 +518,7 @@ document.querySelectorAll('.quick-btn').forEach(btn => {
       const r = await sendTextPayload(payload);
       if (r.ok) {
         quickStatus.textContent = `✓ "${def.title}" sent`; quickStatus.className = 'status-ok';
-        logEntry(`Quick: "${def.title}" (${def.color})`, 'ok'); fetchStatus();
+        logEntry(`Quick: "${def.title}" (${def.color})`, 'ok'); fetchStatus(); refreshHistory();
       } else {
         const err = await r.text();
         quickStatus.textContent = `✗ ${err}`; quickStatus.className = 'status-err';
@@ -568,7 +595,7 @@ presetApplyBtn.addEventListener('click', async () => {
     }
     // Then: apply to panel
     const r = await fetch(`/api/presets/${encodeURIComponent(name)}`, { method: 'POST' });
-    if (r.ok) { logEntry(`Applied preset: "${name}"`, 'ok'); fetchStatus(); }
+    if (r.ok) { logEntry(`Applied preset: "${name}"`, 'ok'); fetchStatus(); refreshHistory(); }
     else       { logEntry(`Apply preset failed: ${await r.text()}`, 'err'); }
   } catch (e) { logEntry(`Apply preset error: ${e.message}`, 'err'); }
 });
@@ -718,7 +745,7 @@ cdStartBtn.addEventListener('click', async () => {
     if (r.ok) {
       const msg = label ? `Countdown: ${secs}s "${label}"` : `Countdown: ${secs}s`;
       cdStatus.textContent = `✓ ${msg}`; cdStatus.className = 'status-ok';
-      logEntry(msg, 'ok'); fetchStatus();
+      logEntry(msg, 'ok'); fetchStatus(); refreshHistory();
     } else {
       const err = await r.text();
       cdStatus.textContent = `✗ ${err}`; cdStatus.className = 'status-err';
@@ -744,8 +771,43 @@ cdCancelBtn.addEventListener('click', async () => {
   }
 });
 
+// ── History ───────────────────────────────────────────────────────────────────
+const historyListEl  = document.getElementById('history-list');
+const histRefreshBtn = document.getElementById('hist-refresh-btn');
+
+async function refreshHistory() {
+  try {
+    const r = await fetch('/api/history?limit=20');
+    if (!r.ok) return;
+    const items = await r.json();
+    historyListEl.innerHTML = '';
+    if (items.length === 0) {
+      const li = document.createElement('li');
+      li.className = 'hist-empty';
+      li.textContent = 'No notifications yet.';
+      historyListEl.appendChild(li);
+      return;
+    }
+    items.forEach(item => {
+      const li  = document.createElement('li');
+      const ts  = new Date(item.timestamp * 1000).toTimeString().slice(0, 8);
+      const kind = item.kind === 'alert' ? '🔔' : '📝';
+      li.innerHTML =
+        `<span class="hist-ts">${ts}</span>` +
+        `<span class="hist-kind">${kind}</span>` +
+        `<span class="hist-msg">${escHtml(item.summary)}</span>`;
+      historyListEl.appendChild(li);
+    });
+  } catch (_) { /* busy */ }
+}
+
+if (histRefreshBtn) {
+  histRefreshBtn.addEventListener('click', refreshHistory);
+}
+
 // ── Init ──────────────────────────────────────────────────────────────────────
 refreshPresets();
+refreshHistory();
 
 // Sync quality slider label on load
 setQualityLbl.textContent = `${setQuality.value}%`;

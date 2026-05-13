@@ -768,3 +768,43 @@ button.danger-btn:hover {
   font-size: 0.85rem;
   min-height: 1.2rem;
 }
+
+/* ── Notification history ─────────────────────────────────────────────────── */
+
+.hist-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: 0.5rem;
+}
+
+.history-list {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  max-height: 200px;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: var(--surface1) transparent;
+}
+
+.history-list li {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+  font-size: 0.8rem;
+  padding: 0.18rem 0;
+  border-bottom: 1px solid var(--surface0);
+  font-family: var(--mono);
+}
+
+.hist-ts   { color: var(--overlay0); flex-shrink: 0; }
+.hist-kind { font-size: 0.75rem; flex-shrink: 0; }
+.hist-msg  { color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.hist-empty {
+  color: var(--overlay0);
+  font-size: 0.8rem;
+  font-style: italic;
+  padding: 0.3rem 0;
+}

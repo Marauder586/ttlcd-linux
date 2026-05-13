@@ -806,6 +806,12 @@ async fn run_daemon(
             // Slideshow & rotation
             .route("/api/slideshow",      web::post().to(api_slideshow))
             .route("/api/rotation",       web::post().to(api_rotation))
+            // Convenience endpoints
+            .route("/api/notify",         web::post().to(api_notify))
+            .route("/api/webhook",        web::post().to(api_webhook))
+            .route("/api/config",         web::get().to(api_get_config))
+            // Server-Sent Events
+            .route("/api/events",         web::get().to(api_events))
             // Web UI
             .route("/",                   web::get().to(web_ui_index))
             .route("/static/app.css",     web::get().to(web_ui_css))
@@ -1724,6 +1730,217 @@ async fn api_sysinfo_json() -> impl Responder {
         load15:    load.fifteen,
         hostname:  System::host_name().unwrap_or_default(),
         cpu_temp,
+    })
+}
+
+// ─── Server-Sent Events stream ────────────────────────────────────────────────
+
+/// GET /api/events — Server-Sent Events stream for real-time frame updates.
+///
+/// Sends `event: frame\ndata: {seq}\n\n` whenever a new panel frame is stored.
+/// Sends a `: heartbeat` comment every 15 s to keep the TCP connection alive.
+/// The browser can use this to trigger a fresh `/api/preview` fetch without
+/// polling on a fixed timer.
+async fn api_events(state: web::Data<DaemonState>) -> impl Responder {
+    let frame_seq = Arc::clone(&state.frame_seq);
+
+    let stream = futures_util::stream::unfold(
+        (frame_seq, u64::MAX, std::time::Instant::now()),
+        |(seq, last_seq, last_hb)| async move {
+            loop {
+                tokio::time::sleep(tokio::time::Duration::from_millis(250)).await;
+                let cur = *seq.lock().unwrap();
+                let now = std::time::Instant::now();
+
+                if cur != last_seq {
+                    let event = format!("event: frame\ndata: {cur}\n\n");
+                    return Some((
+                        Ok::<_, actix_web::Error>(actix_web::web::Bytes::from(event)),
+                        (seq, cur, last_hb),
+                    ));
+                }
+
+                if now.duration_since(last_hb).as_secs() >= 15 {
+                    return Some((
+                        Ok::<_, actix_web::Error>(
+                            actix_web::web::Bytes::from_static(b": heartbeat\n\n")
+                        ),
+                        (seq, last_seq, now),
+                    ));
+                }
+            }
+        },
+    );
+
+    HttpResponse::Ok()
+        .content_type("text/event-stream")
+        .insert_header(("Cache-Control", "no-cache"))
+        .insert_header(("X-Accel-Buffering", "no"))
+        .streaming(stream)
+}
+
+// ─── /api/notify — simple single-call push ────────────────────────────────────
+
+/// POST /api/notify — convenience endpoint for quick panel notifications.
+///
+/// Simpler than `/api/text`: accepts a flat JSON with optional fields.
+/// Designed for one-liners in shell scripts and CI pipelines.
+///
+/// ```json
+/// { "title": "Build OK", "body": "All 42 tests passed", "color": "green", "progress": 1.0 }
+/// ```
+#[derive(Deserialize)]
+struct NotifyRequest {
+    #[serde(default)]
+    title:    Option<String>,
+    /// Single-line body text (shown as `lines[0]`).
+    #[serde(default)]
+    body:     Option<String>,
+    #[serde(default = "default_notify_color")]
+    color:    ttlcd::display::NamedColor,
+    #[serde(default)]
+    progress: Option<f32>,
+    #[serde(default = "default_true")]
+    show_time: bool,
+}
+fn default_notify_color() -> ttlcd::display::NamedColor { ttlcd::display::NamedColor::Blue }
+fn default_true() -> bool { true }
+
+async fn api_notify(state: web::Data<DaemonState>, body: web::Json<NotifyRequest>) -> impl Responder {
+    let req = body.into_inner();
+    if req.title.is_none() && req.body.is_none() {
+        return HttpResponse::BadRequest().body("supply at least 'title' or 'body'");
+    }
+    let summary = req.title.clone().unwrap_or_else(|| req.body.clone().unwrap_or_default());
+    let payload = CustomTextPayload {
+        title:    req.title,
+        lines:    req.body.into_iter().collect(),
+        progress: req.progress,
+        color:    req.color,
+        show_time: req.show_time,
+        ..Default::default()
+    };
+    push_history(&state, HistoryKind::Text, summary);
+    { let cur = state.mode.lock().unwrap().clone(); if !cur.is_transient() { *state.prev_mode.lock().unwrap() = cur; } }
+    *state.pending_text.lock().unwrap() = Some(payload);
+    *state.mode.lock().unwrap()         = DisplayMode::CustomText;
+    HttpResponse::Ok().body("ok")
+}
+
+// ─── /api/webhook — generic CI/CD webhook ────────────────────────────────────
+
+/// POST /api/webhook — accept JSON from CI/CD systems and render a panel alert.
+///
+/// Understands:
+///   • GitHub Actions-style: `{ "action": "...", "workflow_run": { "conclusion": "success|failure", "name": "..." } }`
+///   • Simple flat: `{ "event": "...", "status": "success|failure|...", "message": "..." }`
+///   • Anything else: renders a generic "Webhook" notification.
+///
+/// Query parameter `?secret=TOKEN` is compared against the `TTLCD_WEBHOOK_SECRET`
+/// environment variable when that variable is set.
+async fn api_webhook(
+    state: web::Data<DaemonState>,
+    query: web::Query<std::collections::HashMap<String, String>>,
+    body:  web::Json<serde_json::Value>,
+) -> impl Responder {
+    // Optional shared-secret check
+    if let Ok(expected) = std::env::var("TTLCD_WEBHOOK_SECRET") {
+        let provided = query.get("secret").map(String::as_str).unwrap_or("");
+        if provided != expected {
+            return HttpResponse::Unauthorized().body("invalid webhook secret");
+        }
+    }
+
+    let v = body.into_inner();
+
+    // ── GitHub Actions workflow_run ──────────────────────────────────────
+    if let Some(wr) = v.get("workflow_run") {
+        let conclusion = wr.get("conclusion").and_then(|c| c.as_str()).unwrap_or("unknown");
+        let name       = wr.get("name").and_then(|n| n.as_str()).unwrap_or("Workflow");
+        let (color, emoji) = match conclusion {
+            "success"   => (ttlcd::display::NamedColor::Green,  "✓"),
+            "failure"   => (ttlcd::display::NamedColor::Red,    "✗"),
+            "cancelled" => (ttlcd::display::NamedColor::Yellow, "⊘"),
+            _           => (ttlcd::display::NamedColor::Blue,   "·"),
+        };
+        let payload = CustomTextPayload {
+            title:    Some(format!("{emoji} {}", name.chars().take(18).collect::<String>())),
+            subtitle: Some(conclusion.to_uppercase()),
+            progress: if conclusion == "success" { Some(1.0) } else if conclusion == "failure" { Some(0.0) } else { None },
+            color,
+            show_time: true,
+            ..Default::default()
+        };
+        let summary = format!("GitHub: {} — {}", name, conclusion);
+        push_history(&state, HistoryKind::Alert, summary);
+        { let cur = state.mode.lock().unwrap().clone(); if !cur.is_transient() { *state.prev_mode.lock().unwrap() = cur; } }
+        *state.pending_text.lock().unwrap() = Some(payload);
+        *state.mode.lock().unwrap()         = DisplayMode::CustomText;
+        return HttpResponse::Ok().body("ok");
+    }
+
+    // ── Simple flat { "status": "...", "message": "..." } ────────────────
+    let status  = v.get("status").or_else(|| v.get("event"))
+                   .and_then(|s| s.as_str()).unwrap_or("info");
+    let message = v.get("message").or_else(|| v.get("text"))
+                   .and_then(|m| m.as_str())
+                   .unwrap_or("Webhook received");
+    let (color, title) = match status.to_lowercase().as_str() {
+        "success" | "passed" | "ok"    => (ttlcd::display::NamedColor::Green,  "✓ SUCCESS"),
+        "failure" | "failed" | "error" => (ttlcd::display::NamedColor::Red,    "✗ FAILED"),
+        "warning" | "warn"             => (ttlcd::display::NamedColor::Yellow, "⚠ WARNING"),
+        "running" | "pending"          => (ttlcd::display::NamedColor::Blue,   "⟳ RUNNING"),
+        _                              => (ttlcd::display::NamedColor::Teal,   "· WEBHOOK"),
+    };
+    let payload = CustomTextPayload {
+        title:    Some(title.into()),
+        subtitle: Some(message.chars().take(38).collect()),
+        color,
+        show_time: true,
+        ..Default::default()
+    };
+    push_history(&state, HistoryKind::Alert, format!("{title} — {message}"));
+    { let cur = state.mode.lock().unwrap().clone(); if !cur.is_transient() { *state.prev_mode.lock().unwrap() = cur; } }
+    *state.pending_text.lock().unwrap() = Some(payload);
+    *state.mode.lock().unwrap()         = DisplayMode::CustomText;
+    HttpResponse::Ok().body("ok")
+}
+
+// ─── Runtime config snapshot ─────────────────────────────────────────────────
+
+/// GET /api/config — return the current daemon runtime configuration as JSON.
+/// Useful for debugging, dashboards, and config-as-code verification.
+async fn api_get_config(state: web::Data<DaemonState>) -> impl Responder {
+    #[derive(Serialize)]
+    struct RuntimeConfig {
+        version:           &'static str,
+        mode:              String,
+        quality:           u8,
+        rotate_deg:        u16,
+        headless:          bool,
+        rotation_modes:    Vec<String>,
+        rotation_interval: u64,
+        preset_count:      usize,
+        history_count:     usize,
+        slideshow_images:  usize,
+        slideshow_interval: u64,
+        frame_seq:         u64,
+    }
+    let rotation_modes: Vec<String> = state.rotation_modes.lock().unwrap()
+        .iter().map(|m| m.as_str().to_string()).collect();
+    HttpResponse::Ok().json(RuntimeConfig {
+        version:           env!("CARGO_PKG_VERSION"),
+        mode:              state.mode.lock().unwrap().as_str().to_string(),
+        quality:           *state.quality.lock().unwrap(),
+        rotate_deg:        *state.rotate_deg.lock().unwrap(),
+        headless:          state.headless,
+        rotation_modes,
+        rotation_interval: *state.rotation_interval.lock().unwrap(),
+        preset_count:      state.presets.lock().unwrap().len(),
+        history_count:     state.history.lock().unwrap().len(),
+        slideshow_images:  state.slideshow_paths.lock().unwrap().len(),
+        slideshow_interval: *state.slideshow_interval.lock().unwrap(),
+        frame_seq:         *state.frame_seq.lock().unwrap(),
     })
 }
 

@@ -116,6 +116,26 @@ if [[ "${1:-}" == "--mode" ]]; then
     exit 0
 fi
 
+# ── Countdown: --countdown <seconds> [label] ──────────────────────────────────
+if [[ "${1:-}" == "--countdown" ]]; then
+    SECS="${2:?'--countdown requires seconds (e.g. 300)'}"
+    LABEL="${3:-}"
+    payload=$(python3 -c "
+import json, sys
+obj = {'seconds': int(sys.argv[1])}
+if sys.argv[2]:
+    obj['label'] = sys.argv[2]
+print(json.dumps(obj))
+" "$SECS" "$LABEL")
+    curl -sf \
+         -X POST "${DAEMON_URL}/api/countdown" \
+         -H 'Content-Type: application/json' \
+         -d "$payload" \
+         -o /dev/null \
+      && echo "Countdown: ${SECS}s${LABEL:+ \"${LABEL}\"}"
+    exit 0
+fi
+
 # ── Panel settings: --quality / --orient ──────────────────────────────────────
 if [[ "${1:-}" == "--quality" ]]; then
     Q="${2:?'--quality requires a value (1-100)'}"
@@ -157,6 +177,44 @@ for item in items:
     ts = datetime.datetime.fromtimestamp(item['timestamp']).strftime('%H:%M:%S')
     print(f'[{ts}] ({item["kind"]}) {item["summary"]}')
 "
+    exit 0
+fi
+
+# ── /api/notify shorthand: --notify <title> [color] [progress] ───────────────
+if [[ "${1:-}" == "--notify" ]]; then
+    TITLE="${2:?'--notify requires a title'}"
+    COLOR="${3:-blue}"
+    PROGRESS="${4:-}"
+    payload=$(python3 -c "
+import json, sys
+obj = {'title': sys.argv[1], 'color': sys.argv[2], 'show_time': True}
+if sys.argv[3]:
+    obj['progress'] = float(sys.argv[3])
+print(json.dumps(obj))
+" "$TITLE" "$COLOR" "$PROGRESS")
+    curl -sf \
+         -X POST "${DAEMON_URL}/api/notify" \
+         -H 'Content-Type: application/json' \
+         -d "$payload" \
+         -o /dev/null \
+      && echo "Notify: ${TITLE}"
+    exit 0
+fi
+
+# ── Webhook test: --webhook <status> <message> ───────────────────────────────
+if [[ "${1:-}" == "--webhook" ]]; then
+    STATUS="${2:-success}"
+    MESSAGE="${3:-Webhook triggered}"
+    payload=$(python3 -c "
+import json, sys
+print(json.dumps({'status': sys.argv[1], 'message': sys.argv[2]}))
+" "$STATUS" "$MESSAGE")
+    curl -sf \
+         -X POST "${DAEMON_URL}/api/webhook" \
+         -H 'Content-Type: application/json' \
+         -d "$payload" \
+         -o /dev/null \
+      && echo "Webhook: ${STATUS}: ${MESSAGE}"
     exit 0
 fi
 
