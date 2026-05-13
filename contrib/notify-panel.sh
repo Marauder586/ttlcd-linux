@@ -244,6 +244,28 @@ print(json.dumps(obj))
     exit 0
 fi
 
+# ── Schedule: --schedule <seconds> <title> [color] ────────────────────────────
+if [[ "${1:-}" == "--schedule" ]]; then
+    SECS="${2:?'--schedule requires seconds'}"
+    TITLE="${3:?'--schedule requires a title'}"
+    COLOR="${4:-blue}"
+    payload=$(python3 -c "
+import json, sys
+obj = {
+    'in_secs': int(sys.argv[1]),
+    'payload': {'title': sys.argv[2], 'color': sys.argv[3], 'show_time': True},
+    'label': sys.argv[2]
+}
+print(json.dumps(obj))
+" "$SECS" "$TITLE" "$COLOR")
+    result=$(curl -sf \
+         -X POST "${DAEMON_URL}/api/schedule" \
+         -H 'Content-Type: application/json' \
+         -d "$payload")
+    echo "${result}"
+    exit 0
+fi
+
 # ── Default mode: full custom text ────────────────────────────────────────────
 TITLE="${1:-}"
 SUBTITLE="${2:-}"

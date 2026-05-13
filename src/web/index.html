@@ -309,6 +309,28 @@
       </table>
     </section>
 
+    <!-- ── Scheduled notification ──────────────────────────────────── -->
+    <section class="card">
+      <h2>Schedule Notification</h2>
+      <p class="card-hint">Send a panel push at a future time. Uses the current Custom Text form content.</p>
+      <div class="schedule-form">
+        <div class="form-row two-col">
+          <div class="form-group">
+            <label for="sched-in-secs">Delay (seconds)</label>
+            <input type="number" id="sched-in-secs" min="1" max="86400" value="60" placeholder="e.g. 300">
+          </div>
+          <div class="form-group">
+            <label for="sched-label">Label <span class="hint-inline">(optional)</span></label>
+            <input type="text" id="sched-label" placeholder="Reminder description" maxlength="40">
+          </div>
+        </div>
+        <div class="form-actions">
+          <button id="sched-btn" class="primary">⏰ Schedule</button>
+          <span id="sched-status"></span>
+        </div>
+      </div>
+    </section>
+
     <!-- ── Notification history ─────────────────────────────────────── -->
     <section class="card">
       <h2>Notification History</h2>

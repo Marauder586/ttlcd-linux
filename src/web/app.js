@@ -90,6 +90,12 @@ const setApplyBtn  = document.getElementById('set-apply-btn');
 const setStatus    = document.getElementById('set-status');
 
 
+// Schedule refs
+const schedInSecs = document.getElementById('sched-in-secs');
+const schedLabel  = document.getElementById('sched-label');
+const schedBtn    = document.getElementById('sched-btn');
+const schedStatus = document.getElementById('sched-status');
+
 // Countdown refs
 const cdSeconds  = document.getElementById('cd-seconds');
 const cdLabel    = document.getElementById('cd-label');
@@ -727,6 +733,44 @@ rotStopBtn.addEventListener('click', async () => {
     rotStatus.textContent = `✗ ${e.message}`; rotStatus.className = 'status-err';
   }
 });
+
+// ── Schedule notification ─────────────────────────────────────────────────────
+if (schedBtn) {
+  schedBtn.addEventListener('click', async () => {
+    const inSecs = parseInt(schedInSecs.value, 10);
+    const label  = schedLabel ? schedLabel.value.trim() : '';
+    if (!inSecs || inSecs < 1) {
+      schedStatus.textContent = 'Enter a delay in seconds.';
+      schedStatus.className   = 'status-err'; return;
+    }
+    const payload = buildTextPayload();
+    if (!payload.title && !payload.lines?.length) {
+      schedStatus.textContent = 'Fill in the Custom Text form first.';
+      schedStatus.className   = 'status-err'; return;
+    }
+    schedBtn.disabled = true;
+    schedStatus.textContent = '⏳ Scheduling…'; schedStatus.className = '';
+    try {
+      const body = { in_secs: inSecs, payload };
+      if (label) body.label = label;
+      const r = await fetch('/api/schedule', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      if (r.ok) {
+        schedStatus.textContent = `✓ ${await r.text()}`; schedStatus.className = 'status-ok';
+        logEntry(`Scheduled in ${inSecs}s${label ? ': "' + label + '"' : ''}`, 'ok');
+      } else {
+        const err = await r.text();
+        schedStatus.textContent = `✗ ${err}`; schedStatus.className = 'status-err';
+        logEntry(`Schedule error: ${err}`, 'err');
+      }
+    } catch (e) {
+      schedStatus.textContent = `✗ ${e.message}`; schedStatus.className = 'status-err';
+      logEntry(`Schedule error: ${e.message}`, 'err');
+    } finally { schedBtn.disabled = false; }
+  });
+}
 
 // ── Countdown timer ──────────────────────────────────────────────────────────
 cdStartBtn.addEventListener('click', async () => {

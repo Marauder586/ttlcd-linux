@@ -808,3 +808,16 @@ button.danger-btn:hover {
   font-style: italic;
   padding: 0.3rem 0;
 }
+
+/* ── Schedule form ────────────────────────────────────────────────────────── */
+
+.schedule-form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.8rem;
+}
+
+#sched-status {
+  font-size: 0.85rem;
+  min-height: 1.2rem;
+}

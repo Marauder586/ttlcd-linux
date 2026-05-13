@@ -668,6 +668,8 @@ struct DaemonState {
     countdown:  Arc<Mutex<Option<CountdownState>>>,
     /// Auto-clear: if set, CustomText/CustomImage reverts to prev_mode at this Unix time.
     auto_clear_at: Arc<Mutex<Option<u64>>>,
+    /// Count of pending scheduled tasks (for status display).
+    pending_scheduled: Arc<Mutex<u32>>,
 }
 
 #[tokio::main]
@@ -722,7 +724,8 @@ async fn run_daemon(
         rotate_deg: Arc::new(Mutex::new(rotate_deg)),
         history:    Arc::new(Mutex::new(VecDeque::with_capacity(50))),
         countdown:  Arc::new(Mutex::new(None)),
-        auto_clear_at: Arc::new(Mutex::new(None)),
+        auto_clear_at:     Arc::new(Mutex::new(None)),
+        pending_scheduled: Arc::new(Mutex::new(0)),
     };
 
     let panel: Arc<Mutex<Option<Panel>>> = if headless {
@@ -814,6 +817,7 @@ async fn run_daemon(
             .route("/api/notify",         web::post().to(api_notify))
             .route("/api/webhook",        web::post().to(api_webhook))
             .route("/api/config",         web::get().to(api_get_config))
+            .route("/api/schedule",       web::post().to(api_schedule))
             // Server-Sent Events
             .route("/api/events",         web::get().to(api_events))
             // Web UI
@@ -1038,6 +1042,7 @@ struct StatusResponse {
     slideshow_image_count: usize,
     slideshow_interval:    u64,
     slideshow_current_idx: usize,
+    pending_scheduled:    u32,
 }
 
 async fn api_status(state: web::Data<DaemonState>) -> impl Responder {
@@ -1064,6 +1069,7 @@ async fn api_status(state: web::Data<DaemonState>) -> impl Responder {
         slideshow_image_count: ss_count,
         slideshow_interval:    ss_interval,
         slideshow_current_idx: ss_idx,
+        pending_scheduled:     *state.pending_scheduled.lock().unwrap(),
     })
 }
 
@@ -1983,6 +1989,109 @@ async fn api_get_config(state: web::Data<DaemonState>) -> impl Responder {
         slideshow_interval: *state.slideshow_interval.lock().unwrap(),
         frame_seq:         *state.frame_seq.lock().unwrap(),
     })
+}
+
+// ─── Scheduled notifications ─────────────────────────────────────────────────
+
+/// POST /api/schedule — schedule a panel notification for a future time.
+///
+/// The daemon spawns a background task that sleeps until the requested time,
+/// then pushes the notification exactly like `POST /api/text`.
+///
+/// Body (JSON):
+/// ```json
+/// { "at": "ISO8601 datetime",   // e.g. "2026-05-13T22:00:00Z"
+///   "in_secs": 300,             // alternative: fire after this many seconds
+///   "payload": { ... },         // CustomTextPayload fields
+///   "label": "human label"      // optional; used in log output
+/// }
+/// ```
+/// Supply exactly one of `at` or `in_secs`.
+#[derive(Deserialize)]
+struct ScheduleRequest {
+    #[serde(default)]
+    at:      Option<String>,
+    #[serde(default)]
+    in_secs: Option<u64>,
+    payload: CustomTextPayload,
+    #[serde(default)]
+    label:   Option<String>,
+}
+
+async fn api_schedule(state: web::Data<DaemonState>, body: web::Json<ScheduleRequest>) -> impl Responder {
+    let req = body.into_inner();
+
+    let now_secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs()).unwrap_or(0);
+
+    let delay_secs: u64 = if let Some(ref at_str) = req.at {
+        match chrono::DateTime::parse_from_rfc3339(at_str) {
+            Ok(dt) => {
+                let target = dt.timestamp() as u64;
+                if target <= now_secs {
+                    return HttpResponse::BadRequest().body("'at' must be in the future");
+                }
+                target - now_secs
+            }
+            Err(e) => return HttpResponse::BadRequest().body(format!("invalid datetime: {e}")),
+        }
+    } else if let Some(s) = req.in_secs {
+        if s == 0 { return HttpResponse::BadRequest().body("in_secs must be > 0"); }
+        s
+    } else {
+        return HttpResponse::BadRequest().body("supply 'at' (ISO-8601) or 'in_secs'");
+    };
+
+    let label = req.label.unwrap_or_else(|| {
+        req.payload.title.clone().unwrap_or_else(|| "(no title)".into())
+    });
+    let fire_at_str = if delay_secs >= 60 {
+        format!("{:.0}m {:.0}s", delay_secs / 60, delay_secs % 60)
+    } else {
+        format!("{delay_secs}s")
+    };
+
+    // Increment pending counter
+    *state.pending_scheduled.lock().unwrap() += 1;
+    let counter = Arc::clone(&state.pending_scheduled);
+    let payload_clone = req.payload;
+    let state_clone   = state.get_ref().clone();
+    let label_clone   = label.clone();
+
+    tokio::spawn(async move {
+        tokio::time::sleep(tokio::time::Duration::from_secs(delay_secs)).await;
+
+        log::info!("scheduled notification fired: {}", label_clone);
+
+        if let Some(dur) = payload_clone.duration_secs {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs()).unwrap_or(0);
+            *state_clone.auto_clear_at.lock().unwrap() = Some(now + dur);
+        } else {
+            *state_clone.auto_clear_at.lock().unwrap() = None;
+        }
+
+        let summary = payload_clone.title.clone()
+            .unwrap_or_else(|| label_clone.clone());
+        push_history(&state_clone, HistoryKind::Text, summary);
+        {
+            let cur = state_clone.mode.lock().unwrap().clone();
+            if !cur.is_transient() { *state_clone.prev_mode.lock().unwrap() = cur; }
+        }
+        *state_clone.pending_text.lock().unwrap() = Some(payload_clone);
+        *state_clone.mode.lock().unwrap()         = DisplayMode::CustomText;
+
+        // Decrement pending counter
+        let mut c = counter.lock().unwrap();
+        *c = c.saturating_sub(1);
+    });
+
+    log::info!("scheduled notification in {}s: {}", delay_secs, label);
+    HttpResponse::Ok().body(format!(
+        "scheduled in {fire_at_str}: \"{label}\""
+    ))
 }
 
 // ─── Embedded web UI ─────────────────────────────────────────────────────────
