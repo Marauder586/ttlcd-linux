@@ -1299,3 +1299,11 @@ button.btn-link.active {
   color: var(--text);
   border: 1px solid var(--surface0);
 }
+
+/* ─── Button class aliases for new sections ──────────────────────────────── */
+button.btn-primary  { background: var(--blue);  color: var(--base); font-weight: 600; border: none; border-radius: 6px; padding: 0.4rem 0.9rem; cursor: pointer; transition: opacity 0.15s; }
+button.btn-primary:hover  { opacity: 0.85; }
+button.btn-secondary{ background: var(--surface1); color: var(--text); border: 1px solid var(--overlay0); border-radius: 6px; padding: 0.4rem 0.9rem; cursor: pointer; transition: background 0.15s; }
+button.btn-secondary:hover{ background: var(--surface2); }
+button.btn-danger   { background: var(--red);   color: var(--base); font-weight: 600; border: none; border-radius: 6px; padding: 0.4rem 0.9rem; cursor: pointer; transition: opacity 0.15s; }
+button.btn-danger:hover   { opacity: 0.85; }

@@ -57,6 +57,8 @@
         <button class="mode-btn" data-mode="shell_cmd"     title="Shell command output viewer — run any shell command on panel">💻<span>Shell Cmd</span></button>
         <button class="mode-btn" data-mode="ping_monitor"  title="ICMP ping latency monitor — track host reachability and round-trip time">📶<span>Ping</span></button>
         <button class="mode-btn" data-mode="dashboard"    title="Four-quadrant overview: clock, CPU/RAM, network, temperature">📊<span>Dashboard</span></button>
+        <button class="mode-btn" data-mode="log_tail"     title="Live log file tail viewer — tail any file on the system">📄<span>Log Tail</span></button>
+        <button class="mode-btn" data-mode="cpu_freq"    title="Per-core CPU frequency grid — shows current clock speed for each core">⚡<span>CPU Freq</span></button>
         <button class="mode-btn" data-mode="idle"          title="Keepalive — no display update">💤<span>Idle</span></button>
       </div>
     </section>
@@ -505,6 +507,12 @@
         <tr><td><kbd>l</kbd></td><td>Record stopwatch lap</td></tr>
         <tr><td><kbd>f</kbd></td><td>Toggle display freeze</td></tr>
         <tr><td><kbd>w</kbd></td><td>Fetch &amp; push weather (when weather section visible)</td></tr>
+        <tr><td><kbd>Shift</kbd>+<kbd>D</kbd></td><td>Switch to Dashboard mode</td></tr>
+        <tr><td><kbd>Shift</kbd>+<kbd>H</kbd></td><td>Switch to HTTP Monitor mode</td></tr>
+        <tr><td><kbd>Shift</kbd>+<kbd>L</kbd></td><td>Switch to Log Tail mode</td></tr>
+        <tr><td><kbd>Shift</kbd>+<kbd>F</kbd></td><td>Switch to CPU Freq mode</td></tr>
+        <tr><td><kbd>Shift</kbd>+<kbd>P</kbd></td><td>Pomodoro start/pause toggle</td></tr>
+        <tr><td><kbd>Shift</kbd>+<kbd>S</kbd></td><td>Pomodoro skip phase</td></tr>
       </table>
       <p class="card-hint" style="margin-top:0.5rem">Shortcuts are disabled while a text input is focused.</p>
     </details>

@@ -1389,6 +1389,49 @@ line 8";
         assert_panel_size(&render_dashboard());
     }
 
+    #[test]
+    fn test_log_tail_empty_size() {
+        assert_panel_size(&render_log_tail("", &[], false));
+    }
+
+    #[test]
+    fn test_log_tail_ok_empty_lines() {
+        assert_panel_size(&render_log_tail("/var/log/syslog", &[], true));
+    }
+
+    #[test]
+    fn test_log_tail_with_lines() {
+        let lines: Vec<String> = (1..=20)
+            .map(|i| format!("2026-05-13 12:00:{:02} [INFO]  test message line {}", i, i))
+            .collect();
+        assert_panel_size(&render_log_tail("/var/log/syslog", &lines, true));
+    }
+
+    #[test]
+    fn test_log_tail_error_colors() {
+        let lines = vec![
+            "2026-05-13 ERROR failed to connect".to_string(),
+            "2026-05-13 WARN  retrying in 5s".to_string(),
+            "2026-05-13 DEBUG retry attempt 1".to_string(),
+            "2026-05-13 INFO  connected ok".to_string(),
+        ];
+        assert_panel_size(&render_log_tail("/tmp/app.log", &lines, true));
+    }
+
+    #[test]
+    fn test_log_tail_long_lines() {
+        let lines = vec![
+            "a".repeat(100),
+            "b".repeat(80),
+        ];
+        assert_panel_size(&render_log_tail("/tmp/test.log", &lines, true));
+    }
+
+    #[test]
+    fn test_cpu_freq_size() {
+        assert_panel_size(&render_cpu_freq());
+    }
+
 }
 
 /// Thermal sensor detail — all available temperature components with color-coded bars.
@@ -3823,4 +3866,265 @@ fn format_bytes_compact(b: u64) -> String {
     else if b >= 1_000_000 { format!("{:.1}MB", b as f64 / 1_000_000.0) }
     else if b >= 1_000     { format!("{:.0}KB", b as f64 / 1_000.0) }
     else                   { format!("{}B", b) }
+}
+
+
+/// Remove ANSI/VT100 escape sequences from a string.
+/// Handles CSI sequences (ESC [ ... m) and OSC sequences.
+fn strip_ansi(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out = String::with_capacity(s.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == 0x1b {
+            // Skip escape sequence
+            i += 1;
+            if i < bytes.len() {
+                match bytes[i] {
+                    b'[' => {
+                        // CSI sequence: ESC [ ... (letter)
+                        i += 1;
+                        while i < bytes.len() && !bytes[i].is_ascii_alphabetic() { i += 1; }
+                        if i < bytes.len() { i += 1; } // skip the terminating letter
+                    }
+                    b']' => {
+                        // OSC sequence: ESC ] ... ST (BEL or ESC\)
+                        i += 1;
+                        while i < bytes.len() && bytes[i] != 0x07 && bytes[i] != 0x1b { i += 1; }
+                        if i < bytes.len() { i += 1; }
+                    }
+                    _ => {
+                        // Other two-char sequences
+                        i += 1;
+                    }
+                }
+            }
+        } else if bytes[i] < 0x20 && bytes[i] != b'\t' {
+            // Skip other control chars except tab
+            i += 1;
+        } else {
+            // Safe to push this char
+            if let Some(c) = s[i..].chars().next() {
+                out.push(c);
+                i += c.len_utf8();
+            } else {
+                i += 1;
+            }
+        }
+    }
+    out
+}
+
+// ─── Log tail viewer ──────────────────────────────────────────────────────────
+
+/// Render the last N lines of a log file.
+///
+/// - `path`  — file path shown in the header (just the filename portion)
+/// - `lines` — already-read tail lines (most recent last)
+/// - `ok`    — true if the file was readable; false means show error state
+pub fn render_log_tail(path: &str, lines: &[String], ok: bool) -> DynamicImage {
+    let mut img = RgbImage::from_pixel(480, 480, BG);
+    let mono = font_mono();
+    let bold = font_bold();
+
+    // Header bar
+    let hdr_color = if ok { TEAL } else { RED };
+    draw_filled_rect_mut(&mut img, Rect::at(0, 0).of_size(480, 44), SURFACE0);
+
+    // File icon + short filename
+    let fname: String = std::path::Path::new(path)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or(path)
+        .chars().take(30).collect();
+    let hdr_text = if ok {
+        format!("≡ {}", fname)
+    } else {
+        format!("✕ {}", fname)
+    };
+    draw_text_mut(&mut img, hdr_color, 8, 8, PxScale::from(24.0), &bold, &hdr_text);
+
+    // Line count badge
+    let badge = format!("{} lines", lines.len());
+    let bw = text_width(&mono, PxScale::from(14.0), &badge);
+    draw_text_mut(&mut img, OVERLAY0, 480 - bw - 8, 14, PxScale::from(14.0), &mono, &badge);
+
+    // Divider
+    draw_filled_rect_mut(&mut img, Rect::at(0, 44).of_size(480, 2), hdr_color);
+
+    if !ok {
+        let msg = if path.is_empty() {
+            "No file configured.".to_string()
+        } else {
+            format!("Cannot read:\n{}", path)
+        };
+        let y = 48 + 20;
+        for (i, l) in msg.lines().enumerate() {
+            draw_text_mut(&mut img, SUBTEXT, 12, y + i as i32 * 20, PxScale::from(18.0), &mono, l);
+        }
+        draw_text_mut(&mut img, OVERLAY0, 12, y + 60, PxScale::from(14.0), &mono,
+            "Use POST /api/log_tail to set a path.");
+        return DynamicImage::ImageRgb8(img);
+    }
+
+    // Content area — 14px mono, max ~16 visible lines
+    const LINE_H: i32 = 26;
+    const MAX_LINES: usize = 16;
+    // const CHAR_W: i32 = 8;  // approx chars at 14px mono
+    const MAX_CHARS: usize = 58;
+
+    let content_y_start: i32 = 50;
+
+    // Show up to MAX_LINES most-recent lines
+    let display_lines: Vec<&str> = if lines.len() > MAX_LINES {
+        lines[lines.len() - MAX_LINES..].iter().map(|s| s.as_str()).collect()
+    } else {
+        lines.iter().map(|s| s.as_str()).collect()
+    };
+
+    for (i, line) in display_lines.iter().enumerate() {
+        let y = content_y_start + i as i32 * LINE_H;
+        if y + LINE_H > 480 { break; }
+
+        // Strip ANSI escape sequences
+        let clean: String = strip_ansi(line);
+        // Truncate long lines
+        let truncated: String = if clean.chars().count() > MAX_CHARS {
+            let t: String = clean.chars().take(MAX_CHARS - 1).collect();
+            format!("{}…", t)
+        } else {
+            clean.clone()
+        };
+
+        // Alternate row backgrounds for readability
+        if i % 2 == 1 {
+            draw_filled_rect_mut(&mut img, Rect::at(0, y).of_size(480, LINE_H as u32), SURFACE0);
+        }
+
+        // Highlight lines with common log level keywords
+        let color = if clean.contains("ERROR") || clean.contains("error") || clean.contains("CRIT") || clean.contains("crit") {
+            RED
+        } else if clean.contains("WARN") || clean.contains("warn") {
+            YELLOW
+        } else if clean.contains("INFO") || clean.contains("info") {
+            TEXT
+        } else if clean.contains("DEBUG") || clean.contains("debug") || clean.contains("TRACE") {
+            OVERLAY0
+        } else {
+            SUBTEXT
+        };
+
+        draw_text_mut(&mut img, color, 4, y + 5, PxScale::from(14.0), &mono, &truncated);
+    }
+
+    DynamicImage::ImageRgb8(img)
+}
+
+
+// ─── CPU frequency display ────────────────────────────────────────────────────
+
+/// Read current CPU MHz values from /proc/cpuinfo.
+/// Returns one entry per logical core (in core order).
+fn read_cpu_mhz() -> Vec<f32> {
+    let text = match std::fs::read_to_string("/proc/cpuinfo") {
+        Ok(t)  => t,
+        Err(_) => return Vec::new(),
+    };
+    text.lines()
+        .filter(|l| l.starts_with("cpu MHz"))
+        .filter_map(|l| l.split(':').nth(1).and_then(|v| v.trim().parse::<f32>().ok()))
+        .collect()
+}
+
+/// Render a per-core CPU frequency grid.
+///
+/// Shows each logical CPU's current clock in MHz, colour-coded:
+/// - Green ≥ max * 0.90  (boosting / near max)
+/// - Teal  ≥ max * 0.60
+/// - Yellow ≥ max * 0.30 (moderate)
+/// - Blue  < max * 0.30  (light load / power-save)
+pub fn render_cpu_freq() -> DynamicImage {
+    let freqs = read_cpu_mhz();
+    let mut img = blank();
+    let bold = font_bold();
+    let mono = font_mono();
+
+    // Header
+    draw_filled_rect_mut(&mut img, Rect::at(0, 0).of_size(480, 44), SURFACE0);
+    draw_text_mut(&mut img, TEAL, 8, 8, PxScale::from(24.0), &bold, "CPU Frequency");
+
+    let now = Local::now();
+    let ts = now.format("%H:%M:%S").to_string();
+    let tw = text_width(&mono, PxScale::from(14.0), &ts);
+    draw_text_mut(&mut img, OVERLAY0, 480 - tw - 8, 14, PxScale::from(14.0), &mono, &ts);
+
+    draw_filled_rect_mut(&mut img, Rect::at(0, 44).of_size(480, 2), TEAL);
+
+    if freqs.is_empty() {
+        draw_text_mut(&mut img, OVERLAY0, 12, 64, PxScale::from(18.0), &mono,
+            "No CPU frequency data available.");
+        draw_text_mut(&mut img, OVERLAY0, 12, 88, PxScale::from(14.0), &mono,
+            "(requires /proc/cpuinfo with 'cpu MHz')");
+        return DynamicImage::ImageRgb8(img);
+    }
+
+    let max_mhz = freqs.iter().cloned().fold(0.0_f32, f32::max).max(1.0);
+    let n = freqs.len();
+
+    // Summary line
+    let avg_mhz = freqs.iter().sum::<f32>() / n as f32;
+    let summary = format!("{} cores   avg {:.0} MHz   max {:.0} MHz", n, avg_mhz, max_mhz);
+    let sw = text_width(&bold, PxScale::from(16.0), &summary);
+    draw_text_mut(&mut img, SUBTEXT, (480 - sw).max(0) / 2, 50, PxScale::from(16.0), &bold, &summary);
+
+    // Grid layout: up to 4 columns
+    let cols: i32 = if n <= 8 { 2 } else if n <= 16 { 4 } else { 4 };
+    let rows  = ((n as i32) + cols - 1) / cols;
+    let cell_w = 480 / cols;
+    let cell_h: i32 = ((480 - 72) / rows).min(54);
+    let start_y: i32 = 72;
+
+    for (i, &mhz) in freqs.iter().enumerate().take((cols * rows) as usize) {
+        let col = (i as i32) % cols;
+        let row = (i as i32) / cols;
+        let x = col * cell_w;
+        let y = start_y + row * cell_h;
+
+        let frac = mhz / max_mhz;
+        let color = if frac >= 0.90 { GREEN }
+                    else if frac >= 0.60 { TEAL }
+                    else if frac >= 0.30 { YELLOW }
+                    else { BLUE };
+
+        // Cell background (alternate)
+        if (col + row) % 2 == 0 {
+            draw_filled_rect_mut(&mut img, Rect::at(x, y).of_size(cell_w as u32, cell_h as u32), SURFACE0);
+        }
+
+        // Core label + MHz
+        let core_label = format!("C{}", i);
+        let freq_str   = format!("{:.0}", mhz);
+        let unit_str   = "MHz";
+
+        let label_scale = PxScale::from(13.0);
+        let freq_scale  = PxScale::from(if cell_h >= 42 { 22.0 } else { 18.0 });
+
+        draw_text_mut(&mut img, OVERLAY0, x + 4, y + 3, label_scale, &mono, &core_label);
+        draw_text_mut(&mut img, color,    x + 4, y + 18, freq_scale, &mono, &freq_str);
+        let unit_y = y + 18 + if cell_h >= 42 { 20 } else { 16 };
+        if unit_y + 14 < y + cell_h {
+            draw_text_mut(&mut img, OVERLAY0, x + 4, unit_y, PxScale::from(11.0), &mono, unit_str);
+        }
+
+        // Mini progress bar at bottom of cell
+        let bar_y = y + cell_h - 5;
+        let bar_w = cell_w - 4;
+        draw_filled_rect_mut(&mut img, Rect::at(x + 2, bar_y).of_size(bar_w as u32, 3), OVERLAY0);
+        let fill = ((bar_w as f32 * frac) as i32).max(0);
+        if fill > 0 {
+            draw_filled_rect_mut(&mut img, Rect::at(x + 2, bar_y).of_size(fill as u32, 3), color);
+        }
+    }
+
+    DynamicImage::ImageRgb8(img)
 }

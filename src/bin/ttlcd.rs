@@ -44,6 +44,8 @@ use ttlcd::{
         render_shell_cmd,
         render_ping_monitor,
         render_dashboard,
+        render_cpu_freq,
+        render_log_tail,
         HttpMonitorResult,
         PingResult,
         Metric,
@@ -724,6 +726,8 @@ enum DisplayMode {
     ShellCmd,
     PingMonitor,
     Dashboard,
+    LogTail,
+    CpuFreq,
     Idle,
     CustomImage,
     CustomText,
@@ -733,7 +737,7 @@ enum DisplayMode {
 impl DisplayMode {
     const ALL_NAMES: &'static [&'static str] = &[
         "clock", "big_clock", "clock_sysinfo", "sysinfo", "cpu_detail",
-        "network", "disk_usage", "process_top", "temperature", "memory_detail", "countdown", "cpu_graph", "net_graph", "recent_alerts", "process_memory", "disk_io", "calendar", "stopwatch", "metrics", "weather", "notes", "qr_code", "pomodoro", "battery", "world_clock", "ticker", "http_status", "shell_cmd", "ping_monitor", "dashboard", "idle",
+        "network", "disk_usage", "process_top", "temperature", "memory_detail", "countdown", "cpu_graph", "net_graph", "recent_alerts", "process_memory", "disk_io", "calendar", "stopwatch", "metrics", "weather", "notes", "qr_code", "pomodoro", "battery", "world_clock", "ticker", "http_status", "shell_cmd", "ping_monitor", "dashboard", "log_tail", "cpu_freq", "idle",
     ];
 
     fn from_str_name(s: &str) -> Option<Self> {
@@ -768,6 +772,8 @@ impl DisplayMode {
             "shell_cmd"       => Some(DisplayMode::ShellCmd),
             "ping_monitor"    => Some(DisplayMode::PingMonitor),
             "dashboard"       => Some(DisplayMode::Dashboard),
+            "log_tail"        => Some(DisplayMode::LogTail),
+            "cpu_freq"        => Some(DisplayMode::CpuFreq),
             "idle"            => Some(DisplayMode::Idle),
             "custom_text"   => Some(DisplayMode::CustomText),
             "slideshow"     => Some(DisplayMode::Slideshow),
@@ -807,6 +813,8 @@ impl DisplayMode {
             DisplayMode::ShellCmd      => "shell_cmd",
             DisplayMode::PingMonitor   => "ping_monitor",
             DisplayMode::Dashboard     => "dashboard",
+            DisplayMode::LogTail       => "log_tail",
+            DisplayMode::CpuFreq       => "cpu_freq",
             DisplayMode::Idle          => "idle",
             DisplayMode::CustomImage  => "image",
             DisplayMode::CustomText   => "custom_text",
@@ -955,6 +963,10 @@ struct DaemonState {
     metrics_data:  Arc<Mutex<Vec<Metric>>>,
     /// Cached weather snapshot for the Weather display mode.
     weather_data:  Arc<Mutex<WeatherData>>,
+    /// wttr.in location for auto-fetch (empty = disabled).
+    weather_location:  Arc<Mutex<String>>,
+    /// Auto-fetch interval in seconds (0 = disabled).
+    weather_auto_secs: Arc<Mutex<u64>>,
     /// Notes/bulletin board title and list for the Notes display mode.
     notes_title: Arc<Mutex<String>>,
     notes_items: Arc<Mutex<Vec<String>>>,
@@ -1004,6 +1016,18 @@ struct DaemonState {
     ping_results: Arc<Mutex<Vec<PingResult>>>,
     /// Interval between ping checks (seconds; minimum 5).
     ping_interval_secs: Arc<Mutex<u64>>,
+    /// Optional HTTP JSON metrics source (auto-fetches and updates the metrics display).
+    metrics_source: Arc<Mutex<Option<MetricsSource>>>,
+    /// Path of the file being tailed.
+    log_tail_path:     Arc<Mutex<String>>,
+    /// Cached tail lines (most-recent last).
+    log_tail_lines:    Arc<Mutex<Vec<String>>>,
+    /// Number of tail lines to keep.
+    log_tail_n:        Arc<Mutex<usize>>,
+    /// Seconds between re-reads.
+    log_tail_interval: Arc<Mutex<u64>>,
+    /// Whether the last read succeeded.
+    log_tail_ok:       Arc<Mutex<bool>>,
 }
 
 /// A single entry in the display-mode schedule.
@@ -1036,6 +1060,39 @@ struct PingHostEntry {
     label: String,
     host:  String,
 }
+
+/// A single field extracted from an HTTP JSON metrics source.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct MetricsSourceField {
+    /// Label shown on the panel.
+    label: String,
+    /// Dot-notation JSON path (e.g. "cpu.usage_pct", "data.0.temp").
+    path:  String,
+    /// Optional display format. "{}" = raw string value.
+    #[serde(default = "default_ms_format")]
+    format: String,
+    /// Optional metric color name.
+    #[serde(default = "default_ms_color")]
+    color:  String,
+}
+fn default_ms_format() -> String { "{}".to_string() }
+fn default_ms_color()  -> String { "blue".to_string() }
+
+/// A configured HTTP JSON metrics source for automatic metric polling.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct MetricsSource {
+    /// URL to GET (must return JSON).
+    url:          String,
+    /// Panel title shown above the metrics grid.
+    #[serde(default)]
+    title:        String,
+    /// Fields to extract and display.
+    fields:       Vec<MetricsSourceField>,
+    /// Auto-refresh interval in seconds (min 5; 0 = disabled).
+    #[serde(default = "default_ms_interval")]
+    interval_secs: u64,
+}
+fn default_ms_interval() -> u64 { 30 }
 
 fn ping_hosts_path() -> Option<PathBuf> {
     let p = dirs_config_path()?;
@@ -1085,6 +1142,50 @@ fn save_http_monitors(monitors: &[HttpMonitorEntry]) {
         let _ = std::fs::write(&path, text);
     }
 }
+// ─── New settings persistence ────────────────────────────────────────────────
+
+#[derive(Clone, Debug, Serialize, Deserialize, Default)]
+struct PersistedNewSettings {
+    weather_location:  String,
+    weather_auto_secs: u64,
+    log_tail_path:     String,
+    log_tail_n:        usize,
+    log_tail_interval: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    metrics_source:    Option<MetricsSource>,
+}
+
+fn new_settings_path() -> Option<PathBuf> {
+    let p = dirs_config_path()?;
+    Some(p.parent()?.join("new_settings.json"))
+}
+
+fn load_new_settings() -> PersistedNewSettings {
+    (|| -> Option<PersistedNewSettings> {
+        let path = new_settings_path()?;
+        let text = std::fs::read_to_string(&path).ok()?;
+        serde_json::from_str(&text).ok()
+    })()
+    .unwrap_or_default()
+}
+
+fn save_new_settings(state: &DaemonState) {
+    let Some(path) = new_settings_path() else { return };
+    if let Some(parent) = path.parent() { let _ = std::fs::create_dir_all(parent); }
+    let s = PersistedNewSettings {
+        weather_location:  state.weather_location.lock().unwrap().clone(),
+        weather_auto_secs: *state.weather_auto_secs.lock().unwrap(),
+        log_tail_path:     state.log_tail_path.lock().unwrap().clone(),
+        log_tail_n:        *state.log_tail_n.lock().unwrap(),
+        log_tail_interval: *state.log_tail_interval.lock().unwrap(),
+        metrics_source:    state.metrics_source.lock().unwrap().clone(),
+    };
+    if let Ok(text) = serde_json::to_string_pretty(&s) {
+        let _ = std::fs::write(&path, text);
+    }
+}
+
+
 
 // ─── Pomodoro timer state ─────────────────────────────────────────────────────
 
@@ -1290,6 +1391,8 @@ async fn run_daemon(
         metrics_title: Arc::new(Mutex::new(String::new())),
         metrics_data:  Arc::new(Mutex::new(Vec::new())),
         weather_data:  Arc::new(Mutex::new(WeatherData::default())),
+        weather_location:  Arc::new(Mutex::new(String::new())),
+        weather_auto_secs: Arc::new(Mutex::new(0)),
         notes_title:  Arc::new(Mutex::new(String::new())),
         notes_items:  Arc::new(Mutex::new(Vec::new())),
         fps_history:  Arc::new(Mutex::new(VecDeque::with_capacity(60))),
@@ -1315,6 +1418,12 @@ async fn run_daemon(
         ping_hosts:          Arc::new(Mutex::new(Vec::new())),
         ping_results:        Arc::new(Mutex::new(Vec::new())),
         ping_interval_secs:  Arc::new(Mutex::new(10)),
+        metrics_source:      Arc::new(Mutex::new(None)),
+        log_tail_path:     Arc::new(Mutex::new(String::new())),
+        log_tail_lines:    Arc::new(Mutex::new(Vec::new())),
+        log_tail_n:        Arc::new(Mutex::new(16)),
+        log_tail_interval: Arc::new(Mutex::new(3)),
+        log_tail_ok:       Arc::new(Mutex::new(false)),
     };
 
     let panel: Arc<Mutex<Option<Panel>>> = if headless {
@@ -1401,6 +1510,23 @@ async fn run_daemon(
         }
     }
 
+    // ── Load new settings (weather, log_tail, metrics_source) ────────────
+    {
+        let ns = load_new_settings();
+        if !ns.weather_location.is_empty() {
+            *state.weather_location.lock().unwrap()  = ns.weather_location;
+            *state.weather_auto_secs.lock().unwrap() = ns.weather_auto_secs;
+        }
+        if !ns.log_tail_path.is_empty() {
+            *state.log_tail_path.lock().unwrap()     = ns.log_tail_path;
+            *state.log_tail_n.lock().unwrap()        = ns.log_tail_n.max(1);
+            *state.log_tail_interval.lock().unwrap() = ns.log_tail_interval.max(1);
+        }
+        if let Some(src) = ns.metrics_source {
+            *state.metrics_source.lock().unwrap() = Some(src);
+        }
+    }
+
     // ── HTTP health-check background thread ───────────────────────────────
     {
         let state_hc = state.clone();
@@ -1417,6 +1543,24 @@ async fn run_daemon(
     {
         let state_pm = state.clone();
         tokio::spawn(async move { ping_monitor_loop(state_pm).await });
+    }
+
+    // ── Metrics source auto-fetch background thread ─────────────────────
+    {
+        let state_ms = state.clone();
+        tokio::spawn(async move { metrics_source_loop(state_ms).await });
+    }
+
+    // ── Weather auto-fetch background thread ─────────────────────────────
+    {
+        let state_wf = state.clone();
+        tokio::spawn(async move { weather_auto_loop(state_wf).await });
+    }
+
+    // ── Log tail background thread ────────────────────────────────────────
+    {
+        let state_lt = state.clone();
+        tokio::spawn(async move { log_tail_loop(state_lt).await });
     }
 
     // ── HTTP server ────────────────────────────────────────────────────────
@@ -1556,6 +1700,9 @@ async fn run_daemon(
             .route("/api/weather",        web::get().to(api_get_weather))
             .route("/api/weather",        web::post().to(api_update_weather))
             .route("/api/weather",        web::delete().to(api_clear_weather))
+            .route("/api/weather/fetch",  web::post().to(api_weather_fetch_now))
+            .route("/api/weather/auto",   web::put().to(api_weather_auto))
+            .route("/api/weather/auto",   web::delete().to(api_weather_auto_stop))
             // Notes / bulletin board
             .route("/api/notes",          web::get().to(api_get_notes))
             .route("/api/notes",          web::post().to(api_push_notes))
@@ -1594,6 +1741,11 @@ async fn run_daemon(
             .route("/api/world_clock",  web::get().to(api_get_world_clock))
             .route("/api/world_clock",  web::post().to(api_set_world_clock))
             .route("/api/world_clock",  web::delete().to(api_clear_world_clock))
+            // HTTP JSON metrics source
+            .route("/api/metrics/source",         web::get().to(api_get_metrics_source))
+            .route("/api/metrics/source",         web::post().to(api_set_metrics_source))
+            .route("/api/metrics/source",         web::delete().to(api_clear_metrics_source))
+            .route("/api/metrics/source/fetch",   web::post().to(api_fetch_metrics_source_now))
             // Battery info
             .route("/api/battery",        web::get().to(api_battery_json))
             // HTTP status monitor
@@ -1611,6 +1763,10 @@ async fn run_daemon(
             .route("/api/ping_monitor",             web::post().to(api_add_ping_host))
             .route("/api/ping_monitor/{index}",     web::delete().to(api_delete_ping_host))
             .route("/api/ping_monitor/interval",    web::put().to(api_set_ping_interval))
+            // Log tail viewer
+            .route("/api/log_tail",                 web::get().to(api_get_log_tail))
+            .route("/api/log_tail",                 web::post().to(api_set_log_tail))
+            .route("/api/log_tail",                 web::delete().to(api_clear_log_tail))
             // API docs
             .route("/api/docs",           web::get().to(api_docs))
             // Web UI
@@ -1925,6 +2081,13 @@ fn display_loop(panel: Arc<Mutex<Option<Panel>>>, state: DaemonState) {
                     (render_ping_monitor(&results), 5)
                 },
                 DisplayMode::Dashboard => (render_dashboard(), 2),
+                DisplayMode::LogTail => {
+                    let path  = state.log_tail_path.lock().unwrap().clone();
+                    let lines = state.log_tail_lines.lock().unwrap().clone();
+                    let ok    = *state.log_tail_ok.lock().unwrap();
+                    (render_log_tail(&path, &lines, ok), 3)
+                },
+                DisplayMode::CpuFreq => (render_cpu_freq(), 2),
                 DisplayMode::Idle
                 | DisplayMode::CustomImage
                 | DisplayMode::CustomText
@@ -2329,6 +2492,261 @@ async fn run_ping_once(host: &str) -> (Option<f64>, f32) {
     }
 }
 
+
+
+
+/// Background loop: periodically fetch the configured HTTP JSON metrics source and update metrics_data.
+async fn metrics_source_loop(state: DaemonState) {
+    tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
+    loop {
+        let source = state.metrics_source.lock().unwrap().clone();
+        let Some(src) = source else {
+            tokio::time::sleep(tokio::time::Duration::from_secs(15)).await;
+            continue;
+        };
+        let interval = src.interval_secs.max(5);
+
+        if let Err(e) = fetch_metrics_source(&state, &src).await {
+            log::warn!("metrics_source fetch '{}': {e}", src.url);
+        }
+
+        tokio::time::sleep(tokio::time::Duration::from_secs(interval)).await;
+    }
+}
+
+/// Fetch the metrics source URL, extract fields, and update metrics_data + metrics_title.
+async fn fetch_metrics_source(state: &DaemonState, src: &MetricsSource) -> anyhow::Result<()> {
+    use reqwest::Client;
+    let client = Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .danger_accept_invalid_certs(true)
+        .user_agent("ttlcd/0.13.0")
+        .build()?;
+    let resp = client.get(&src.url).send().await?;
+    if !resp.status().is_success() {
+        anyhow::bail!("HTTP {}", resp.status());
+    }
+    let body: serde_json::Value = resp.json().await?;
+
+    let mut metrics: Vec<Metric> = Vec::with_capacity(src.fields.len());
+    for field in &src.fields {
+        let val = json_path_get(&body, &field.path);
+        let val_str = match val {
+            Some(v) => {
+                let raw = match v {
+                    serde_json::Value::String(s) => s.clone(),
+                    other => other.to_string(),
+                };
+                // Apply simple format: replace "{}" with the value
+                if field.format == "{}" || field.format.is_empty() {
+                    raw
+                } else {
+                    field.format.replacen("{}", &raw, 1)
+                }
+            }
+            None => "N/A".to_string(),
+        };
+        metrics.push(Metric {
+            label: field.label.clone(),
+            value: val_str,
+            color: field.color.clone(),
+        });
+    }
+
+    if !src.title.is_empty() {
+        *state.metrics_title.lock().unwrap() = src.title.clone();
+    }
+    *state.metrics_data.lock().unwrap() = metrics;
+    log::debug!("metrics_source updated from '{}'", src.url);
+    Ok(())
+}
+
+/// Walk a JSON value using a dot-separated path string.
+/// Array indices are supported: "data.0.value" navigates `data[0].value`.
+fn json_path_get<'a>(root: &'a serde_json::Value, path: &str) -> Option<&'a serde_json::Value> {
+    let mut cur = root;
+    for segment in path.split('.') {
+        cur = if let Ok(idx) = segment.parse::<usize>() {
+            cur.get(idx)?
+        } else {
+            cur.get(segment)?
+        };
+    }
+    Some(cur)
+}
+
+/// Background loop: periodically fetch weather from wttr.in.
+/// Only runs when `weather_location` is non-empty and `weather_auto_secs > 0`.
+async fn weather_auto_loop(state: DaemonState) {
+    // Stagger start a bit so it doesn't hammer the network at startup
+    tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+    loop {
+        let location = state.weather_location.lock().unwrap().clone();
+        let interval = *state.weather_auto_secs.lock().unwrap();
+
+        if location.is_empty() || interval == 0 {
+            tokio::time::sleep(tokio::time::Duration::from_secs(30)).await;
+            continue;
+        }
+
+        if let Err(e) = fetch_wttr(&state, &location).await {
+            log::warn!("weather auto-fetch for '{}': {e}", location);
+        }
+
+        tokio::time::sleep(tokio::time::Duration::from_secs(interval.max(60))).await;
+    }
+}
+
+/// Fetch current conditions from wttr.in JSON API and update weather_data.
+async fn fetch_wttr(state: &DaemonState, location: &str) -> anyhow::Result<()> {
+    use reqwest::Client;
+    let url = format!("https://wttr.in/{}?format=j1", urlencoding_encode(location));
+    let client = Client::builder()
+        .timeout(std::time::Duration::from_secs(15))
+        .user_agent("ttlcd/0.13.0")
+        .build()?;
+    let resp = client.get(&url).send().await?;
+    if !resp.status().is_success() {
+        anyhow::bail!("wttr.in HTTP {}", resp.status());
+    }
+    let body: serde_json::Value = resp.json().await?;
+
+    let cc = body["current_condition"].get(0).cloned().unwrap_or_default();
+    let w0 = body["weather"].get(0).cloned().unwrap_or_default();
+
+    let temp_c: Option<f32>      = cc["temp_C"].as_str().and_then(|s| s.parse().ok());
+    let feels_c: Option<f32>     = cc["FeelsLikeC"].as_str().and_then(|s| s.parse().ok());
+    let humidity: Option<u8>     = cc["humidity"].as_str().and_then(|s| s.parse().ok());
+    let wind_kmh: Option<f32>    = cc["windspeedKmph"].as_str().and_then(|s| s.parse().ok());
+    let wind_dir: String         = cc["winddir16Point"].as_str().unwrap_or("").to_string();
+    let condition: String        = cc["weatherDesc"].get(0)
+        .and_then(|d| d["value"].as_str())
+        .unwrap_or("Unknown")
+        .to_string();
+    let visibility: Option<f32>  = cc["visibility"].as_str().and_then(|s| s.parse().ok());
+    let max_c: Option<f32>       = w0["maxtempC"].as_str().and_then(|s| s.parse().ok());
+    let min_c: Option<f32>       = w0["mintempC"].as_str().and_then(|s| s.parse().ok());
+
+    let now_secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs()).unwrap_or(0);
+
+    let wd = WeatherData {
+        city:           location.to_string(),
+        temp_c,
+        feels_like_c:   feels_c,
+        condition,
+        humidity_pct:   humidity,
+        wind_kmh,
+        wind_dir,
+        high_c:         max_c,
+        low_c:          min_c,
+        visibility_km:  visibility,
+        updated_at:     Some(now_secs),
+    };
+    *state.weather_data.lock().unwrap() = wd;
+    log::info!("weather updated for '{}'", location);
+    Ok(())
+}
+
+/// Percent-encode a location string for use in a URL path component.
+/// Only encodes characters that are not safe in a URL path.
+fn urlencoding_encode(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 8);
+    for c in s.chars() {
+        match c {
+            'A'..='Z' | 'a'..='z' | '0'..='9' | '-' | '_' | '.' | '~' | '+' => out.push(c),
+            ' ' => out.push('+'),
+            _ => {
+                let mut buf = [0u8; 4];
+                for byte in c.encode_utf8(&mut buf).bytes() {
+                    out.push('%');
+                    out.push(char::from_digit((byte >> 4) as u32, 16).unwrap_or('0').to_ascii_uppercase());
+                    out.push(char::from_digit((byte & 0xf) as u32, 16).unwrap_or('0').to_ascii_uppercase());
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Background loop: periodically re-reads the tail of the configured log file.
+async fn log_tail_loop(state: DaemonState) {
+    loop {
+        let interval_secs = *state.log_tail_interval.lock().unwrap();
+        tokio::time::sleep(tokio::time::Duration::from_secs(interval_secs.max(1))).await;
+
+        let path = state.log_tail_path.lock().unwrap().clone();
+        if path.is_empty() { continue; }
+
+        let n = *state.log_tail_n.lock().unwrap();
+        match read_tail_lines(&path, n) {
+            Ok(lines) => {
+                *state.log_tail_lines.lock().unwrap() = lines;
+                *state.log_tail_ok.lock().unwrap()    = true;
+            }
+            Err(e) => {
+                log::warn!("log_tail: cannot read '{}': {e}", path);
+                *state.log_tail_ok.lock().unwrap() = false;
+            }
+        }
+    }
+}
+
+/// Read the last `n` lines from a file efficiently.
+fn read_tail_lines(path: &str, n: usize) -> std::io::Result<Vec<String>> {
+    use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
+    use std::fs::File;
+
+    let file = File::open(path)?;
+    let metadata = file.metadata()?;
+    let file_size = metadata.len();
+
+    if file_size == 0 || n == 0 {
+        return Ok(Vec::new());
+    }
+
+    // Walk backwards in 8 KB chunks counting newlines
+    const CHUNK: u64 = 8192;
+    let mut reader = BufReader::new(file);
+    let mut pos = file_size;
+    let mut newline_count: usize = 0;
+    let mut start: u64 = 0;
+
+    'outer: while pos > 0 {
+        let read_from = if pos >= CHUNK { pos - CHUNK } else { 0 };
+        let read_len  = (pos - read_from) as usize;
+        let mut buf = vec![0u8; read_len];
+        reader.seek(SeekFrom::Start(read_from))?;
+        reader.read_exact(&mut buf)?;
+
+        for (i, &b) in buf.iter().enumerate().rev() {
+            if b == b'\n' {
+                newline_count += 1;
+                // We want n complete lines — that means n+1 newlines (last char of file may be \n)
+                if newline_count > n {
+                    start = read_from + i as u64 + 1;
+                    break 'outer;
+                }
+            }
+        }
+        pos = read_from;
+    }
+
+    reader.seek(SeekFrom::Start(start))?;
+    let lines: Vec<String> = std::io::BufReader::new({
+        let mut f = std::fs::File::open(path)?;
+        f.seek(SeekFrom::Start(start))?;
+        f
+    })
+    .lines()
+    .filter_map(|l| l.ok())
+    .filter(|l| !l.is_empty())
+    .collect();
+
+    Ok(if lines.len() > n { lines[lines.len() - n..].to_vec() } else { lines })
+}
+
 /// Background loop: every 30 s, check if a mode schedule entry matches the current time.
 /// Uses "most recent past slot" logic — finds the latest entry whose (hour, minute) <= now.
 fn mode_schedule_loop(state: DaemonState) {
@@ -2630,7 +3048,7 @@ struct ModeInfo {
 }
 
 async fn api_modes_list() -> impl Responder {
-    HttpResponse::Ok().json(&[
+    let modes: Vec<ModeInfo> = vec![
         ModeInfo { name: "clock",          description: "Large digital clock with date and uptime" },
         ModeInfo { name: "big_clock",      description: "Full-screen giant HH:MM with large seconds and progress bar" },
         ModeInfo { name: "clock_sysinfo",  description: "Split-screen: clock above, quick stats below" },
@@ -2659,10 +3077,13 @@ async fn api_modes_list() -> impl Responder {
         ModeInfo { name: "ticker",         description: "Scrolling text ticker — push text via POST /api/ticker" },
         ModeInfo { name: "http_status",    description: "HTTP health monitor dashboard — configure endpoints via /api/http_status" },
         ModeInfo { name: "shell_cmd",      description: "Shell command output viewer — set command via POST /api/shell_cmd" },
-        ModeInfo { name: "ping_monitor",   description: "ICMP ping latency dashboard — configure hosts via /api/ping" },
+        ModeInfo { name: "ping_monitor",   description: "ICMP ping latency dashboard — configure hosts via /api/ping_monitor" },
         ModeInfo { name: "dashboard",      description: "Four-quadrant overview: clock, CPU/RAM, network, temperature" },
+        ModeInfo { name: "log_tail",       description: "Live log tail viewer — configure file via POST /api/log_tail" },
+        ModeInfo { name: "cpu_freq",       description: "Per-core CPU clock frequency grid (reads /proc/cpuinfo)" },
         ModeInfo { name: "idle",           description: "Keepalive — no display update, prevents blank" },
-    ])
+    ];
+    HttpResponse::Ok().json(modes)
 }
 
 /// POST /api/mode/next — advance to the next live mode (wraps around).
@@ -3350,6 +3771,96 @@ async fn api_metrics(state: web::Data<DaemonState>) -> impl Responder {
         push(&mut out, "# HELP ttlcd_threshold_temp_c Temperature alert threshold Celsius (0 = disabled)".into());
         push(&mut out, "# TYPE ttlcd_threshold_temp_c gauge".into());
         push(&mut out, format!("ttlcd_threshold_temp_c {}", t.temp_c));
+    }
+
+    // HTTP monitor metrics
+    {
+        let results = state.http_results.lock().unwrap().clone();
+        if !results.is_empty() {
+            push(&mut out, "# HELP ttlcd_http_monitor_up HTTP monitor endpoint up (1=up, 0=down)".into());
+            push(&mut out, "# TYPE ttlcd_http_monitor_up gauge".into());
+            for r in &results {
+                let label = r.label.replace('"', "'");
+                let url   = r.url.replace('"', "'");
+                push(&mut out, format!("ttlcd_http_monitor_up{{label=\"{}\",url=\"{}\"}} {}", label, url, if r.ok { 1 } else { 0 }));
+            }
+            push(&mut out, "# HELP ttlcd_http_monitor_latency_ms HTTP monitor last response latency milliseconds".into());
+            push(&mut out, "# TYPE ttlcd_http_monitor_latency_ms gauge".into());
+            for r in &results {
+                if let Some(ms) = r.latency_ms {
+                    let label = r.label.replace('"', "'");
+                    let url   = r.url.replace('"', "'");
+                    push(&mut out, format!("ttlcd_http_monitor_latency_ms{{label=\"{}\",url=\"{}\"}} {}", label, url, ms));
+                }
+            }
+            push(&mut out, "# HELP ttlcd_http_monitor_status_code HTTP monitor last HTTP status code (0=no response)".into());
+            push(&mut out, "# TYPE ttlcd_http_monitor_status_code gauge".into());
+            for r in &results {
+                let label = r.label.replace('"', "'");
+                let url   = r.url.replace('"', "'");
+                push(&mut out, format!("ttlcd_http_monitor_status_code{{label=\"{}\",url=\"{}\"}} {}", label, url, r.status_code.unwrap_or(0)));
+            }
+        }
+    }
+
+    // Ping monitor metrics
+    {
+        let results = state.ping_results.lock().unwrap().clone();
+        if !results.is_empty() {
+            push(&mut out, "# HELP ttlcd_ping_latency_ms Ping round-trip latency milliseconds (-1=unreachable)".into());
+            push(&mut out, "# TYPE ttlcd_ping_latency_ms gauge".into());
+            for r in &results {
+                let label = r.label.replace('"', "'");
+                let host  = r.host.replace('"', "'");
+                let val   = r.latency_ms.map(|v| format!("{:.3}", v)).unwrap_or_else(|| "-1".into());
+                push(&mut out, format!("ttlcd_ping_latency_ms{{label=\"{}\",host=\"{}\"}} {}", label, host, val));
+            }
+            push(&mut out, "# HELP ttlcd_ping_loss_percent Ping packet loss percent".into());
+            push(&mut out, "# TYPE ttlcd_ping_loss_percent gauge".into());
+            for r in &results {
+                let label = r.label.replace('"', "'");
+                let host  = r.host.replace('"', "'");
+                push(&mut out, format!("ttlcd_ping_loss_percent{{label=\"{}\",host=\"{}\"}} {:.1}", label, host, r.loss_pct));
+            }
+        }
+    }
+
+    // Weather metrics
+    {
+        let wd = state.weather_data.lock().unwrap().clone();
+        if let Some(temp) = wd.temp_c {
+            push(&mut out, "# HELP ttlcd_weather_temp_c Last fetched weather temperature Celsius".into());
+            push(&mut out, "# TYPE ttlcd_weather_temp_c gauge".into());
+            let city = wd.city.replace('"', "'");
+            push(&mut out, format!("ttlcd_weather_temp_c{{city=\"{}\"}} {:.1}", city, temp));
+            if let Some(humidity) = wd.humidity_pct {
+                push(&mut out, "# HELP ttlcd_weather_humidity_pct Last fetched weather humidity percent".into());
+                push(&mut out, "# TYPE ttlcd_weather_humidity_pct gauge".into());
+                push(&mut out, format!("ttlcd_weather_humidity_pct{{city=\"{}\"}} {}", city, humidity));
+            }
+            if let Some(wind) = wd.wind_kmh {
+                push(&mut out, "# HELP ttlcd_weather_wind_kmh Last fetched weather wind speed km/h".into());
+                push(&mut out, "# TYPE ttlcd_weather_wind_kmh gauge".into());
+                push(&mut out, format!("ttlcd_weather_wind_kmh{{city=\"{}\"}} {:.1}", city, wind));
+            }
+        }
+    }
+
+    // Custom metrics source values (if populated)
+    {
+        let metrics = state.metrics_data.lock().unwrap().clone();
+        if !metrics.is_empty() && state.metrics_source.lock().unwrap().is_some() {
+            push(&mut out, "# HELP ttlcd_metrics_source_value Custom metric fetched from HTTP JSON source".into());
+            push(&mut out, "# TYPE ttlcd_metrics_source_value untyped".into());
+            for m in &metrics {
+                let label_safe = m.label.replace('"', "'");
+                // Try to parse value as a number for Prometheus
+                let raw_val = m.value.trim_end_matches(|c: char| !c.is_ascii_digit() && c != '.' && c != '-');
+                if let Ok(v) = raw_val.parse::<f64>() {
+                    push(&mut out, format!("ttlcd_metrics_source_value{{label=\"{}\"}} {}", label_safe, v));
+                }
+            }
+        }
     }
 
     HttpResponse::Ok()
@@ -4618,6 +5129,13 @@ async fn api_modes_info() -> impl Responder {
         ModeInfo { name: "pomodoro",        description: "Pomodoro focus timer: 25 min work / 5 min break cycles with visual progress ring" },
         ModeInfo { name: "battery",        description: "Battery level, charging status, voltage and estimated time remaining (Linux laptops)" },
         ModeInfo { name: "world_clock",    description: "World clock showing up to 4 cities with configurable UTC offsets and day/night coloring" },
+        ModeInfo { name: "ticker",         description: "Horizontally scrolling text ticker" },
+        ModeInfo { name: "http_status",    description: "HTTP health monitor dashboard — configure endpoints via /api/http_status" },
+        ModeInfo { name: "shell_cmd",      description: "Shell command output viewer — set command via POST /api/shell_cmd" },
+        ModeInfo { name: "ping_monitor",   description: "ICMP ping latency dashboard — configure hosts via /api/ping_monitor" },
+        ModeInfo { name: "dashboard",      description: "Four-quadrant overview: clock, CPU/RAM, network, temperature" },
+        ModeInfo { name: "log_tail",       description: "Live log tail viewer — configure file via POST /api/log_tail" },
+        ModeInfo { name: "cpu_freq",       description: "Per-core CPU clock frequency grid (reads /proc/cpuinfo)" },
         ModeInfo { name: "idle",           description: "Keepalive — no display update" },
     ];
     HttpResponse::Ok().json(modes)
@@ -4911,6 +5429,64 @@ async fn api_clear_metrics(state: web::Data<DaemonState>) -> impl Responder {
     state.metrics_title.lock().unwrap().clear();
     state.metrics_data.lock().unwrap().clear();
     HttpResponse::Ok().body("cleared")
+}
+
+
+// ─── HTTP JSON Metrics Source API ────────────────────────────────────────────
+
+/// GET /api/metrics/source — return current metrics source configuration.
+async fn api_get_metrics_source(state: web::Data<DaemonState>) -> impl Responder {
+    let src = state.metrics_source.lock().unwrap().clone();
+    HttpResponse::Ok().json(serde_json::json!({ "source": src }))
+}
+
+/// POST /api/metrics/source — configure an HTTP JSON metrics source and enable auto-fetch.
+///
+/// Body: `{"url":"https://…","title":"My Server","interval_secs":30,
+///        "fields":[{"label":"CPU","path":"cpu_pct","format":"{:.1}%","color":"green"}]}`
+async fn api_set_metrics_source(
+    state: web::Data<DaemonState>,
+    body:  web::Json<MetricsSource>,
+) -> impl Responder {
+    let src = body.into_inner();
+    if src.url.is_empty() {
+        return HttpResponse::BadRequest().body("url must not be empty");
+    }
+    if src.fields.is_empty() {
+        return HttpResponse::BadRequest().body("fields must not be empty");
+    }
+    let interval = src.interval_secs.max(5);
+    let src_stored = MetricsSource { interval_secs: interval, ..src.clone() };
+    log::info!("metrics_source configured: url='{}' interval={}s fields={}", src.url, interval, src.fields.len());
+    *state.metrics_source.lock().unwrap() = Some(src_stored);
+    save_new_settings(&state);
+    HttpResponse::Ok().json(serde_json::json!({ "ok": true, "url": src.url, "interval_secs": interval }))
+}
+
+/// DELETE /api/metrics/source — remove the metrics source (auto-fetch stops).
+async fn api_clear_metrics_source(state: web::Data<DaemonState>) -> impl Responder {
+    *state.metrics_source.lock().unwrap() = None;
+    save_new_settings(&state);
+    log::info!("metrics_source cleared");
+    HttpResponse::Ok().body("metrics source cleared")
+}
+
+/// POST /api/metrics/source/fetch — trigger an immediate fetch from the configured source.
+async fn api_fetch_metrics_source_now(state: web::Data<DaemonState>) -> impl Responder {
+    let src = state.metrics_source.lock().unwrap().clone();
+    match src {
+        None => HttpResponse::BadRequest().body("no metrics source configured"),
+        Some(s) => match fetch_metrics_source(&state, &s).await {
+            Ok(()) => {
+                // Optionally switch to metrics mode
+                let cur = state.mode.lock().unwrap().clone();
+                if !cur.is_transient() { *state.prev_mode.lock().unwrap() = cur; }
+                *state.mode.lock().unwrap() = DisplayMode::Metrics;
+                HttpResponse::Ok().json(serde_json::json!({ "ok": true, "count": state.metrics_data.lock().unwrap().len() }))
+            }
+            Err(e) => HttpResponse::BadGateway().body(format!("fetch failed: {e}")),
+        }
+    }
 }
 
 // ─── Display profiles ─────────────────────────────────────────────────────────
@@ -5219,6 +5795,83 @@ async fn api_clear_weather(state: web::Data<DaemonState>) -> impl Responder {
     *state.mode.lock().unwrap() = prev;
     HttpResponse::Ok().body("weather cleared")
 }
+/// POST /api/weather/fetch — trigger an immediate wttr.in fetch for the configured location.
+/// Body (optional): `{"location": "London", "switch_mode": true}`
+async fn api_weather_fetch_now(
+    state: web::Data<DaemonState>,
+    body:  web::Json<serde_json::Value>,
+) -> impl Responder {
+    let location = body.get("location")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+        .filter(|s| !s.is_empty())
+        .or_else(|| {
+            let loc = state.weather_location.lock().unwrap().clone();
+            if loc.is_empty() { None } else { Some(loc) }
+        });
+
+    match location {
+        None => HttpResponse::BadRequest().body(r#"no location configured; pass {"location":"City"}"#),
+        Some(loc) => {
+            // Update stored location
+            *state.weather_location.lock().unwrap() = loc.clone();
+
+            match fetch_wttr(&state, &loc).await {
+                Ok(()) => {
+                    let switch = body.get("switch_mode").and_then(|v| v.as_bool()).unwrap_or(true);
+                    if switch {
+                        let cur = state.mode.lock().unwrap().clone();
+                        if !cur.is_transient() { *state.prev_mode.lock().unwrap() = cur; }
+                        *state.mode.lock().unwrap() = DisplayMode::Weather;
+                    }
+                    HttpResponse::Ok().json(serde_json::json!({ "ok": true, "location": loc }))
+                }
+                Err(e) => HttpResponse::BadGateway()
+                    .body(format!("wttr.in fetch failed for '{}': {e}", loc)),
+            }
+        }
+    }
+}
+
+#[derive(Deserialize)]
+struct WeatherAutoRequest {
+    location:     String,
+    #[serde(default = "default_weather_auto_secs")]
+    interval_secs: u64,
+}
+fn default_weather_auto_secs() -> u64 { 1800 }  // 30 minutes
+
+/// PUT /api/weather/auto — configure location and auto-refresh interval.
+/// Body: `{"location":"London","interval_secs":1800}`
+async fn api_weather_auto(
+    state: web::Data<DaemonState>,
+    body:  web::Json<WeatherAutoRequest>,
+) -> impl Responder {
+    let req = body.into_inner();
+    if req.location.is_empty() {
+        return HttpResponse::BadRequest().body("location must not be empty");
+    }
+    let secs = req.interval_secs.max(60); // minimum 1 minute
+    *state.weather_location.lock().unwrap()  = req.location.clone();
+    *state.weather_auto_secs.lock().unwrap() = secs;
+    save_new_settings(&state);
+    log::info!("weather auto-fetch enabled: location='{}' interval={}s", req.location, secs);
+    HttpResponse::Ok().json(serde_json::json!({
+        "ok":           true,
+        "location":     req.location,
+        "interval_secs": secs,
+    }))
+}
+
+/// DELETE /api/weather/auto — disable auto-fetch (clears location).
+async fn api_weather_auto_stop(state: web::Data<DaemonState>) -> impl Responder {
+    *state.weather_location.lock().unwrap()  = String::new();
+    *state.weather_auto_secs.lock().unwrap() = 0;
+    save_new_settings(&state);
+    log::info!("weather auto-fetch disabled");
+    HttpResponse::Ok().body("weather auto-fetch disabled")
+}
+
 
 // ─── Notes / bulletin board API ──────────────────────────────────────────────
 
@@ -5522,6 +6175,9 @@ async fn api_docs() -> HttpResponse {
     <tr><td>/api/weather</td><td class="badge-get">GET</td><td>Get cached weather data</td></tr>
     <tr><td>/api/weather</td><td class="badge-post">POST</td><td>Push weather snapshot (WeatherData JSON)</td></tr>
     <tr><td>/api/weather</td><td class="badge-delete">DELETE</td><td>Clear weather data</td></tr>
+    <tr><td>/api/weather/fetch</td><td class="badge-post">POST</td><td>Trigger server-side wttr.in fetch <code>&#123;"location":"London","switch_mode":true&#125;</code></td></tr>
+    <tr><td>/api/weather/auto</td><td class="badge-put">PUT</td><td>Enable auto-fetch <code>&#123;"location":"London","interval_secs":1800&#125;</code></td></tr>
+    <tr><td>/api/weather/auto</td><td class="badge-delete">DELETE</td><td>Disable weather auto-fetch</td></tr>
     <tr><td>/api/notes</td><td class="badge-get">GET</td><td>Get current notes</td></tr>
     <tr><td>/api/notes</td><td class="badge-post">POST</td><td>Push notes <code>&#123;"title":"…","items":["…"],"append":false&#125;</code></td></tr>
     <tr><td>/api/notes</td><td class="badge-delete">DELETE</td><td>Clear notes</td></tr>
@@ -5621,6 +6277,13 @@ async fn api_docs() -> HttpResponse {
     <tr><td>/api/ping_monitor</td><td class="badge-post">POST</td><td>Add host <code>&#123;"label":"…","host":"8.8.8.8"&#125;</code></td></tr>
     <tr><td>/api/ping_monitor/&#123;index&#125;</td><td class="badge-delete">DELETE</td><td>Remove host by index</td></tr>
     <tr><td>/api/ping_monitor/interval</td><td class="badge-get">GET</td><td>Set ping interval <code>&#123;"secs":10&#125;</code> (PUT)</td></tr>
+    <tr><td>/api/log_tail</td><td class="badge-get">GET</td><td>Get log tail config and cached lines</td></tr>
+    <tr><td>/api/log_tail</td><td class="badge-post">POST</td><td>Set file <code>&#123;"path":"/var/log/syslog","n":16,"interval_secs":3,"switch_mode":true&#125;</code></td></tr>
+    <tr><td>/api/log_tail</td><td class="badge-delete">DELETE</td><td>Clear log tail config</td></tr>
+    <tr><td>/api/metrics/source</td><td class="badge-get">GET</td><td>Get HTTP JSON metrics source config</td></tr>
+    <tr><td>/api/metrics/source</td><td class="badge-post">POST</td><td>Set source <code>&#123;"url":"…","fields":[&#123;"label":"CPU","path":"cpu_pct","format":"&#123;&#125;%","color":"green"&#125;]&#125;</code></td></tr>
+    <tr><td>/api/metrics/source</td><td class="badge-delete">DELETE</td><td>Clear metrics source</td></tr>
+    <tr><td>/api/metrics/source/fetch</td><td class="badge-post">POST</td><td>Trigger immediate fetch from metrics source</td></tr>
   </tbody></table>
 
   <h2>Settings</h2>
@@ -5743,10 +6406,18 @@ async fn api_settings_export(state: web::Data<DaemonState>) -> impl Responder {
             "title":   *state.metrics_title.lock().unwrap(),
             "metrics": *state.metrics_data.lock().unwrap(),
         },
-        "http_monitors": state.http_monitors.lock().unwrap().clone(),
-        "ping_hosts":    state.ping_hosts.lock().unwrap().clone(),
-        "world_clock":   state.world_clock_cities.lock().unwrap().clone(),
-        "mode_schedule": state.mode_schedule.lock().unwrap().clone(),
+        "http_monitors":      state.http_monitors.lock().unwrap().clone(),
+        "ping_hosts":         state.ping_hosts.lock().unwrap().clone(),
+        "world_clock":        state.world_clock_cities.lock().unwrap().clone(),
+        "mode_schedule":      state.mode_schedule.lock().unwrap().clone(),
+        "weather_location":   state.weather_location.lock().unwrap().clone(),
+        "weather_auto_secs":  *state.weather_auto_secs.lock().unwrap(),
+        "log_tail_path":      state.log_tail_path.lock().unwrap().clone(),
+        "log_tail_n":         *state.log_tail_n.lock().unwrap(),
+        "log_tail_interval":  *state.log_tail_interval.lock().unwrap(),
+        "shell_cmd":          state.shell_cmd_text.lock().unwrap().clone(),
+        "shell_cmd_interval": *state.shell_cmd_interval_secs.lock().unwrap(),
+        "metrics_source":     state.metrics_source.lock().unwrap().clone(),
     });
 
     HttpResponse::Ok()
@@ -5885,6 +6556,44 @@ async fn api_settings_import(
             *state.mode_schedule.lock().unwrap() = entries.clone();
             save_mode_schedule(&entries);
             applied.push("mode_schedule");
+        }
+    }
+    // weather auto-fetch
+    if let Some(loc) = body.get("weather_location").and_then(|v| v.as_str()) {
+        if !loc.is_empty() {
+            *state.weather_location.lock().unwrap() = loc.to_string();
+            applied.push("weather_location");
+        }
+    }
+    if let Some(secs) = body.get("weather_auto_secs").and_then(|v| v.as_u64()) {
+        *state.weather_auto_secs.lock().unwrap() = secs;
+        applied.push("weather_auto_secs");
+    }
+    // log tail
+    if let Some(path) = body.get("log_tail_path").and_then(|v| v.as_str()) {
+        if !path.is_empty() {
+            *state.log_tail_path.lock().unwrap()    = path.to_string();
+            *state.log_tail_interval.lock().unwrap() = body.get("log_tail_interval")
+                .and_then(|v| v.as_u64()).unwrap_or(3).max(1);
+            *state.log_tail_n.lock().unwrap()        = body.get("log_tail_n")
+                .and_then(|v| v.as_u64()).unwrap_or(16) as usize;
+            applied.push("log_tail");
+        }
+    }
+    // shell_cmd
+    if let Some(cmd) = body.get("shell_cmd").and_then(|v| v.as_str()) {
+        if !cmd.is_empty() {
+            *state.shell_cmd_text.lock().unwrap()        = cmd.to_string();
+            *state.shell_cmd_interval_secs.lock().unwrap() = body.get("shell_cmd_interval")
+                .and_then(|v| v.as_u64()).unwrap_or(10).max(1);
+            applied.push("shell_cmd");
+        }
+    }
+    // metrics_source
+    if let Some(ms_val) = body.get("metrics_source") {
+        if let Ok(src) = serde_json::from_value::<MetricsSource>(ms_val.clone()) {
+            *state.metrics_source.lock().unwrap() = Some(src);
+            applied.push("metrics_source");
         }
     }
 
@@ -6254,7 +6963,7 @@ async fn api_clear_shell_cmd(state: web::Data<DaemonState>) -> impl Responder {
 
 // ─── Ping Monitor API handlers ────────────────────────────────────────────────
 
-/// GET /api/ping — return hosts list and latest ping results.
+/// GET /api/ping_monitor — return hosts list and latest ping results.
 async fn api_get_ping(state: web::Data<DaemonState>) -> impl Responder {
     let hosts: Vec<serde_json::Value> = state.ping_hosts.lock().unwrap()
         .iter().map(|h| serde_json::json!({ "label": h.label, "host": h.host }))
@@ -6268,7 +6977,7 @@ async fn api_get_ping(state: web::Data<DaemonState>) -> impl Responder {
     }))
 }
 
-/// POST /api/ping — add a host: {"label":"...", "host":"8.8.8.8"}
+/// POST /api/ping_monitor — add a host: {"label":"...", "host":"8.8.8.8"}
 async fn api_add_ping_host(
     state: web::Data<DaemonState>,
     body:  web::Json<serde_json::Value>,
@@ -6288,7 +6997,7 @@ async fn api_add_ping_host(
     HttpResponse::Ok().json(serde_json::json!({ "ok": true, "label": label, "host": host }))
 }
 
-/// DELETE /api/ping/{index} — remove host at given index.
+/// DELETE /api/ping_monitor/{index} — remove host at given index.
 async fn api_delete_ping_host(
     state: web::Data<DaemonState>,
     path:  web::Path<usize>,
@@ -6305,7 +7014,7 @@ async fn api_delete_ping_host(
     HttpResponse::Ok().json(serde_json::json!({ "ok": true }))
 }
 
-/// PUT /api/ping/interval — set check interval: {"secs": 10}
+/// PUT /api/ping_monitor/interval — set check interval: {"secs": 10}
 async fn api_set_ping_interval(
     state: web::Data<DaemonState>,
     body:  web::Json<serde_json::Value>,
@@ -6313,4 +7022,92 @@ async fn api_set_ping_interval(
     let secs = body.get("secs").and_then(|v| v.as_u64()).unwrap_or(10).max(5);
     *state.ping_interval_secs.lock().unwrap() = secs;
     HttpResponse::Ok().json(serde_json::json!({ "ok": true, "secs": secs }))
+}
+// ─── Log tail API ─────────────────────────────────────────────────────────────
+
+/// GET /api/log_tail — return current config and cached lines.
+async fn api_get_log_tail(state: web::Data<DaemonState>) -> impl Responder {
+    let path  = state.log_tail_path.lock().unwrap().clone();
+    let n     = *state.log_tail_n.lock().unwrap();
+    let lines = state.log_tail_lines.lock().unwrap().clone();
+    let ok    = *state.log_tail_ok.lock().unwrap();
+    let secs  = *state.log_tail_interval.lock().unwrap();
+    HttpResponse::Ok().json(serde_json::json!({
+        "path":     path,
+        "n":        n,
+        "ok":       ok,
+        "interval_secs": secs,
+        "lines":    lines,
+    }))
+}
+
+#[derive(Deserialize)]
+struct LogTailRequest {
+    path:            String,
+    #[serde(default = "default_log_tail_n")]
+    n:               usize,
+    #[serde(default = "default_log_tail_interval")]
+    interval_secs:   u64,
+    #[serde(default)]
+    switch_mode:     bool,
+}
+fn default_log_tail_n()        -> usize { 16 }
+fn default_log_tail_interval() -> u64   { 3 }
+
+/// POST /api/log_tail — set file path (and optionally number of lines / interval).
+/// Body: `{"path":"/var/log/syslog","n":16,"interval_secs":3,"switch_mode":true}`
+async fn api_set_log_tail(
+    state: web::Data<DaemonState>,
+    body:  web::Json<LogTailRequest>,
+) -> impl Responder {
+    let req = body.into_inner();
+    if req.path.is_empty() {
+        return HttpResponse::BadRequest().body("path must not be empty");
+    }
+    let n    = req.n.clamp(1, 50);
+    let secs = req.interval_secs.max(1);
+
+    *state.log_tail_path.lock().unwrap()     = req.path.clone();
+    *state.log_tail_n.lock().unwrap()        = n;
+    *state.log_tail_interval.lock().unwrap() = secs;
+
+    // Attempt an immediate read so the display shows content right away
+    match read_tail_lines(&req.path, n) {
+        Ok(lines) => {
+            *state.log_tail_lines.lock().unwrap() = lines;
+            *state.log_tail_ok.lock().unwrap()    = true;
+        }
+        Err(e) => {
+            log::warn!("log_tail initial read '{}': {e}", req.path);
+            *state.log_tail_ok.lock().unwrap() = false;
+        }
+    }
+
+    if req.switch_mode {
+        let cur = state.mode.lock().unwrap().clone();
+        if !cur.is_transient() { *state.prev_mode.lock().unwrap() = cur; }
+        *state.mode.lock().unwrap() = DisplayMode::LogTail;
+    }
+
+    save_new_settings(&state);
+    log::info!("log_tail configured: path='{}' n={} interval={}s", req.path, n, secs);
+    HttpResponse::Ok().json(serde_json::json!({
+        "ok": true,
+        "path": req.path,
+        "n": n,
+        "interval_secs": secs,
+    }))
+}
+
+/// DELETE /api/log_tail — clear log tail configuration and stop monitoring.
+async fn api_clear_log_tail(state: web::Data<DaemonState>) -> impl Responder {
+    *state.log_tail_path.lock().unwrap()  = String::new();
+    *state.log_tail_lines.lock().unwrap() = Vec::new();
+    *state.log_tail_ok.lock().unwrap()    = false;
+    if matches!(*state.mode.lock().unwrap(), DisplayMode::LogTail) {
+        let prev = state.prev_mode.lock().unwrap().clone();
+        *state.mode.lock().unwrap() = prev;
+    }
+    save_new_settings(&state);
+    HttpResponse::Ok().body("log tail cleared")
 }

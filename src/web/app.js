@@ -1490,6 +1490,133 @@ async function fetchMetrics() {
   } catch (_) {}
 }
 
+
+// ─── HTTP JSON Metrics Source section ────────────────────────────────────────
+(function injectMetricsSourceSection() {
+  if (document.getElementById('ms-url-input')) return;
+  var sec = document.createElement('section');
+  sec.id = 'metrics-source-section';
+  sec.className = 'card';
+  sec.innerHTML = [
+    '<h2>📡 HTTP JSON Metrics Source</h2>',
+    '<p class="card-hint">Automatically fetch metrics from any JSON HTTP endpoint and display them on the panel.',
+    ' Use dot-notation JSON paths: <code>cpu.usage_pct</code>, <code>data.0.value</code>.</p>',
+    '<div class="form-row" style="gap:0.5rem;flex-wrap:wrap;align-items:flex-end">',
+    '  <div class="form-group" style="flex:3"><label>URL</label>',
+    '    <input type="url" id="ms-url-input" placeholder="https://myserver/api/stats" style="width:100%"></div>',
+    '  <div class="form-group" style="flex:1"><label>Interval (s)</label>',
+    '    <input type="number" id="ms-interval-input" value="30" min="5" max="3600" style="width:100%"></div>',
+    '</div>',
+    '<div class="form-group" style="margin:0.4rem 0">',
+    '  <label>Dashboard title (optional)</label>',
+    '  <input type="text" id="ms-title-input" placeholder="My Server" maxlength="28" style="width:100%">',
+    '</div>',
+    '<div id="ms-fields-list" style="margin-bottom:0.5rem"></div>',
+    '<div class="form-row" style="gap:0.5rem;margin-bottom:0.5rem">',
+    '  <button id="ms-add-field-btn" class="btn-secondary">+ Add field</button>',
+    '</div>',
+    '<div class="form-row" style="gap:0.5rem;flex-wrap:wrap">',
+    '  <button id="ms-set-btn"   class="btn-primary"    style="flex:2">Set & Start Auto-fetch</button>',
+    '  <button id="ms-fetch-btn" class="btn-secondary"  style="flex:1">Fetch Now</button>',
+    '  <button id="ms-clear-btn" class="btn-danger"     style="flex:1">Clear</button>',
+    '</div>',
+    '<div id="ms-status" style="margin-top:0.5rem;font-size:0.82rem;color:var(--overlay0)"></div>',
+  ].join('\n');
+
+  // Insert after the custom metrics section
+  var metSec = document.getElementById('metrics-source-section');
+  var afterSec = document.querySelector('[id="met-push-btn"]')?.closest('section');
+  if (afterSec && afterSec.nextSibling) {
+    afterSec.parentNode.insertBefore(sec, afterSec.nextSibling);
+  } else if (afterSec) {
+    afterSec.parentNode.appendChild(sec);
+  } else {
+    document.querySelector('main').appendChild(sec);
+  }
+
+  function addFieldRow(label, path, fmt, color) {
+    var list = document.getElementById('ms-fields-list');
+    if (!list || list.children.length >= 8) return;
+    var div = document.createElement('div');
+    div.className = 'form-row';
+    div.style.gap = '0.4rem';
+    div.style.marginBottom = '0.3rem';
+    div.innerHTML = [
+      '<input type="text" class="ms-field-label" placeholder="Label" value="' + escHtml(label||'') + '" maxlength="14" style="flex:1">',
+      '<input type="text" class="ms-field-path"  placeholder="JSON path (e.g. cpu.pct)" value="' + escHtml(path||'') + '" style="flex:2">',
+      '<input type="text" class="ms-field-fmt"   placeholder="{}" value="' + escHtml(fmt||'{}') + '" style="flex:1;min-width:50px">',
+      '<select class="ms-field-color" style="flex:1">',
+      ['blue','green','red','yellow','teal','mauve','peach','white'].map(c =>
+        '<option value="' + c + '"' + (c===(color||'blue')?' selected':'') + '>' + c + '</option>'
+      ).join(''),
+      '</select>',
+      '<button class="ms-remove-btn btn-danger" title="Remove">✕</button>',
+    ].join('');
+    div.querySelector('.ms-remove-btn').addEventListener('click', () => div.remove());
+    list.appendChild(div);
+  }
+
+  document.getElementById('ms-add-field-btn').addEventListener('click', () => addFieldRow('', '', '{}', 'blue'));
+
+  document.getElementById('ms-set-btn').addEventListener('click', async function() {
+    var url      = document.getElementById('ms-url-input').value.trim();
+    var title    = document.getElementById('ms-title-input').value.trim();
+    var interval = parseInt(document.getElementById('ms-interval-input').value, 10) || 30;
+    if (!url) { showToast('Enter a URL first', 'alert', 2000); return; }
+    var fields = [];
+    document.querySelectorAll('#ms-fields-list .form-row').forEach(function(row) {
+      var label = row.querySelector('.ms-field-label')?.value.trim();
+      var path  = row.querySelector('.ms-field-path')?.value.trim();
+      var fmt   = row.querySelector('.ms-field-fmt')?.value.trim() || '{}';
+      var color = row.querySelector('.ms-field-color')?.value || 'blue';
+      if (label && path) fields.push({ label, path, format: fmt, color });
+    });
+    if (!fields.length) { showToast('Add at least one field', 'alert', 2000); return; }
+    try {
+      await apiJson('POST', '/api/metrics/source', { url, title, interval_secs: interval, fields });
+      showToast('Metrics source started: ' + url, 'ok', 3000);
+      document.getElementById('ms-status').textContent = 'Auto-fetch active every ' + interval + 's';
+    } catch (e) { showToast('Error: ' + e.message, 'alert', 3000); }
+  });
+
+  document.getElementById('ms-fetch-btn').addEventListener('click', async function() {
+    try {
+      var d = await apiJson('POST', '/api/metrics/source/fetch');
+      showToast('Fetched ' + (d.count || 0) + ' metric(s)', 'ok', 2500);
+      document.getElementById('ms-status').textContent = 'Last fetch: ' + new Date().toLocaleTimeString();
+    } catch (e) { showToast('Error: ' + e.message, 'alert', 3000); }
+  });
+
+  document.getElementById('ms-clear-btn').addEventListener('click', async function() {
+    try {
+      await api('DELETE', '/api/metrics/source');
+      document.getElementById('ms-status').textContent = 'Cleared.';
+      showToast('Metrics source cleared', 'ok', 2000);
+    } catch (e) { showToast('Error: ' + e.message, 'alert', 3000); }
+  });
+
+  // Load existing config on boot
+  (async function() {
+    try {
+      var d = await apiJson('GET', '/api/metrics/source');
+      if (!d.source) return;
+      var src = d.source;
+      var urlInput = document.getElementById('ms-url-input');
+      if (urlInput) urlInput.value = src.url || '';
+      var titleInput = document.getElementById('ms-title-input');
+      if (titleInput) titleInput.value = src.title || '';
+      var intInput = document.getElementById('ms-interval-input');
+      if (intInput) intInput.value = src.interval_secs || 30;
+      (src.fields || []).forEach(function(f) {
+        addFieldRow(f.label, f.path, f.format, f.color);
+      });
+      if (src.url) {
+        document.getElementById('ms-status').textContent = 'Auto-fetch active every ' + (src.interval_secs||30) + 's';
+      }
+    } catch (_) {}
+  })();
+})();
+
 // ─── Display profiles ─────────────────────────────────────────────────────────
 (function injectProfilesSection() {
   if ($('prof-name')) return;
@@ -1688,8 +1815,10 @@ async function fetchCachedNotes() {
         </select>
       </div>
     </div>
-    <div class="form-actions" style="margin-top:0.6rem">
+    <div class="form-actions" style="margin-top:0.6rem;flex-wrap:wrap;gap:0.5rem">
       <button id="weather-fetch-btn" class="primary">🌤 Fetch &amp; Push Weather</button>
+      <button id="weather-server-auto-btn" title="Enable server-side auto-fetch (persists when browser is closed)">🔄 Server Auto-fetch</button>
+      <button id="weather-auto-stop-btn" title="Stop server-side auto-fetch">⏹ Stop Server Auto</button>
       <button id="weather-clear-btn">✕ Clear</button>
       <span id="weather-status"></span>
     </div>
@@ -1778,6 +1907,27 @@ document.addEventListener('click', async e => {
       if (dispEl) dispEl.style.display = 'none';
       setStatusMsg($('weather-status'), '✓ Weather cleared', true);
       log('Weather cleared');
+    } catch (err) {
+      setStatusMsg($('weather-status'), `Error: ${err.message}`, false);
+    }
+  } else if (id === 'weather-server-auto-btn') {
+    const city     = $('weather-city')?.value.trim() || '';
+    const interval = parseInt($('weather-refresh-interval')?.value || '1800', 10);
+    if (!city) { setStatusMsg($('weather-status'), 'Enter a city first', false); return; }
+    const secs = Math.max(interval, 60) || 1800;
+    try {
+      await apiJson('PUT', '/api/weather/auto', { location: city, interval_secs: secs });
+      // Also trigger an immediate server-side fetch
+      await apiJson('POST', '/api/weather/fetch', { location: city, switch_mode: true });
+      setStatusMsg($('weather-status'), `✓ Server auto-fetch enabled for ${city} every ${secs}s`, true);
+      fetchStatus();
+    } catch (err) {
+      setStatusMsg($('weather-status'), `Error: ${err.message}`, false);
+    }
+  } else if (id === 'weather-auto-stop-btn') {
+    try {
+      await api('DELETE', '/api/weather/auto');
+      setStatusMsg($('weather-status'), '✓ Server auto-fetch stopped', true);
     } catch (err) {
       setStatusMsg($('weather-status'), `Error: ${err.message}`, false);
     }
@@ -2739,6 +2889,102 @@ async function fetchPing() {
   } catch (_) {}
 }
 
+
+// ─── Log tail section ─────────────────────────────────────────────────────────
+(function injectLogTailSection() {
+  if (document.getElementById('lt-path-input')) return;
+  var sec = document.createElement('section');
+  sec.id = 'log-tail-section';
+  sec.className = 'card';
+  sec.innerHTML = [
+    '<h2>📄 Log Tail Viewer</h2>',
+    '<p class="card-hint">Display the last N lines of any log file live on the panel. Updates every few seconds.</p>',
+    '<div class="form-row" style="gap:0.5rem;flex-wrap:wrap;align-items:flex-end">',
+    '  <div class="form-group" style="flex:3"><label>File path</label>',
+    '    <input type="text" id="lt-path-input" placeholder="/var/log/syslog" style="width:100%"></div>',
+    '  <div class="form-group" style="flex:1"><label>Lines</label>',
+    '    <input type="number" id="lt-n-input" value="16" min="1" max="50" style="width:100%"></div>',
+    '  <div class="form-group" style="flex:1"><label>Interval (s)</label>',
+    '    <input type="number" id="lt-interval-input" value="3" min="1" max="60" style="width:100%"></div>',
+    '</div>',
+    '<div class="form-row" style="gap:0.5rem;margin-top:0.4rem;flex-wrap:wrap">',
+    '  <button id="lt-set-btn"   class="btn-primary" style="flex:2">Set & Switch to Log Tail</button>',
+    '  <button id="lt-apply-btn" class="btn-secondary" style="flex:1">Apply (no switch)</button>',
+    '  <button id="lt-clear-btn" class="btn-danger"    style="flex:1">Clear</button>',
+    '</div>',
+    '<div id="lt-status" style="margin-top:0.5rem;font-size:0.82rem;color:var(--overlay0)"></div>',
+    '<pre id="lt-preview" style="margin-top:0.5rem;background:var(--crust);color:var(--subtext1);font-size:0.75rem;',
+    'max-height:160px;overflow-y:auto;padding:0.5rem;border-radius:4px;white-space:pre-wrap;word-break:break-all"></pre>',
+  ].join('\n');
+
+  var pmSec = document.getElementById('ping-section');
+  if (pmSec && pmSec.nextSibling) {
+    pmSec.parentNode.insertBefore(sec, pmSec.nextSibling);
+  } else if (pmSec) {
+    pmSec.parentNode.appendChild(sec);
+  } else {
+    document.querySelector('main').appendChild(sec);
+  }
+
+  async function applyLogTail(switchMode) {
+    var path  = document.getElementById('lt-path-input').value.trim();
+    var n     = parseInt(document.getElementById('lt-n-input').value, 10) || 16;
+    var secs  = parseInt(document.getElementById('lt-interval-input').value, 10) || 3;
+    if (!path) { showToast('Enter a file path first', 'alert', 2000); return; }
+    try {
+      await apiJson('POST', '/api/log_tail', { path, n, interval_secs: secs, switch_mode: switchMode });
+      showToast(switchMode ? 'Log tail started: ' + path : 'Log tail configured: ' + path, 'ok', 2500);
+      setTimeout(fetchLogTail, 500);
+      if (switchMode) fetchStatus();
+    } catch (e) { showToast('Error: ' + e.message, 'alert', 3000); }
+  }
+
+  document.getElementById('lt-set-btn').addEventListener('click',   () => applyLogTail(true));
+  document.getElementById('lt-apply-btn').addEventListener('click', () => applyLogTail(false));
+  document.getElementById('lt-clear-btn').addEventListener('click', async function() {
+    try {
+      await api('DELETE', '/api/log_tail');
+      document.getElementById('lt-status').textContent = 'Cleared.';
+      document.getElementById('lt-preview').textContent = '';
+      fetchStatus();
+      showToast('Log tail cleared', 'ok', 2000);
+    } catch (e) { showToast('Error: ' + e.message, 'alert', 3000); }
+  });
+})();
+
+async function fetchLogTail() {
+  try {
+    var d = await apiJson('GET', '/api/log_tail');
+    var status = document.getElementById('lt-status');
+    var preview = document.getElementById('lt-preview');
+    if (!status || !preview) return;
+
+    if (!d.path) {
+      status.textContent = 'No file configured.';
+      preview.textContent = '';
+      return;
+    }
+
+    var okText = d.ok ? '✓ readable' : '✗ unreadable';
+    var okColor = d.ok ? 'var(--green)' : 'var(--red)';
+    status.innerHTML = '<span style="color:' + okColor + '">' + okText + '</span>'
+      + ' &mdash; <code>' + escHtml(d.path) + '</code>'
+      + ' (' + (d.lines ? d.lines.length : 0) + ' lines, every ' + d.interval_secs + 's)';
+
+    // Update inputs if empty
+    var pathInput = document.getElementById('lt-path-input');
+    if (!pathInput.value) pathInput.value = d.path;
+
+    if (d.lines && d.lines.length) {
+      preview.textContent = d.lines.join('\n');
+      // Scroll to bottom
+      preview.scrollTop = preview.scrollHeight;
+    } else {
+      preview.textContent = d.ok ? '(no lines yet)' : '(file not readable)';
+    }
+  } catch (_) {}
+}
+
 // ─── Keyboard shortcuts ───────────────────────────────────────────────────────
 document.addEventListener('keydown', e => {
   // Don't fire shortcuts when typing in a text input
@@ -2767,6 +3013,12 @@ document.addEventListener('keydown', e => {
       break;
     case 'H':  // Shift+H = HTTP Monitor mode
       api('POST', '/api/mode', { mode: 'http_status' }).then(() => fetchStatus()).catch(() => {});
+      break;
+    case 'L':  // Shift+L = Log tail mode
+      api('POST', '/api/mode', { mode: 'log_tail' }).then(() => fetchStatus()).catch(() => {});
+      break;
+    case 'F':  // Shift+F = CPU Freq mode
+      api('POST', '/api/mode', { mode: 'cpu_freq' }).then(() => fetchStatus()).catch(() => {});
       break;
     case 'P':  // Shift+P = Pomodoro start/pause toggle
       (async () => {
@@ -2888,6 +3140,7 @@ function startPolling() {
   fetchHttpStatus();
   fetchShellCmd();
   fetchPing();
+  fetchLogTail();
 
   statusPollTimer  = setInterval(fetchStatus,    3000);
   snapshotTimer    = setInterval(fetchSnapshot,  5000);
@@ -2899,6 +3152,7 @@ function startPolling() {
   setInterval(fetchShellCmd,      8000);
   setInterval(fetchHttpStatus,    35000);
   setInterval(fetchPing,          15000);
+  setInterval(fetchLogTail,        8000);
 }
 
 // ─── Boot ─────────────────────────────────────────────────────────────────────
