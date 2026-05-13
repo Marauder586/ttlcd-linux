@@ -23,6 +23,7 @@ const infoMode         = document.getElementById('info-mode');
 const infoRotate       = document.getElementById('info-rotate');
 const infoQuality      = document.getElementById('info-quality');
 const infoHeadless     = document.getElementById('info-headless');
+const infoPending      = document.getElementById('info-pending');
 const infoHost         = document.getElementById('info-host');
 const hdrVersion       = document.getElementById('hdr-version');
 const panelPreviewImg  = document.getElementById('panel-preview-img');
@@ -156,6 +157,7 @@ async function fetchStatus() {
     infoRotate.textContent     = data.rotate_deg != null ? `${data.rotate_deg}°` : '0°';
     infoQuality.textContent    = data.quality != null ? `${data.quality}%` : '—';
     infoHeadless.textContent   = data.headless ? 'yes (USB skipped)' : 'no';
+    if (infoPending) infoPending.textContent = data.pending_scheduled > 0 ? `${data.pending_scheduled} scheduled` : 'none';
     hdrVersion.textContent     = `v${ver}`;
 
     // Sync the settings sliders/selects with current daemon state

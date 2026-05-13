@@ -21,7 +21,7 @@ use ttlcd::{
         render_custom_text, render_sysinfo, render_solid, render_test_card,
         render_temperature, render_memory_detail, render_countdown,
         render_cpu_graph, push_cpu_history,
-        render_net_graph, push_net_history,
+        render_net_graph,
         CustomTextPayload,
     },
     encode_for_panel, letterbox_for_panel, Panel, DEFAULT_JPEG_QUALITY, PANEL_HEIGHT, PANEL_WIDTH,
@@ -828,6 +828,7 @@ async fn run_daemon(
             .route("/api/webhook",        web::post().to(api_webhook))
             .route("/api/config",         web::get().to(api_get_config))
             .route("/api/schedule",       web::post().to(api_schedule))
+            .route("/api/info",           web::get().to(api_info))
             // Server-Sent Events
             .route("/api/events",         web::get().to(api_events))
             // MJPEG live stream
@@ -1588,6 +1589,46 @@ async fn api_history_clear(state: web::Data<DaemonState>) -> impl Responder {
     HttpResponse::Ok().body(format!("cleared {} notification(s)", count))
 }
 
+// ─── Runtime setting persistence ─────────────────────────────────────────────
+
+/// Write a single runtime setting to the config file.
+/// This is a best-effort helper: failures are logged but not propagated.
+fn persist_setting(key: &str, value: &str) {
+    let path = match dirs_config_path() {
+        Some(p) => p,
+        None    => return,
+    };
+    // Read existing TOML, or start fresh
+    let current = std::fs::read_to_string(&path).unwrap_or_default();
+    // Use a simple line-based replace/append strategy
+    let key_eq = format!("{key} = ");
+    let new_line = format!("{key} = {value}
+");
+    let updated = if current.contains(&key_eq) {
+        current.lines()
+            .map(|l| if l.starts_with(&key_eq) { new_line.trim_end().to_string() } else { l.to_string() })
+            .collect::<Vec<_>>()
+            .join("
+")
+            + "
+"
+    } else {
+        // Append under [daemon] section or at EOF
+        if current.contains("[daemon]") {
+            current + &new_line
+        } else {
+            current + "[daemon]
+" + &new_line
+        }
+    };
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    if let Err(e) = std::fs::write(&path, &updated) {
+        log::debug!("could not persist setting {key}={value}: {e}");
+    }
+}
+
 // ─── Runtime quality / orient controls ───────────────────────────────────────
 
 #[derive(Deserialize)]
@@ -1601,6 +1642,10 @@ async fn api_set_quality(state: web::Data<DaemonState>, body: web::Json<QualityR
     let q = body.quality.clamp(1, 100);
     *state.quality.lock().unwrap() = q;
     log::info!("quality set to {}", q);
+    // Persist to config file in background
+    tokio::spawn(async move {
+        persist_setting("quality", &q.to_string());
+    });
     HttpResponse::Ok().body(format!("{}", q))
 }
 
@@ -2304,6 +2349,34 @@ async fn api_slideshow_shuffle(state: web::Data<DaemonState>) -> impl Responder 
     }
     *state.slideshow_idx.lock().unwrap() = 0;
     HttpResponse::Ok().body(format!("shuffled {} images", n))
+}
+
+// ─── Device info ──────────────────────────────────────────────────────────────
+
+/// GET /api/info — return USB device information (serial, firmware).
+/// Returns null/null in headless mode (no USB device attached).
+async fn api_info(state: web::Data<DaemonState>) -> impl Responder {
+    #[derive(Serialize)]
+    struct DeviceInfo {
+        version:       &'static str,
+        vendor_id:     String,
+        product_id:    String,
+        headless:      bool,
+        os:            String,
+        arch:          String,
+        mode_count:    usize,
+        build_profile: &'static str,
+    }
+    HttpResponse::Ok().json(DeviceInfo {
+        version:       env!("CARGO_PKG_VERSION"),
+        vendor_id:     format!("0x{:04x}", state.vid),
+        product_id:    format!("0x{:04x}", state.pid),
+        headless:      state.headless,
+        os:            std::env::consts::OS.into(),
+        arch:          std::env::consts::ARCH.into(),
+        mode_count:    DisplayMode::ALL_NAMES.len(),
+        build_profile: if cfg!(debug_assertions) { "debug" } else { "release" },
+    })
 }
 
 // ─── Embedded web UI ─────────────────────────────────────────────────────────
