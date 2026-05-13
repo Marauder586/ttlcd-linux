@@ -1,37 +1,56 @@
 #!/usr/bin/env bash
-# notify-panel.sh — push a notification to the ttlcd panel via POST /api/text
+# notify-panel.sh — push a notification to the ttlcd panel
 #
-# Usage:
-#   ./notify-panel.sh "Title" "Subtitle" "Line1" "Line2" "Line3" [progress] [color]
+# MODES:
 #
-# Arguments:
-#   1  Title      (large heading, max 22 chars)
-#   2  Subtitle   (smaller line, max 38 chars; pass "" to omit)
-#   3  Line 1     (body text; pass "" to omit)
-#   4  Line 2
-#   5  Line 3
-#   6  Progress   0.0–1.0 (pass "" to omit progress bar)
-#   7  Color      blue|green|yellow|red|teal|mauve|peach|white  (default: blue)
+#   1. Full custom text (default):
+#      Usage: ./notify-panel.sh "Title" "Subtitle" "Line1" "Line2" "Line3" [progress] [color]
+#      Arguments:
+#        1  Title      (large heading, max 22 chars)
+#        2  Subtitle   (smaller line, max 38 chars; pass "" to omit)
+#        3  Line 1     (body text; pass "" to omit)
+#        4  Line 2
+#        5  Line 3
+#        6  Progress   0.0–1.0 (pass "" to omit progress bar)
+#        7  Color      blue|green|yellow|red|teal|mauve|peach|white  (default: blue)
+#
+#   2. Severity alert (--alert flag):
+#      Usage: ./notify-panel.sh --alert <level> "Message" ["Detail"]
+#      Levels: error | warning | info | success | critical
+#      Example:
+#        ./notify-panel.sh --alert error "Disk full" "/dev/sda1 at 100%"
+#        ./notify-panel.sh --alert success "Deploy done"
+#
+#   3. Mode switching:
+#      ./notify-panel.sh --mode <mode-name>
+#      ./notify-panel.sh --next     (advance to next mode)
+#      ./notify-panel.sh --prev     (go to previous mode)
+#      ./notify-panel.sh --return   (return from custom text / image / slideshow)
 #
 # Environment:
 #   TTLCD_URL   base URL of the daemon (default: http://localhost:7070)
 #
 # Examples:
-#   # Build success
+#   # Build success / failure
 #   ./notify-panel.sh "Build OK" "ttlcd-rs v0.3" "" "" "" 1.0 green
+#   ./notify-panel.sh --alert error "Build FAILED" "check CI logs"
 #
-#   # Build failure
-#   ./notify-panel.sh "Build FAILED" "check CI logs" "" "" "" 0.0 red
+#   # Deployment
+#   ./notify-panel.sh --alert info "Deploying" "Rolling update…"
+#   ./notify-panel.sh --alert success "Deploy complete"
 #
-#   # Deployment started
-#   ./notify-panel.sh "Deploying" "production" "Rolling update…" "" "" 0.3 teal
-#
-#   # Simple one-liner (most args optional)
+#   # Simple one-liner
 #   ./notify-panel.sh "Hello World"
 #
 #   # From a Makefile / CI pipeline:
-#   make build && ./notify-panel.sh "Build OK"  "" "" "" "" 1.0 green \
-#             || ./notify-panel.sh "Build FAIL" "" "" "" "" 0.0 red
+#   make build \
+#     && ./notify-panel.sh --alert success "Build OK" \
+#     || ./notify-panel.sh --alert error "Build FAILED" "see make output"
+#
+#   # Mode navigation
+#   ./notify-panel.sh --mode temperature
+#   ./notify-panel.sh --next
+#   ./notify-panel.sh --return
 #
 # Preset management (requires curl + jq):
 #   # Save current payload as a preset
@@ -57,6 +76,57 @@ set -euo pipefail
 
 DAEMON_URL="${TTLCD_URL:-http://localhost:7070}"
 
+# ── Mode: --next / --prev / --return / --mode <name> ──────────────────────────
+if [[ "${1:-}" == "--next" ]]; then
+    result=$(curl -sf -X POST "${DAEMON_URL}/api/mode/next")
+    echo "Mode → ${result}"
+    exit 0
+fi
+
+if [[ "${1:-}" == "--prev" ]]; then
+    result=$(curl -sf -X POST "${DAEMON_URL}/api/mode/prev")
+    echo "Mode → ${result}"
+    exit 0
+fi
+
+if [[ "${1:-}" == "--return" ]]; then
+    curl -sf -X POST "${DAEMON_URL}/api/clear" && echo "Returned to previous mode"
+    exit 0
+fi
+
+if [[ "${1:-}" == "--mode" ]]; then
+    MODE="${2:?'--mode requires a mode name'}"
+    curl -sf -X POST "${DAEMON_URL}/api/mode" \
+         -H 'Content-Type: application/json' \
+         -d "{\"mode\":\"${MODE}\"}" \
+      && echo "Mode → ${MODE}"
+    exit 0
+fi
+
+# ── Mode: --alert <level> <message> [<detail>] ────────────────────────────────
+if [[ "${1:-}" == "--alert" ]]; then
+    LEVEL="${2:?'--alert requires a level: error|warning|info|success|critical'}"
+    MESSAGE="${3:?'--alert requires a message string'}"
+    DETAIL="${4:-}"
+
+    payload=$(python3 -c "
+import json, sys
+obj = {'level': sys.argv[1], 'message': sys.argv[2]}
+if sys.argv[3]:
+    obj['detail'] = sys.argv[3]
+print(json.dumps(obj))
+" "$LEVEL" "$MESSAGE" "$DETAIL")
+
+    curl -sf \
+         -X POST "${DAEMON_URL}/api/alert" \
+         -H 'Content-Type: application/json' \
+         -d "$payload" \
+         -o /dev/null \
+      && echo "Alert [${LEVEL}]: ${MESSAGE}"
+    exit 0
+fi
+
+# ── Default mode: full custom text ────────────────────────────────────────────
 TITLE="${1:-}"
 SUBTITLE="${2:-}"
 LINE1="${3:-}"
@@ -94,4 +164,5 @@ curl -sf \
      -X POST "${DAEMON_URL}/api/text" \
      -H 'Content-Type: application/json' \
      -d "$payload" \
+     -o /dev/null \
   && echo "Panel updated: ${TITLE:-<no title>}"

@@ -765,6 +765,13 @@ async fn run_daemon(
             .route("/api/presets/{name}",   web::get().to(api_presets_get))
             .route("/api/presets/{name}",   web::post().to(api_presets_apply))
             .route("/api/presets/{name}",   web::delete().to(api_presets_delete))
+            // Alert shorthand & screenshot download
+            .route("/api/alert",          web::post().to(api_alert))
+            .route("/api/screenshot",     web::get().to(api_screenshot))
+            // Mode listing and navigation
+            .route("/api/modes",          web::get().to(api_modes_list))
+            .route("/api/mode/next",      web::post().to(api_mode_next))
+            .route("/api/mode/prev",      web::post().to(api_mode_prev))
             // Slideshow & rotation
             .route("/api/slideshow",      web::post().to(api_slideshow))
             .route("/api/rotation",       web::post().to(api_rotation))
@@ -942,16 +949,18 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Serialize)]
 struct StatusResponse {
-    mode:              String,
-    version:           &'static str,
-    available_modes:   &'static [&'static str],
-    headless:          bool,
-    rotate_deg:        u16,
-    quality:           u8,
-    frame_seq:         u64,
-    can_clear:         bool,
-    rotation_interval: u64,
-    rotation_modes:    Vec<String>,
+    mode:                  String,
+    version:               &'static str,
+    available_modes:       &'static [&'static str],
+    headless:              bool,
+    rotate_deg:            u16,
+    quality:               u8,
+    frame_seq:             u64,
+    can_clear:             bool,
+    rotation_interval:     u64,
+    rotation_modes:        Vec<String>,
+    slideshow_image_count: usize,
+    slideshow_interval:    u64,
 }
 
 async fn api_status(state: web::Data<DaemonState>) -> impl Responder {
@@ -961,17 +970,21 @@ async fn api_status(state: web::Data<DaemonState>) -> impl Responder {
     let rot_interval = *state.rotation_interval.lock().unwrap();
     let rot_modes: Vec<String> = state.rotation_modes.lock().unwrap()
         .iter().map(|m| m.as_str().to_string()).collect();
+    let ss_count = state.slideshow_paths.lock().unwrap().len();
+    let ss_interval = *state.slideshow_interval.lock().unwrap();
     HttpResponse::Ok().json(StatusResponse {
         mode,
-        version:           env!("CARGO_PKG_VERSION"),
-        available_modes:   DisplayMode::ALL_NAMES,
-        headless:          state.headless,
-        rotate_deg:        state.rotate_deg,
-        quality:           state.quality,
+        version:               env!("CARGO_PKG_VERSION"),
+        available_modes:       DisplayMode::ALL_NAMES,
+        headless:              state.headless,
+        rotate_deg:            state.rotate_deg,
+        quality:               state.quality,
         frame_seq,
         can_clear,
-        rotation_interval: rot_interval,
-        rotation_modes:    rot_modes,
+        rotation_interval:     rot_interval,
+        rotation_modes:        rot_modes,
+        slideshow_image_count: ss_count,
+        slideshow_interval:    ss_interval,
     })
 }
 
@@ -1097,6 +1110,114 @@ async fn api_presets_delete(state: web::Data<DaemonState>, name: web::Path<Strin
     };
     if removed { HttpResponse::Ok().body("deleted") }
     else        { HttpResponse::NotFound().body(format!("'{}' not found", name)) }
+}
+
+// ─── Mode listing ────────────────────────────────────────────────────────────
+
+#[derive(Serialize)]
+struct ModeInfo {
+    name:        &'static str,
+    description: &'static str,
+}
+
+async fn api_modes_list() -> impl Responder {
+    HttpResponse::Ok().json(&[
+        ModeInfo { name: "clock",         description: "Large digital clock with date and uptime" },
+        ModeInfo { name: "clock_sysinfo", description: "Split-screen: clock above, quick stats below" },
+        ModeInfo { name: "sysinfo",       description: "CPU, RAM, temperature, load average, uptime" },
+        ModeInfo { name: "cpu_detail",    description: "Per-core CPU usage grid (up to 32 cores)" },
+        ModeInfo { name: "network",       description: "Per-interface Rx/Tx rates and totals" },
+        ModeInfo { name: "disk_usage",    description: "Disk partition usage bars" },
+        ModeInfo { name: "process_top",   description: "Top processes sorted by CPU usage" },
+        ModeInfo { name: "temperature",   description: "Thermal sensor readings with color-coded bars" },
+        ModeInfo { name: "idle",          description: "Keepalive — no display update, prevents blank" },
+    ])
+}
+
+/// POST /api/mode/next — advance to the next live mode (wraps around).
+async fn api_mode_next(state: web::Data<DaemonState>) -> impl Responder {
+    cycle_mode(&state, 1)
+}
+
+/// POST /api/mode/prev — go to the previous live mode (wraps around).
+async fn api_mode_prev(state: web::Data<DaemonState>) -> impl Responder {
+    cycle_mode(&state, DisplayMode::ALL_NAMES.len() - 1)
+}
+
+fn cycle_mode(state: &DaemonState, step: usize) -> HttpResponse {
+    let all: Vec<DisplayMode> = DisplayMode::ALL_NAMES.iter()
+        .filter_map(|s| DisplayMode::from_str_name(s))
+        .collect();
+    let cur = state.mode.lock().unwrap().clone();
+    let cur_pos = all.iter().position(|m| m == &cur).unwrap_or(0);
+    let next = all[(cur_pos + step) % all.len()].clone();
+    *state.pending_text.lock().unwrap() = None;
+    *state.pending_jpeg.lock().unwrap() = None;
+    *state.prev_mode.lock().unwrap()    = next.clone();
+    *state.mode.lock().unwrap()         = next.clone();
+    HttpResponse::Ok().body(next.as_str())
+}
+
+// ─── Alert shorthand ─────────────────────────────────────────────────────────
+
+/// POST /api/alert — send a severity-keyed notification without building a full
+/// CustomTextPayload. Useful for CI pipelines and scripts.
+///
+/// Body (JSON):
+///   { "level": "error"|"warning"|"info"|"success"|"critical",
+///     "message": "human-readable line",
+///     "detail":  "optional second line"  }
+#[derive(Deserialize)]
+struct AlertRequest {
+    level:   AlertLevel,
+    message: String,
+    #[serde(default)]
+    detail:  Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum AlertLevel { Error, Warning, Info, Success, Critical }
+
+async fn api_alert(state: web::Data<DaemonState>, body: web::Json<AlertRequest>) -> impl Responder {
+    use ttlcd::display::NamedColor;
+    let req = body.into_inner();
+    let (title, color): (&str, NamedColor) = match req.level {
+        AlertLevel::Error    => ("ERROR",    NamedColor::Red),
+        AlertLevel::Warning  => ("WARNING",  NamedColor::Yellow),
+        AlertLevel::Info     => ("INFO",     NamedColor::Blue),
+        AlertLevel::Success  => ("SUCCESS",  NamedColor::Green),
+        AlertLevel::Critical => ("CRITICAL", NamedColor::Red),
+    };
+    let payload = CustomTextPayload {
+        title:     Some(title.into()),
+        subtitle:  Some(req.message),
+        lines:     req.detail.into_iter().collect(),
+        color,
+        show_time: true,
+        ..Default::default()
+    };
+    { let cur = state.mode.lock().unwrap().clone(); if !cur.is_transient() { *state.prev_mode.lock().unwrap() = cur; } }
+    *state.pending_text.lock().unwrap() = Some(payload);
+    *state.mode.lock().unwrap()         = DisplayMode::CustomText;
+    HttpResponse::Ok().body("ok")
+}
+
+// ─── Screenshot download ──────────────────────────────────────────────────────
+
+/// GET /api/screenshot — like /api/preview but forces a file download.
+async fn api_screenshot(state: web::Data<DaemonState>) -> impl Responder {
+    let guard = state.last_frame.lock().unwrap();
+    match guard.as_ref() {
+        Some(jpeg) => HttpResponse::Ok()
+            .insert_header(("Cache-Control", "no-store"))
+            .insert_header(("Content-Disposition", "attachment; filename=panel.jpg"))
+            .content_type("image/jpeg")
+            .body(jpeg.clone()),
+        None => HttpResponse::NoContent()
+            .insert_header(("Cache-Control", "no-store"))
+            .finish(),
+    }
 }
 
 // ─── Slideshow ────────────────────────────────────────────────────────────────
