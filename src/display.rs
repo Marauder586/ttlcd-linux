@@ -1047,6 +1047,21 @@ mod tests {
         }
         assert_panel_size(&render_net_graph());
     }
+
+    #[test]
+    fn test_recent_alerts_size() {
+        let entries: Vec<(u64, bool, &str)> = vec![
+            (1747000000, true,  "ERROR — Build FAILED"),
+            (1747000060, false, "Deploying ttlcd-rs v0.5"),
+            (1747000120, true,  "SUCCESS — Deploy complete"),
+        ];
+        assert_panel_size(&render_recent_alerts(&entries));
+    }
+
+    #[test]
+    fn test_recent_alerts_empty_size() {
+        assert_panel_size(&render_recent_alerts(&[]));
+    }
 }
 
 /// Thermal sensor detail — all available temperature components with color-coded bars.
@@ -1524,6 +1539,61 @@ pub fn render_net_graph() -> DynamicImage {
 
     // x-axis label
     draw_centered(&mut img, &mono, PxScale::from(12.0), 458, OVERLAY0, "← 60 s ago      now →");
+
+    DynamicImage::ImageRgb8(img)
+}
+
+// ─── Recent alerts display ───────────────────────────────────────────────────
+
+/// Show the last N notification summaries from the history ring-buffer.
+///
+/// Rendered as a compact log on the panel, with timestamps and kind icons.
+/// This mode is driven by the caller passing in `entries` to avoid the
+/// display module depending on daemon state directly.
+pub fn render_recent_alerts(entries: &[(u64, bool, &str)]) -> DynamicImage {
+    // entries: Vec of (timestamp_unix, is_alert: bool, summary)
+    let mut img  = blank();
+    let bold = font_bold();
+    let mono = font_mono();
+
+    // Header
+    let now      = chrono::Local::now();
+    let time_str = now.format("%H:%M:%S").to_string();
+    let tw = text_width(&mono, PxScale::from(22.0), &time_str);
+    draw_text_mut(&mut img, OVERLAY0, 480 - 20 - tw, 18, PxScale::from(22.0), &mono, &time_str);
+    draw_text_mut(&mut img, OVERLAY0, 20, 18, PxScale::from(19.0), &bold, "RECENT ALERTS");
+    draw_filled_rect_mut(&mut img, Rect::at(0, 48).of_size(480, 1), SURFACE0);
+
+    if entries.is_empty() {
+        draw_centered(&mut img, &bold, PxScale::from(26.0), 200, OVERLAY0, "No notifications yet");
+        return DynamicImage::ImageRgb8(img);
+    }
+
+    let row_h: i32 = 82;
+    let mut y: i32 = 55;
+
+    for (ts, is_alert, summary) in entries.iter().take(5) {
+        // Timestamp
+        let dt = chrono::DateTime::<chrono::Utc>::from_timestamp(*ts as i64, 0)
+            .map(|d| d.with_timezone(&chrono::Local).format("%H:%M:%S").to_string())
+            .unwrap_or_else(|| "??:??:??".to_string());
+        let kind_str = if *is_alert { "🔔" } else { "📝" };
+        let header = format!("{kind_str} {dt}");
+        draw_text_mut(&mut img, OVERLAY0, 20, y, PxScale::from(17.0), &mono, &header);
+
+        // Summary (truncate to fit)
+        let max_chars = 44;
+        let display = if summary.len() > max_chars {
+            format!("{}…", &summary[..max_chars - 1])
+        } else {
+            summary.to_string()
+        };
+        let color = if *is_alert { PEACH } else { TEXT };
+        draw_text_mut(&mut img, color, 20, y + 22, PxScale::from(18.0), &bold, &display);
+
+        draw_filled_rect_mut(&mut img, Rect::at(0, y + row_h - 4).of_size(480, 1), SURFACE0);
+        y += row_h;
+    }
 
     DynamicImage::ImageRgb8(img)
 }

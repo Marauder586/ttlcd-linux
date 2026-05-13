@@ -22,6 +22,7 @@ use ttlcd::{
         render_temperature, render_memory_detail, render_countdown,
         render_cpu_graph, push_cpu_history,
         render_net_graph,
+        render_recent_alerts,
         CustomTextPayload,
     },
     encode_for_panel, letterbox_for_panel, Panel, DEFAULT_JPEG_QUALITY, PANEL_HEIGHT, PANEL_WIDTH,
@@ -576,6 +577,7 @@ enum DisplayMode {
     Countdown,
     CpuGraph,
     NetGraph,
+    RecentAlerts,
     Idle,
     CustomImage,
     CustomText,
@@ -585,7 +587,7 @@ enum DisplayMode {
 impl DisplayMode {
     const ALL_NAMES: &'static [&'static str] = &[
         "clock", "clock_sysinfo", "sysinfo", "cpu_detail",
-        "network", "disk_usage", "process_top", "temperature", "memory_detail", "countdown", "cpu_graph", "net_graph", "idle",
+        "network", "disk_usage", "process_top", "temperature", "memory_detail", "countdown", "cpu_graph", "net_graph", "recent_alerts", "idle",
     ];
 
     fn from_str_name(s: &str) -> Option<Self> {
@@ -602,6 +604,7 @@ impl DisplayMode {
             "countdown"    => Some(DisplayMode::Countdown),
             "cpu_graph"    => Some(DisplayMode::CpuGraph),
             "net_graph"    => Some(DisplayMode::NetGraph),
+            "recent_alerts" => Some(DisplayMode::RecentAlerts),
             "idle"          => Some(DisplayMode::Idle),
             "custom_text"   => Some(DisplayMode::CustomText),
             "slideshow"     => Some(DisplayMode::Slideshow),
@@ -623,6 +626,7 @@ impl DisplayMode {
             DisplayMode::Countdown   => "countdown",
             DisplayMode::CpuGraph    => "cpu_graph",
             DisplayMode::NetGraph    => "net_graph",
+            DisplayMode::RecentAlerts => "recent_alerts",
             DisplayMode::Idle         => "idle",
             DisplayMode::CustomImage  => "image",
             DisplayMode::CustomText   => "custom_text",
@@ -970,6 +974,18 @@ fn display_loop(panel: Arc<Mutex<Option<Panel>>>, state: DaemonState) {
                 DisplayMode::MemoryDetail => (render_memory_detail(),  4),
                 DisplayMode::CpuGraph     => (render_cpu_graph(),      1),
                 DisplayMode::NetGraph     => (render_net_graph(),      2),
+                DisplayMode::RecentAlerts => {
+                    let entries: Vec<(u64, bool, String)> = {
+                        let h = state.history.lock().unwrap();
+                        h.iter().rev().take(5).map(|e| (
+                            e.timestamp,
+                            matches!(e.kind, HistoryKind::Alert),
+                            e.summary.clone(),
+                        )).collect()
+                    };
+                    let refs: Vec<(u64, bool, &str)> = entries.iter().map(|(ts, a, s)| (*ts, *a, s.as_str())).collect();
+                    (render_recent_alerts(&refs), 5)
+                },
                 DisplayMode::Countdown => {
                     let cd_opt = state.countdown.lock().unwrap().clone();
                     if let Some(cd) = cd_opt {
@@ -1286,6 +1302,7 @@ async fn api_modes_list() -> impl Responder {
         ModeInfo { name: "countdown",    description: "Countdown timer with colour transitions and progress bar" },
         ModeInfo { name: "cpu_graph",    description: "CPU usage history bar chart (last 2 minutes)" },
         ModeInfo { name: "net_graph",    description: "Network Rx/Tx I/O history chart (last 60 seconds)" },
+        ModeInfo { name: "recent_alerts", description: "Last 5 notifications as an on-panel log" },
         ModeInfo { name: "idle",          description: "Keepalive — no display update, prevents blank" },
     ])
 }
