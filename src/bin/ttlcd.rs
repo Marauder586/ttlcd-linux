@@ -20,6 +20,7 @@ use ttlcd::{
         render_disk_usage, render_network, render_process_top,
         render_custom_text, render_sysinfo, render_solid, render_test_card,
         render_temperature, render_memory_detail, render_countdown,
+        render_cpu_graph, push_cpu_history,
         CustomTextPayload,
     },
     encode_for_panel, letterbox_for_panel, Panel, DEFAULT_JPEG_QUALITY, PANEL_HEIGHT, PANEL_WIDTH,
@@ -572,6 +573,7 @@ enum DisplayMode {
     Temperature,
     MemoryDetail,
     Countdown,
+    CpuGraph,
     Idle,
     CustomImage,
     CustomText,
@@ -581,7 +583,7 @@ enum DisplayMode {
 impl DisplayMode {
     const ALL_NAMES: &'static [&'static str] = &[
         "clock", "clock_sysinfo", "sysinfo", "cpu_detail",
-        "network", "disk_usage", "process_top", "temperature", "memory_detail", "countdown", "idle",
+        "network", "disk_usage", "process_top", "temperature", "memory_detail", "countdown", "cpu_graph", "idle",
     ];
 
     fn from_str_name(s: &str) -> Option<Self> {
@@ -596,6 +598,7 @@ impl DisplayMode {
             "temperature"   => Some(DisplayMode::Temperature),
             "memory_detail" => Some(DisplayMode::MemoryDetail),
             "countdown"    => Some(DisplayMode::Countdown),
+            "cpu_graph"    => Some(DisplayMode::CpuGraph),
             "idle"          => Some(DisplayMode::Idle),
             "custom_text"   => Some(DisplayMode::CustomText),
             "slideshow"     => Some(DisplayMode::Slideshow),
@@ -615,6 +618,7 @@ impl DisplayMode {
             DisplayMode::Temperature  => "temperature",
             DisplayMode::MemoryDetail => "memory_detail",
             DisplayMode::Countdown   => "countdown",
+            DisplayMode::CpuGraph    => "cpu_graph",
             DisplayMode::Idle         => "idle",
             DisplayMode::CustomImage  => "image",
             DisplayMode::CustomText   => "custom_text",
@@ -946,6 +950,7 @@ fn display_loop(panel: Arc<Mutex<Option<Panel>>>, state: DaemonState) {
                 DisplayMode::ProcessTop   => (render_process_top(),    3),
                 DisplayMode::Temperature  => (render_temperature(),    5),
                 DisplayMode::MemoryDetail => (render_memory_detail(),  4),
+                DisplayMode::CpuGraph     => (render_cpu_graph(),      1),
                 DisplayMode::Countdown => {
                     let cd_opt = state.countdown.lock().unwrap().clone();
                     if let Some(cd) = cd_opt {
@@ -965,9 +970,18 @@ fn display_loop(panel: Arc<Mutex<Option<Panel>>>, state: DaemonState) {
                 DisplayMode::Idle
                 | DisplayMode::CustomImage
                 | DisplayMode::CustomText
-                | DisplayMode::Slideshow => unreachable!(),
+                | DisplayMode::Slideshow => unreachable!("handled above"),
             };
 
+            // Update CPU history for the graph mode (on any live frame)
+            if matches!(mode, DisplayMode::Clock | DisplayMode::ClockSysinfo | DisplayMode::Sysinfo
+                | DisplayMode::CpuDetail | DisplayMode::Network | DisplayMode::DiskUsage
+                | DisplayMode::ProcessTop | DisplayMode::Temperature | DisplayMode::MemoryDetail) {
+                use sysinfo::System;
+                let mut s = System::new();
+                s.refresh_cpu_usage();
+                push_cpu_history(s.global_cpu_usage());
+            }
             let img  = apply_rotation(img, rotate_deg);
             let jpeg = store_frame(&state, encode_for_panel(&img, quality)?);
             { let mut g = panel.lock().unwrap(); if let Some(p) = g.as_mut() { p.send_jpeg(&jpeg)?; } }
@@ -1230,6 +1244,7 @@ async fn api_modes_list() -> impl Responder {
         ModeInfo { name: "temperature",   description: "Thermal sensor readings with color-coded bars" },
         ModeInfo { name: "memory_detail", description: "Detailed RAM breakdown: used, cached, free, swap" },
         ModeInfo { name: "countdown",    description: "Countdown timer with colour transitions and progress bar" },
+        ModeInfo { name: "cpu_graph",    description: "CPU usage history bar chart (last 2 minutes)" },
         ModeInfo { name: "idle",          description: "Keepalive — no display update, prevents blank" },
     ])
 }

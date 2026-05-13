@@ -1030,6 +1030,15 @@ mod tests {
         // Renders the "TIME'S UP" screen
         assert_panel_size(&render_countdown(0, 300, "Done"));
     }
+
+    #[test]
+    fn test_cpu_graph_size() {
+        // Push a few fake samples so the chart has data to draw
+        for pct in [10.0_f32, 25.0, 50.0, 75.0, 90.0] {
+            push_cpu_history(pct);
+        }
+        assert_panel_size(&render_cpu_graph());
+    }
 }
 
 /// Thermal sensor detail — all available temperature components with color-coded bars.
@@ -1263,6 +1272,129 @@ pub fn render_countdown(remaining_secs: i64, total_secs: i64, label: &str) -> Dy
     let pct = ((1.0 - frac_left) * 100.0) as u32;
     let sub = format!("{}% elapsed  ({} remaining)", pct, format_uptime(remaining_secs as u64));
     draw_centered(&mut img, &bold, PxScale::from(15.0), 336, OVERLAY0, &sub);
+
+    DynamicImage::ImageRgb8(img)
+}
+
+// ─── CPU usage history (global ring-buffer, shared across renders) ────────────
+
+use std::sync::OnceLock;
+
+static CPU_GRAPH_DATA: OnceLock<std::sync::Mutex<std::collections::VecDeque<f32>>> = OnceLock::new();
+
+fn cpu_graph_data() -> std::sync::MutexGuard<'static, std::collections::VecDeque<f32>> {
+    CPU_GRAPH_DATA
+        .get_or_init(|| std::sync::Mutex::new(std::collections::VecDeque::with_capacity(120)))
+        .lock()
+        .unwrap()
+}
+
+/// Append one CPU usage sample to the global history ring-buffer (max 120 entries).
+///
+/// Call this from the display loop each time a live mode renders, so the
+/// graph mode always has fresh data even if `render_cpu_graph` hasn't been
+/// called recently.
+pub fn push_cpu_history(pct: f32) {
+    let mut h = cpu_graph_data();
+    if h.len() >= 120 { h.pop_front(); }
+    h.push_back(pct.clamp(0.0, 100.0));
+}
+
+/// Full-screen CPU usage history graph.
+///
+/// Shows the last 120 samples (2 minutes at 1 sample/second) as a bar chart,
+/// with the current reading prominently displayed.
+pub fn render_cpu_graph() -> DynamicImage {
+    use sysinfo::System;
+    let mut sys = System::new();
+    sys.refresh_cpu_usage();
+    // Small sleep so sysinfo can measure a delta
+    std::thread::sleep(std::time::Duration::from_millis(200));
+    sys.refresh_cpu_usage();
+    let cpu_pct = sys.global_cpu_usage();
+    push_cpu_history(cpu_pct);
+
+    let history: Vec<f32> = cpu_graph_data().iter().cloned().collect();
+
+    let mut img  = blank();
+    let bold = font_bold();
+    let mono = font_mono();
+
+    // ── current time (top-right) ─────────────────────────────────────────
+    let now      = Local::now();
+    let time_str = now.format("%H:%M:%S").to_string();
+    let tw = text_width(&mono, PxScale::from(22.0), &time_str);
+    draw_text_mut(&mut img, OVERLAY0, 480 - 20 - tw, 18, PxScale::from(22.0), &mono, &time_str);
+
+    // ── mode label (top-left) ────────────────────────────────────────────
+    draw_text_mut(&mut img, OVERLAY0, 20, 18, PxScale::from(19.0), &bold, "CPU GRAPH");
+
+    // ── large current % ──────────────────────────────────────────────────
+    let accent = if cpu_pct > 80.0 { RED } else if cpu_pct > 50.0 { YELLOW } else { GREEN };
+    let pct_str = format!("{:.1}%", cpu_pct);
+    draw_centered(&mut img, &bold, PxScale::from(80.0), 50, accent, &pct_str);
+
+    // ── stats row ────────────────────────────────────────────────────────
+    if !history.is_empty() {
+        let avg: f32 = history.iter().sum::<f32>() / history.len() as f32;
+        let peak: f32 = history.iter().cloned().fold(0.0_f32, f32::max);
+        let stats_str = format!("avg {:.1}%  peak {:.1}%  ({} samples)", avg, peak, history.len());
+        let sw = text_width(&mono, PxScale::from(16.0), &stats_str);
+        let sx = ((480 - sw) / 2).max(0);
+        draw_text_mut(&mut img, SUBTEXT, sx, 148, PxScale::from(16.0), &mono, &stats_str);
+    }
+
+    // ── bar chart ────────────────────────────────────────────────────────
+    // Chart area: x=0..480, y=175..460  (285px tall)
+    let chart_x = 0i32;
+    let chart_y = 175i32;
+    let chart_w = 480i32;
+    let chart_h = 280i32;
+
+    // Background grid lines at 25%, 50%, 75%
+    for pct_line in [25u32, 50, 75] {
+        let ly = chart_y + chart_h - (chart_h as f32 * pct_line as f32 / 100.0) as i32;
+        if ly >= 0 && (ly as u32) < img.height() {
+            for x in (chart_x..(chart_x + chart_w)).step_by(6) {
+                if x >= 0 && (x as u32) < img.width() {
+                    img.put_pixel(x as u32, ly as u32, SURFACE0);
+                }
+            }
+        }
+    }
+
+    // Y-axis labels
+    for (pct_line, label) in [(25u32, "25"), (50, "50"), (75, "75"), (100, "100")] {
+        let ly = chart_y + chart_h - (chart_h as f32 * pct_line as f32 / 100.0) as i32 - 2;
+        draw_text_mut(&mut img, OVERLAY0, 2, ly - 8, PxScale::from(12.0), &mono, label);
+    }
+
+    // Bars
+    let n = history.len();
+    if n > 0 {
+        let bar_w = chart_w / 120;  // 4px per bar
+        let offset = 120 - n as i32;  // left-pad with empty space if less than 120 samples
+        for (i, &val) in history.iter().enumerate() {
+            let bar_h = (chart_h as f32 * val / 100.0).max(1.0) as i32;
+            let bx    = chart_x + (offset + i as i32) * bar_w;
+            let by    = chart_y + chart_h - bar_h;
+            let color = if val > 80.0 { RED } else if val > 50.0 { YELLOW } else { BLUE };
+            // Brighten the most recent bar
+            let is_last = i == n - 1;
+            let draw_color = if is_last { TEXT } else { color };
+            draw_filled_rect_mut(
+                &mut img,
+                Rect::at(bx, by).of_size(bar_w.max(1) as u32, bar_h as u32),
+                draw_color,
+            );
+        }
+    }
+
+    // Chart border (bottom line)
+    draw_filled_rect_mut(&mut img, Rect::at(chart_x, chart_y + chart_h).of_size(chart_w as u32, 2), SURFACE0);
+
+    // ── x-axis label ─────────────────────────────────────────────────────
+    draw_centered(&mut img, &mono, PxScale::from(14.0), chart_y + chart_h + 6, OVERLAY0, "← 2 min ago                      now →");
 
     DynamicImage::ImageRgb8(img)
 }
