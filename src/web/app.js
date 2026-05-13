@@ -88,6 +88,14 @@ const setOrient    = document.getElementById('set-orient');
 const setApplyBtn  = document.getElementById('set-apply-btn');
 const setStatus    = document.getElementById('set-status');
 
+
+// Countdown refs
+const cdSeconds  = document.getElementById('cd-seconds');
+const cdLabel    = document.getElementById('cd-label');
+const cdStartBtn = document.getElementById('cd-start-btn');
+const cdCancelBtn= document.getElementById('cd-cancel-btn');
+const cdStatus   = document.getElementById('cd-status');
+
 // ── Logging ───────────────────────────────────────────────────────────────────
 function logEntry(msg, level = 'info') {
   const now = new Date();
@@ -687,6 +695,52 @@ rotStopBtn.addEventListener('click', async () => {
     }
   } catch (e) {
     rotStatus.textContent = `✗ ${e.message}`; rotStatus.className = 'status-err';
+  }
+});
+
+// ── Countdown timer ──────────────────────────────────────────────────────────
+cdStartBtn.addEventListener('click', async () => {
+  const secs  = parseInt(cdSeconds.value, 10);
+  const label = cdLabel.value.trim();
+  if (!secs || secs < 1) {
+    cdStatus.textContent = 'Enter a duration in seconds.';
+    cdStatus.className   = 'status-err'; return;
+  }
+  cdStartBtn.disabled = true;
+  cdStatus.textContent = '⏳ Starting…'; cdStatus.className = '';
+  try {
+    const body = { seconds: secs };
+    if (label) body.label = label;
+    const r = await fetch('/api/countdown', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    if (r.ok) {
+      const msg = label ? `Countdown: ${secs}s "${label}"` : `Countdown: ${secs}s`;
+      cdStatus.textContent = `✓ ${msg}`; cdStatus.className = 'status-ok';
+      logEntry(msg, 'ok'); fetchStatus();
+    } else {
+      const err = await r.text();
+      cdStatus.textContent = `✗ ${err}`; cdStatus.className = 'status-err';
+      logEntry(`Countdown error: ${err}`, 'err');
+    }
+  } catch (e) {
+    cdStatus.textContent = `✗ ${e.message}`; cdStatus.className = 'status-err';
+    logEntry(`Countdown error: ${e.message}`, 'err');
+  } finally { cdStartBtn.disabled = false; }
+});
+
+cdCancelBtn.addEventListener('click', async () => {
+  try {
+    const r = await fetch('/api/clear', { method: 'POST' });
+    if (r.ok) {
+      cdStatus.textContent = '✓ Countdown cancelled'; cdStatus.className = 'status-ok';
+      logEntry('Countdown cancelled', 'ok'); fetchStatus();
+    } else {
+      cdStatus.textContent = `✗ ${await r.text()}`; cdStatus.className = 'status-err';
+    }
+  } catch (e) {
+    cdStatus.textContent = `✗ ${e.message}`; cdStatus.className = 'status-err';
   }
 });
 

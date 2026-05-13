@@ -19,7 +19,7 @@ use ttlcd::{
         render_clock, render_clock_sysinfo, render_cpu_detail,
         render_disk_usage, render_network, render_process_top,
         render_custom_text, render_sysinfo, render_solid, render_test_card,
-        render_temperature, render_memory_detail,
+        render_temperature, render_memory_detail, render_countdown,
         CustomTextPayload,
     },
     encode_for_panel, letterbox_for_panel, Panel, DEFAULT_JPEG_QUALITY, PANEL_HEIGHT, PANEL_WIDTH,
@@ -571,6 +571,7 @@ enum DisplayMode {
     ProcessTop,
     Temperature,
     MemoryDetail,
+    Countdown,
     Idle,
     CustomImage,
     CustomText,
@@ -580,7 +581,7 @@ enum DisplayMode {
 impl DisplayMode {
     const ALL_NAMES: &'static [&'static str] = &[
         "clock", "clock_sysinfo", "sysinfo", "cpu_detail",
-        "network", "disk_usage", "process_top", "temperature", "memory_detail", "idle",
+        "network", "disk_usage", "process_top", "temperature", "memory_detail", "countdown", "idle",
     ];
 
     fn from_str_name(s: &str) -> Option<Self> {
@@ -594,6 +595,7 @@ impl DisplayMode {
             "process_top"   => Some(DisplayMode::ProcessTop),
             "temperature"   => Some(DisplayMode::Temperature),
             "memory_detail" => Some(DisplayMode::MemoryDetail),
+            "countdown"    => Some(DisplayMode::Countdown),
             "idle"          => Some(DisplayMode::Idle),
             "custom_text"   => Some(DisplayMode::CustomText),
             "slideshow"     => Some(DisplayMode::Slideshow),
@@ -612,6 +614,7 @@ impl DisplayMode {
             DisplayMode::ProcessTop   => "process_top",
             DisplayMode::Temperature  => "temperature",
             DisplayMode::MemoryDetail => "memory_detail",
+            DisplayMode::Countdown   => "countdown",
             DisplayMode::Idle         => "idle",
             DisplayMode::CustomImage  => "image",
             DisplayMode::CustomText   => "custom_text",
@@ -622,7 +625,7 @@ impl DisplayMode {
     /// True for modes where content was pushed by the user and they may want
     /// to "return" to the previous live stats mode.
     fn is_transient(&self) -> bool {
-        matches!(self, DisplayMode::CustomText | DisplayMode::CustomImage | DisplayMode::Slideshow)
+        matches!(self, DisplayMode::CustomText | DisplayMode::CustomImage | DisplayMode::Slideshow | DisplayMode::Countdown)
     }
 }
 
@@ -661,6 +664,8 @@ struct DaemonState {
     rotate_deg: Arc<Mutex<u16>>,
     /// Ring-buffer of the last 50 text/alert notifications sent to the panel.
     history:    Arc<Mutex<VecDeque<HistoryEntry>>>,
+    /// Countdown target (Unix seconds) + total duration + label.
+    countdown:  Arc<Mutex<Option<CountdownState>>>,
 }
 
 #[tokio::main]
@@ -714,6 +719,7 @@ async fn run_daemon(
         headless,
         rotate_deg: Arc::new(Mutex::new(rotate_deg)),
         history:    Arc::new(Mutex::new(VecDeque::with_capacity(50))),
+        countdown:  Arc::new(Mutex::new(None)),
     };
 
     let panel: Arc<Mutex<Option<Panel>>> = if headless {
@@ -789,9 +795,10 @@ async fn run_daemon(
             // Runtime quality and orientation
             .route("/api/quality",        web::post().to(api_set_quality))
             .route("/api/orient",         web::post().to(api_set_orient))
-            // Health check & blank
+            // Health check, blank, countdown
             .route("/health",             web::get().to(api_health))
             .route("/api/blank",          web::post().to(api_blank))
+            .route("/api/countdown",      web::post().to(api_countdown))
             // Prometheus metrics
             .route("/metrics",            web::get().to(api_metrics))
             // Clear all presets
@@ -908,6 +915,22 @@ fn display_loop(panel: Arc<Mutex<Option<Panel>>>, state: DaemonState) {
                 DisplayMode::ProcessTop   => (render_process_top(),    3),
                 DisplayMode::Temperature  => (render_temperature(),    5),
                 DisplayMode::MemoryDetail => (render_memory_detail(),  4),
+                DisplayMode::Countdown => {
+                    let cd_opt = state.countdown.lock().unwrap().clone();
+                    if let Some(cd) = cd_opt {
+                        let now_secs = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .map(|d| d.as_secs())
+                            .unwrap_or(0);
+                        let remaining = (cd.target_unix as i64) - (now_secs as i64);
+                        (render_countdown(remaining, cd.total_secs as i64, &cd.label), 1)
+                    } else {
+                        (render_custom_text(&CustomTextPayload {
+                            title: Some("No countdown set".into()),
+                            ..Default::default()
+                        }), 5)
+                    }
+                },
                 DisplayMode::Idle
                 | DisplayMode::CustomImage
                 | DisplayMode::CustomText
@@ -1163,6 +1186,7 @@ async fn api_modes_list() -> impl Responder {
         ModeInfo { name: "process_top",   description: "Top processes sorted by CPU usage" },
         ModeInfo { name: "temperature",   description: "Thermal sensor readings with color-coded bars" },
         ModeInfo { name: "memory_detail", description: "Detailed RAM breakdown: used, cached, free, swap" },
+        ModeInfo { name: "countdown",    description: "Countdown timer with colour transitions and progress bar" },
         ModeInfo { name: "idle",          description: "Keepalive — no display update, prevents blank" },
     ])
 }
@@ -1256,6 +1280,60 @@ async fn api_screenshot(state: web::Data<DaemonState>) -> impl Responder {
             .insert_header(("Cache-Control", "no-store"))
             .finish(),
     }
+}
+
+// ─── Countdown timer ─────────────────────────────────────────────────────────
+
+/// POST /api/countdown — start a countdown timer on the panel.
+///
+/// Body (JSON):
+///   { "seconds": 300 }                         ← count down from N seconds
+///   { "until": "2026-05-13T21:00:00+00:00" }   ← count down to a UTC datetime
+///   { "label": "Build cooldown" }              ← optional label
+///
+/// The label is optional.  Supply `seconds` OR `until`, not both.
+#[derive(Deserialize)]
+struct CountdownRequest {
+    /// Total seconds to count down from.
+    #[serde(default)]
+    seconds: Option<u64>,
+    /// ISO-8601 datetime string to count down to.
+    #[serde(default)]
+    until:   Option<String>,
+    #[serde(default)]
+    label:   Option<String>,
+}
+
+async fn api_countdown(state: web::Data<DaemonState>, body: web::Json<CountdownRequest>) -> impl Responder {
+    let req = body.into_inner();
+    let now_secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+
+    let (target_unix, total_secs) = if let Some(secs) = req.seconds {
+        if secs == 0 { return HttpResponse::BadRequest().body("seconds must be > 0"); }
+        (now_secs + secs, secs)
+    } else if let Some(ref until_str) = req.until {
+        // Parse ISO-8601 with chrono
+        match chrono::DateTime::parse_from_rfc3339(until_str) {
+            Ok(dt) => {
+                let target = dt.timestamp() as u64;
+                if target <= now_secs { return HttpResponse::BadRequest().body("'until' is in the past"); }
+                (target, target - now_secs)
+            }
+            Err(e) => return HttpResponse::BadRequest().body(format!("invalid datetime: {e}")),
+        }
+    } else {
+        return HttpResponse::BadRequest().body("supply 'seconds' or 'until'");
+    };
+
+    let label = req.label.unwrap_or_default();
+    *state.countdown.lock().unwrap() = Some(CountdownState { target_unix, total_secs, label: label.clone() });
+    { let cur = state.mode.lock().unwrap().clone(); if !cur.is_transient() { *state.prev_mode.lock().unwrap() = cur; } }
+    *state.mode.lock().unwrap() = DisplayMode::Countdown;
+    push_history(&state, HistoryKind::Alert, format!("Countdown: {}s — {}", total_secs, label));
+    HttpResponse::Ok().body(format!("countdown started: {}s", total_secs))
 }
 
 // ─── Health check ─────────────────────────────────────────────────────────────
@@ -1357,6 +1435,19 @@ async fn api_image_path(state: web::Data<DaemonState>, body: web::Json<ImagePath
     *state.pending_jpeg.lock().unwrap() = Some(jpeg);
     *state.mode.lock().unwrap()         = DisplayMode::CustomImage;
     HttpResponse::Ok().body("image queued")
+}
+
+// ─── Countdown timer state ───────────────────────────────────────────────────
+
+/// Persistent state for the countdown display mode.
+#[derive(Clone)]
+struct CountdownState {
+    /// Unix timestamp (seconds) when the countdown expires.
+    target_unix:  u64,
+    /// Original total duration in seconds (for progress bar).
+    total_secs:   u64,
+    /// Optional label shown below the clock.
+    label:        String,
 }
 
 // ─── Notification history ────────────────────────────────────────────────────

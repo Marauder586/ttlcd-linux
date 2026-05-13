@@ -755,3 +755,16 @@ button.danger-btn:hover {
   margin: 0 auto;
   border-radius: calc(var(--radius) - 2px);
 }
+
+/* ── Countdown form ───────────────────────────────────────────────────── */
+
+.countdown-form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.8rem;
+}
+
+#cd-status {
+  font-size: 0.85rem;
+  min-height: 1.2rem;
+}

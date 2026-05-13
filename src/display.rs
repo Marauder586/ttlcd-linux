@@ -1013,6 +1013,18 @@ mod tests {
     fn test_memory_detail_size() {
         assert_panel_size(&render_memory_detail());
     }
+
+    #[test]
+    fn test_countdown_size() {
+        // Renders with time remaining
+        assert_panel_size(&render_countdown(125, 300, "Build cooldown"));
+    }
+
+    #[test]
+    fn test_countdown_expired_size() {
+        // Renders the "TIME'S UP" screen
+        assert_panel_size(&render_countdown(0, 300, "Done"));
+    }
 }
 
 /// Thermal sensor detail — all available temperature components with color-coded bars.
@@ -1180,6 +1192,72 @@ pub fn render_memory_detail() -> DynamicImage {
     y += 24;
     let uptime = format_uptime(System::uptime());
     draw_text_mut(&mut img, SUBTEXT, 20, y, s, &bold, &format!("Uptime  {}", uptime));
+
+    DynamicImage::ImageRgb8(img)
+}
+
+/// Countdown timer display.
+///
+/// Shows remaining time until `target_unix_secs` as a large clock.  The accent
+/// colour transitions green → yellow → red as the deadline approaches (based on
+/// the original total duration `total_secs`).
+///
+/// When `remaining_secs == 0` the panel shows a "TIME'S UP" message in red.
+pub fn render_countdown(remaining_secs: i64, total_secs: i64, label: &str) -> DynamicImage {
+    let mut img  = blank();
+    let bold = font_bold();
+    let mono = font_mono();
+
+    let now      = Local::now();
+    let time_str = now.format("%H:%M:%S").to_string();
+    let tw = text_width(&mono, PxScale::from(22.0), &time_str);
+    draw_text_mut(&mut img, OVERLAY0, 480 - 20 - tw, 18, PxScale::from(22.0), &mono, &time_str);
+
+    if remaining_secs <= 0 {
+        // Time is up
+        draw_centered(&mut img, &bold, PxScale::from(60.0), 160, RED,  "TIME'S");
+        draw_centered(&mut img, &bold, PxScale::from(60.0), 230, RED,  "UP");
+        if !label.is_empty() {
+            draw_centered(&mut img, &bold, PxScale::from(22.0), 320, OVERLAY0, label);
+        }
+        return DynamicImage::ImageRgb8(img);
+    }
+
+    // Colour: green when > 50% left, yellow 20–50%, red < 20%
+    let frac_left = if total_secs > 0 {
+        (remaining_secs as f32 / total_secs as f32).clamp(0.0, 1.0)
+    } else { 1.0 };
+    let accent = if frac_left > 0.5 { GREEN } else if frac_left > 0.2 { YELLOW } else { RED };
+
+    // Format remaining time
+    let h = remaining_secs / 3600;
+    let m = (remaining_secs % 3600) / 60;
+    let s = remaining_secs % 60;
+    let (time_display, scale) = if h > 0 {
+        (format!("{:02}:{:02}:{:02}", h, m, s), PxScale::from(72.0))
+    } else {
+        (format!("{:02}:{:02}", m, s), PxScale::from(90.0))
+    };
+
+    // Large countdown
+    let tw2 = text_width(&mono, scale, &time_display);
+    let x   = ((480 - tw2) / 2).max(0);
+    draw_text_mut(&mut img, accent, x, 140, scale, &mono, &time_display);
+
+    // Progress bar (remaining fraction)
+    draw_bar(&mut img, 20, 260, 440, 16, frac_left, accent);
+
+    // Label
+    if !label.is_empty() {
+        let lbl = if label.len() > 30 { format!("{}…", &label[..29]) } else { label.to_string() };
+        draw_centered(&mut img, &bold, PxScale::from(22.0), 296, SUBTEXT, &lbl);
+    }
+
+    // Time elapsed / remaining subtext
+    let _elapsed = total_secs - remaining_secs;
+    let pct = ((1.0 - frac_left) * 100.0) as u32;
+    let sub = format!("{}% elapsed  ({} remaining)", pct, format_uptime(remaining_secs as u64));
+    draw_centered(&mut img, &bold, PxScale::from(15.0), 336, OVERLAY0, &sub);
 
     DynamicImage::ImageRgb8(img)
 }
