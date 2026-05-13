@@ -2,18 +2,56 @@
 # notify-panel.sh — push a notification to the ttlcd panel via POST /api/text
 #
 # Usage:
-#   ./notify-panel.sh "Title" "Subtitle" "Line1" "Line2" [progress 0.0-1.0] [color]
+#   ./notify-panel.sh "Title" "Subtitle" "Line1" "Line2" "Line3" [progress] [color]
+#
+# Arguments:
+#   1  Title      (large heading, max 22 chars)
+#   2  Subtitle   (smaller line, max 38 chars; pass "" to omit)
+#   3  Line 1     (body text; pass "" to omit)
+#   4  Line 2
+#   5  Line 3
+#   6  Progress   0.0–1.0 (pass "" to omit progress bar)
+#   7  Color      blue|green|yellow|red|teal|mauve|peach|white  (default: blue)
+#
+# Environment:
+#   TTLCD_URL   base URL of the daemon (default: http://localhost:7070)
 #
 # Examples:
-#   # Show a build success:
-#   ./notify-panel.sh "Build OK" "ttlcd-rs v0.2" "$(date '+%H:%M:%S')" "" 1.0 green
+#   # Build success
+#   ./notify-panel.sh "Build OK" "ttlcd-rs v0.3" "" "" "" 1.0 green
 #
-#   # Show a build failure:
-#   ./notify-panel.sh "Build FAILED" "ttlcd-rs" "See CI logs" "" 0 red
+#   # Build failure
+#   ./notify-panel.sh "Build FAILED" "check CI logs" "" "" "" 0.0 red
 #
-#   # From a Makefile or CI script:
-#   make build && ./notify-panel.sh "Build OK" "" "" "" 1.0 green \
-#             || ./notify-panel.sh "Build FAILED" "check logs" "" "" 0 red
+#   # Deployment started
+#   ./notify-panel.sh "Deploying" "production" "Rolling update…" "" "" 0.3 teal
+#
+#   # Simple one-liner (most args optional)
+#   ./notify-panel.sh "Hello World"
+#
+#   # From a Makefile / CI pipeline:
+#   make build && ./notify-panel.sh "Build OK"  "" "" "" "" 1.0 green \
+#             || ./notify-panel.sh "Build FAIL" "" "" "" "" 0.0 red
+#
+# Preset management (requires curl + jq):
+#   # Save current payload as a preset
+#   curl -sf -X POST $TTLCD_URL/api/presets \
+#     -H 'Content-Type: application/json' \
+#     -d '{"name":"build-ok","payload":{"title":"Build OK","color":"green","progress":1.0,"show_time":true}}'
+#
+#   # Apply a saved preset
+#   curl -sf -X POST $TTLCD_URL/api/presets/build-ok
+#
+# Auto-rotation:
+#   # Start rotating through modes every 30 seconds
+#   curl -sf -X POST $TTLCD_URL/api/rotation \
+#     -H 'Content-Type: application/json' \
+#     -d '{"modes":["clock","sysinfo","cpu_detail","network"],"interval":30}'
+#
+#   # Stop rotation
+#   curl -sf -X POST $TTLCD_URL/api/rotation \
+#     -H 'Content-Type: application/json' \
+#     -d '{"modes":[],"interval":0}'
 
 set -euo pipefail
 
@@ -27,7 +65,7 @@ LINE3="${5:-}"
 PROGRESS="${6:-}"
 COLOR="${7:-blue}"
 
-# Build the JSON payload
+# Build the JSON payload using Python (no external deps beyond standard library)
 payload=$(python3 -c "
 import json, sys
 
@@ -56,4 +94,4 @@ curl -sf \
      -X POST "${DAEMON_URL}/api/text" \
      -H 'Content-Type: application/json' \
      -d "$payload" \
-  && echo "Panel updated"
+  && echo "Panel updated: ${TITLE:-<no title>}"

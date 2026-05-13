@@ -4,7 +4,8 @@
 //! Run `ttlcd daemon` to start the HTTP control server (default port 7070).
 //! Run `ttlcd daemon --headless` to try the web UI without the USB device.
 
-use std::path::PathBuf;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -18,7 +19,7 @@ use ttlcd::{
         render_clock, render_clock_sysinfo, render_cpu_detail,
         render_disk_usage, render_network, render_process_top,
         render_custom_text, render_sysinfo, render_solid, render_test_card,
-    CustomTextPayload,
+        CustomTextPayload,
     },
     encode_for_panel, letterbox_for_panel, Panel, DEFAULT_JPEG_QUALITY, PANEL_HEIGHT, PANEL_WIDTH,
 };
@@ -58,12 +59,10 @@ enum Cmd {
         path: PathBuf,
         #[arg(long, default_value_t = DEFAULT_JPEG_QUALITY)]
         quality: u8,
-        /// Letterbox (keep aspect ratio) instead of stretching.
         #[arg(long)]
         letterbox: bool,
         #[arg(long)]
         no_init: bool,
-        /// Rotate the image 0/90/180/270 degrees before sending.
         #[arg(long, default_value_t = 0, value_parser = parse_rotation)]
         rotate: u16,
     },
@@ -133,21 +132,25 @@ enum Cmd {
     Daemon {
         #[arg(long, default_value_t = 7070)]
         port: u16,
-        /// Initial display mode.
         #[arg(long, default_value = "clock_sysinfo", value_parser = parse_mode)]
         mode: String,
         #[arg(long, default_value_t = DEFAULT_JPEG_QUALITY)]
         quality: u8,
-        /// Run web server without USB device (renders frames but doesn't send them).
-        /// The last rendered frame is served at /api/preview for debugging.
+        /// Run without USB device (renders frames but doesn't send them).
         #[arg(long)]
         headless: bool,
-        /// Rotate all output 0/90/180/270 degrees (for panels mounted sideways).
+        /// Rotate all output 0/90/180/270 degrees.
         #[arg(long, default_value_t = 0, value_parser = parse_rotation)]
         rotate: u16,
+        /// Comma-separated list of modes to auto-rotate (e.g. clock,sysinfo,cpu_detail).
+        #[arg(long, value_delimiter = ',')]
+        rotation_modes: Vec<String>,
+        /// Seconds between auto-rotation advances (0 = disabled).
+        #[arg(long, default_value_t = 0)]
+        rotation_interval: u64,
     },
 
-    /// Live network I/O rates. Refreshes every ~3 seconds (1s for sampling).
+    /// Live network I/O rates. Refreshes every ~3 seconds.
     Network {
         #[arg(long, default_value_t = 3)]
         interval: u64,
@@ -263,74 +266,112 @@ fn apply_rotation(img: DynamicImage, deg: u16) -> DynamicImage {
     }
 }
 
-// ─── Helpers ──────────────────────────────────────────────────────────────────
+// ─── Misc helpers ─────────────────────────────────────────────────────────────
 
 fn open_panel(vid: u16, pid: u16, reset: bool) -> anyhow::Result<Panel> {
-    if reset {
-        Panel::open_with_reset(vid, pid)
-    } else {
-        Panel::open(vid, pid)
-    }
+    if reset { Panel::open_with_reset(vid, pid) } else { Panel::open(vid, pid) }
 }
 
+/// Collect sorted image file paths from a directory.
+fn collect_image_paths(dir: &Path) -> Vec<PathBuf> {
+    let mut paths: Vec<PathBuf> = std::fs::read_dir(dir)
+        .ok()
+        .into_iter()
+        .flat_map(|rd| rd.flatten())
+        .map(|e| e.path())
+        .filter(|p| matches!(
+            p.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase().as_str(),
+            "jpg" | "jpeg" | "png" | "bmp" | "gif"
+        ))
+        .collect();
+    paths.sort();
+    paths
+}
 
 // ─── Config file ──────────────────────────────────────────────────────────────
 
-/// Persistent settings loaded from `~/.config/ttlcd/config.toml`.
-/// All fields are optional; CLI args override these values.
 #[derive(Debug, Default, serde::Deserialize)]
 #[serde(default)]
 struct Config {
-    device:  ConfigDevice,
-    daemon:  ConfigDaemon,
+    device: ConfigDevice,
+    daemon: ConfigDaemon,
 }
 
 #[derive(Debug, Default, serde::Deserialize)]
 #[serde(default)]
 struct ConfigDevice {
-    vid: Option<String>,  // hex, e.g. "264a"
+    vid: Option<String>,
     pid: Option<String>,
 }
 
 #[derive(Debug, Default, serde::Deserialize)]
 #[serde(default)]
 struct ConfigDaemon {
-    port:       Option<u16>,
-    mode:       Option<String>,
-    quality:    Option<u8>,
-    rotate:     Option<u16>,
-    headless:   Option<bool>,
+    port:              Option<u16>,
+    mode:              Option<String>,
+    quality:           Option<u8>,
+    rotate:            Option<u16>,
+    headless:          Option<bool>,
+    /// Comma-separated or array of mode names to cycle through.
+    rotation_modes:    Option<Vec<String>>,
+    /// Seconds between auto-rotation advances (0 = disabled).
+    rotation_interval: Option<u64>,
 }
 
 fn load_config() -> Config {
-    let path = dirs_config_path();
-    let Some(p) = path else { return Config::default() };
-    let text = match std::fs::read_to_string(&p) {
-        Ok(t) => t,
-        Err(_) => return Config::default(),
-    };
-    match toml::from_str::<Config>(&text) {
-        Ok(c) => {
-            log::info!("loaded config from {}", p.display());
-            c
-        }
-        Err(e) => {
-            log::warn!("config parse error ({}): {e}", p.display());
-            Config::default()
-        }
+    let Some(p) = dirs_config_path() else { return Config::default() };
+    match std::fs::read_to_string(&p) {
+        Err(_) => Config::default(),
+        Ok(text) => match toml::from_str::<Config>(&text) {
+            Ok(c)  => { log::info!("loaded config from {}", p.display()); c }
+            Err(e) => { log::warn!("config parse error ({}): {e}", p.display()); Config::default() }
+        },
     }
 }
 
-fn dirs_config_path() -> Option<std::path::PathBuf> {
-    // XDG_CONFIG_HOME or ~/.config
+fn dirs_config_path() -> Option<PathBuf> {
     let base = std::env::var("XDG_CONFIG_HOME")
-        .map(std::path::PathBuf::from)
+        .map(PathBuf::from)
         .unwrap_or_else(|_| {
             let home = std::env::var("HOME").unwrap_or_default();
-            std::path::PathBuf::from(home).join(".config")
+            PathBuf::from(home).join(".config")
         });
     if base.as_os_str().is_empty() { return None; }
     Some(base.join("ttlcd").join("config.toml"))
+}
+
+// ─── Preset persistence ───────────────────────────────────────────────────────
+
+fn presets_path() -> Option<PathBuf> {
+    let p = dirs_config_path()?;
+    Some(p.parent()?.join("presets.json"))
+}
+
+fn load_presets_from_disk() -> HashMap<String, CustomTextPayload> {
+    (|| -> Option<HashMap<String, CustomTextPayload>> {
+        let path = presets_path()?;
+        let text = std::fs::read_to_string(&path).ok()?;
+        serde_json::from_str(&text).ok()
+    })()
+    .unwrap_or_default()
+}
+
+fn save_presets_to_disk(presets: &HashMap<String, CustomTextPayload>) {
+    let path = match presets_path() {
+        Some(p) => p,
+        None    => return,
+    };
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    match serde_json::to_string_pretty(presets) {
+        Ok(text) => {
+            if let Err(e) = std::fs::write(&path, &text) {
+                log::warn!("could not save presets to {}: {e}", path.display());
+            }
+        }
+        Err(e) => log::warn!("could not serialise presets: {e}"),
+    }
 }
 
 // ─── Entry point ──────────────────────────────────────────────────────────────
@@ -339,9 +380,6 @@ fn main() -> Result<()> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
     let cli = Cli::parse();
     let cfg = load_config();
-    // Apply config defaults where CLI kept the default value.
-    // (This is a simple approach: if CLI has same value as clap default, use config.)
-    let _ = &cfg; // used in Daemon arm below
 
     match cli.cmd {
         Cmd::Init => {
@@ -353,16 +391,12 @@ fn main() -> Result<()> {
         }
 
         Cmd::Image { path, quality, letterbox, no_init, rotate } => {
-            let img = image::open(&path)
-                .with_context(|| format!("open {}", path.display()))?;
+            let img = image::open(&path).with_context(|| format!("open {}", path.display()))?;
             let img = apply_rotation(img, rotate);
             let mut panel = open_panel(cli.vid, cli.pid, cli.reset)?;
             if !no_init { panel.init()?; }
-            if letterbox {
-                panel.send_jpeg(&letterbox_for_panel(&img, quality)?)?;
-            } else {
-                panel.send_image(&img, quality)?;
-            }
+            if letterbox { panel.send_jpeg(&letterbox_for_panel(&img, quality)?)?; }
+            else         { panel.send_image(&img, quality)?; }
             log::info!("frame sent");
         }
 
@@ -387,10 +421,7 @@ fn main() -> Result<()> {
         Cmd::Sysinfo { interval, quality, no_init } => {
             let mut panel = open_panel(cli.vid, cli.pid, cli.reset)?;
             if !no_init { panel.init()?; }
-            loop {
-                panel.send_image(&render_sysinfo(), quality)?;
-                thread::sleep(Duration::from_secs(interval));
-            }
+            loop { panel.send_image(&render_sysinfo(), quality)?; thread::sleep(Duration::from_secs(interval)); }
         }
 
         Cmd::Clock { quality, no_init } => {
@@ -400,26 +431,19 @@ fn main() -> Result<()> {
                 let start = Instant::now();
                 panel.send_image(&render_clock(), quality)?;
                 let elapsed = start.elapsed();
-                if elapsed < Duration::from_secs(1) {
-                    thread::sleep(Duration::from_secs(1) - elapsed);
-                }
+                if elapsed < Duration::from_secs(1) { thread::sleep(Duration::from_secs(1) - elapsed); }
             }
         }
 
         Cmd::Slideshow { dir, interval, quality, no_init, letterbox } => {
             let frames = load_slideshow_frames(&dir);
-            if frames.is_empty() {
-                anyhow::bail!("No supported images in {}", dir.display());
-            }
+            if frames.is_empty() { anyhow::bail!("No supported images in {}", dir.display()); }
             let mut panel = open_panel(cli.vid, cli.pid, cli.reset)?;
             if !no_init { panel.init()?; }
             loop {
                 for img in &frames {
-                    if letterbox {
-                        panel.send_jpeg(&letterbox_for_panel(img, quality)?)?;
-                    } else {
-                        panel.send_image(img, quality)?;
-                    }
+                    if letterbox { panel.send_jpeg(&letterbox_for_panel(img, quality)?)?; }
+                    else         { panel.send_image(img, quality)?; }
                     thread::sleep(Duration::from_secs(interval));
                 }
             }
@@ -437,10 +461,7 @@ fn main() -> Result<()> {
         Cmd::CpuDetail { interval, quality, no_init } => {
             let mut panel = open_panel(cli.vid, cli.pid, cli.reset)?;
             if !no_init { panel.init()?; }
-            loop {
-                panel.send_image(&render_cpu_detail(), quality)?;
-                thread::sleep(Duration::from_secs(interval));
-            }
+            loop { panel.send_image(&render_cpu_detail(), quality)?; thread::sleep(Duration::from_secs(interval)); }
         }
 
         Cmd::ClockSysinfo { quality, no_init } => {
@@ -450,19 +471,14 @@ fn main() -> Result<()> {
                 let start = Instant::now();
                 panel.send_image(&render_clock_sysinfo(), quality)?;
                 let elapsed = start.elapsed();
-                if elapsed < Duration::from_secs(2) {
-                    thread::sleep(Duration::from_secs(2) - elapsed);
-                }
+                if elapsed < Duration::from_secs(2) { thread::sleep(Duration::from_secs(2) - elapsed); }
             }
         }
 
         Cmd::DiskUsage { interval, quality, no_init } => {
             let mut panel = open_panel(cli.vid, cli.pid, cli.reset)?;
             if !no_init { panel.init()?; }
-            loop {
-                panel.send_image(&render_disk_usage(), quality)?;
-                thread::sleep(Duration::from_secs(interval));
-            }
+            loop { panel.send_image(&render_disk_usage(), quality)?; thread::sleep(Duration::from_secs(interval)); }
         }
 
         Cmd::ProcessTop { interval, quality, no_init } => {
@@ -474,8 +490,8 @@ fn main() -> Result<()> {
             }
         }
 
-        Cmd::Daemon { port, mode, quality, headless, rotate } => {
-            // Config file provides defaults; CLI args still override.
+        Cmd::Daemon { port, mode, quality, headless, rotate,
+                      rotation_modes, rotation_interval } => {
             let eff_port     = cfg.daemon.port.unwrap_or(port);
             let eff_mode     = cfg.daemon.mode.clone().unwrap_or(mode);
             let eff_quality  = cfg.daemon.quality.unwrap_or(quality);
@@ -487,22 +503,31 @@ fn main() -> Result<()> {
             let eff_pid = cfg.device.pid.as_deref()
                 .and_then(|s| u16::from_str_radix(s.trim_start_matches("0x"), 16).ok())
                 .unwrap_or(cli.pid);
-            run_daemon(eff_vid, eff_pid, eff_port, eff_mode, eff_quality, eff_headless, eff_rotate)?;
+            // Rotation: CLI takes precedence over config
+            let eff_rot_modes = if !rotation_modes.is_empty() {
+                rotation_modes
+            } else {
+                cfg.daemon.rotation_modes.unwrap_or_default()
+            };
+            let eff_rot_interval = if rotation_interval > 0 {
+                rotation_interval
+            } else {
+                cfg.daemon.rotation_interval.unwrap_or(0)
+            };
+            run_daemon(
+                eff_vid, eff_pid, eff_port, eff_mode, eff_quality,
+                eff_headless, eff_rotate, eff_rot_modes, eff_rot_interval,
+            )?;
         }
 
         Cmd::Keepalive => {
             let mut panel = open_panel(cli.vid, cli.pid, cli.reset)?;
             panel.init()?;
-            loop {
-                panel.keepalive()?;
-                thread::sleep(Duration::from_secs(2));
-            }
+            loop { panel.keepalive()?; thread::sleep(Duration::from_secs(2)); }
         }
 
-        Cmd::Debug {
-            quality, no_prelude: _, no_init_ack,
-            packet_delay_ms, pings, ping_opcode, solid,
-        } => {
+        Cmd::Debug { quality, no_prelude: _, no_init_ack,
+                     packet_delay_ms, pings, ping_opcode, solid } => {
             let mut panel = open_panel(cli.vid, cli.pid, cli.reset)?;
             if no_init_ack { panel.init_no_ack()?; } else { panel.init()?; }
             for _ in 0..pings {
@@ -510,16 +535,11 @@ fn main() -> Result<()> {
                 thread::sleep(Duration::from_millis(200));
             }
             let img = if let Some(rgb) = solid {
-                render_solid(
-                    rgb.first().copied().unwrap_or(255),
-                    rgb.get(1).copied().unwrap_or(0),
-                    rgb.get(2).copied().unwrap_or(0),
-                )
-            } else {
-                test_pattern()
-            };
-            let jpeg = encode_for_panel(&img, quality)?;
-            panel.send_jpeg_with_delay(&jpeg, packet_delay_ms)?;
+                render_solid(rgb.first().copied().unwrap_or(255),
+                             rgb.get(1).copied().unwrap_or(0),
+                             rgb.get(2).copied().unwrap_or(0))
+            } else { test_pattern() };
+            panel.send_jpeg_with_delay(&encode_for_panel(&img, quality)?, packet_delay_ms)?;
             for _ in 0..pings {
                 panel.send_ctrl_opcode(ping_opcode as u8)?;
                 thread::sleep(Duration::from_millis(200));
@@ -527,20 +547,13 @@ fn main() -> Result<()> {
         }
 
         Cmd::Encode { input, output, quality, letterbox, rotate } => {
-            let img = image::open(&input)
-                .with_context(|| format!("open {}", input.display()))?;
+            let img = image::open(&input).with_context(|| format!("open {}", input.display()))?;
             let img = apply_rotation(img, rotate);
-            let bytes = if letterbox {
-                letterbox_for_panel(&img, quality)?
-            } else {
-                encode_for_panel(&img, quality)?
-            };
-            std::fs::write(&output, &bytes)
-                .with_context(|| format!("write {}", output.display()))?;
+            let bytes = if letterbox { letterbox_for_panel(&img, quality)? } else { encode_for_panel(&img, quality)? };
+            std::fs::write(&output, &bytes).with_context(|| format!("write {}", output.display()))?;
             log::info!("wrote {} bytes to {}", bytes.len(), output.display());
         }
     }
-
     Ok(())
 }
 
@@ -557,15 +570,14 @@ enum DisplayMode {
     ProcessTop,
     Idle,
     CustomImage,
-    /// Custom text + progress bar (driven by POST /api/text).
     CustomText,
+    Slideshow,
 }
 
 impl DisplayMode {
     const ALL_NAMES: &'static [&'static str] = &[
         "clock", "clock_sysinfo", "sysinfo", "cpu_detail",
         "network", "disk_usage", "process_top", "idle",
-        // custom_text and image are transient; not listed here
     ];
 
     fn from_str_name(s: &str) -> Option<Self> {
@@ -579,6 +591,7 @@ impl DisplayMode {
             "process_top"   => Some(DisplayMode::ProcessTop),
             "idle"          => Some(DisplayMode::Idle),
             "custom_text"   => Some(DisplayMode::CustomText),
+            "slideshow"     => Some(DisplayMode::Slideshow),
             _               => None,
         }
     }
@@ -595,7 +608,14 @@ impl DisplayMode {
             DisplayMode::Idle         => "idle",
             DisplayMode::CustomImage  => "image",
             DisplayMode::CustomText   => "custom_text",
+            DisplayMode::Slideshow    => "slideshow",
         }
+    }
+
+    /// True for modes where content was pushed by the user and they may want
+    /// to "return" to the previous live stats mode.
+    fn is_transient(&self) -> bool {
+        matches!(self, DisplayMode::CustomText | DisplayMode::CustomImage | DisplayMode::Slideshow)
     }
 }
 
@@ -608,21 +628,30 @@ impl std::str::FromStr for DisplayMode {
 
 // ─── Daemon ───────────────────────────────────────────────────────────────────
 
-/// Shared daemon state accessible from both the USB thread and HTTP handlers.
 #[derive(Clone)]
 struct DaemonState {
     mode:         Arc<Mutex<DisplayMode>>,
-    /// Uploaded JPEG waiting to be shown (set by POST /api/image).
+    /// Mode before transitioning to a transient mode.
+    prev_mode:    Arc<Mutex<DisplayMode>>,
     pending_jpeg: Arc<Mutex<Option<Vec<u8>>>>,
-    /// Last rendered JPEG (for /api/preview in headless mode).
     last_frame:   Arc<Mutex<Option<Vec<u8>>>>,
-    /// Custom text payload (set by POST /api/text).
+    /// Monotonically-increasing counter; incremented with each new stored frame.
+    frame_seq:    Arc<Mutex<u64>>,
     pending_text: Arc<Mutex<Option<CustomTextPayload>>>,
-    quality:      u8,
-    vid:          u16,
-    pid:          u16,
-    headless:     bool,
-    rotate_deg:   u16,
+    /// Named presets (in-memory; persisted to ~/.config/ttlcd/presets.json).
+    presets:      Arc<Mutex<HashMap<String, CustomTextPayload>>>,
+    slideshow_paths:    Arc<Mutex<Vec<PathBuf>>>,
+    slideshow_idx:      Arc<Mutex<usize>>,
+    slideshow_interval: Arc<Mutex<u64>>,
+    /// Ordered list of modes for auto-rotation (empty = disabled).
+    rotation_modes:    Arc<Mutex<Vec<DisplayMode>>>,
+    /// Seconds between auto-rotation advances (0 = disabled).
+    rotation_interval: Arc<Mutex<u64>>,
+    quality:    u8,
+    vid:        u16,
+    pid:        u16,
+    headless:   bool,
+    rotate_deg: u16,
 }
 
 #[tokio::main]
@@ -630,15 +659,45 @@ async fn run_daemon(
     vid: u16, pid: u16, port: u16,
     mode: String, quality: u8,
     headless: bool, rotate_deg: u16,
+    rotation_mode_names: Vec<String>,
+    rotation_interval: u64,
 ) -> Result<()> {
     use actix_web::{web, App, HttpServer};
 
     let initial_mode: DisplayMode = mode.parse().unwrap_or(DisplayMode::ClockSysinfo);
+
+    // Parse rotation modes (ignore unknown and transient ones)
+    let rotation_modes: Vec<DisplayMode> = rotation_mode_names.iter()
+        .filter_map(|s| DisplayMode::from_str_name(s))
+        .filter(|m| !m.is_transient())
+        .collect();
+
+    if rotation_interval > 0 && !rotation_modes.is_empty() {
+        log::info!(
+            "auto-rotation enabled: {} modes, {}s interval",
+            rotation_modes.len(), rotation_interval
+        );
+    }
+
+    // Load persisted presets
+    let saved_presets = load_presets_from_disk();
+    if !saved_presets.is_empty() {
+        log::info!("loaded {} preset(s) from disk", saved_presets.len());
+    }
+
     let state = DaemonState {
-        mode:         Arc::new(Mutex::new(initial_mode)),
-        pending_jpeg: Arc::new(Mutex::new(None)),
-        last_frame:   Arc::new(Mutex::new(None)),
-        pending_text: Arc::new(Mutex::new(None)),
+        prev_mode:          Arc::new(Mutex::new(initial_mode.clone())),
+        mode:               Arc::new(Mutex::new(initial_mode)),
+        pending_jpeg:       Arc::new(Mutex::new(None)),
+        last_frame:         Arc::new(Mutex::new(None)),
+        frame_seq:          Arc::new(Mutex::new(0)),
+        pending_text:       Arc::new(Mutex::new(None)),
+        presets:            Arc::new(Mutex::new(saved_presets)),
+        slideshow_paths:    Arc::new(Mutex::new(Vec::new())),
+        slideshow_idx:      Arc::new(Mutex::new(0)),
+        slideshow_interval: Arc::new(Mutex::new(5)),
+        rotation_modes:     Arc::new(Mutex::new(rotation_modes)),
+        rotation_interval:  Arc::new(Mutex::new(rotation_interval)),
         quality,
         vid,
         pid,
@@ -646,7 +705,6 @@ async fn run_daemon(
         rotate_deg,
     };
 
-    // Open the panel unless headless
     let panel: Arc<Mutex<Option<Panel>>> = if headless {
         log::info!("daemon: headless mode — USB device not opened");
         Arc::new(Mutex::new(None))
@@ -654,27 +712,30 @@ async fn run_daemon(
         let mut p = Panel::open(vid, pid)?;
         p.init()?;
         log::info!(
-            "daemon: panel ready (serial={}); mode={}; rotate={}°; listening on :{port}",
-            p.info.serial,
-            state.mode.lock().unwrap().as_str(),
-            rotate_deg
+            "daemon: panel ready (serial={}); mode={}; rotate={}°; port={}",
+            p.info.serial, state.mode.lock().unwrap().as_str(), rotate_deg, port
         );
         Arc::new(Mutex::new(Some(p)))
     };
 
     if headless {
         log::info!(
-            "daemon: headless; mode={}; rotate={}°; preview at http://localhost:{port}/api/preview",
-            state.mode.lock().unwrap().as_str(),
-            rotate_deg
+            "daemon: headless; mode={}; web UI → http://localhost:{port}/",
+            state.mode.lock().unwrap().as_str()
         );
     }
 
-    // ── USB display thread ─────────────────────────────────────────────────
+    // ── Display thread ────────────────────────────────────────────────────
     {
-        let panel  = Arc::clone(&panel);
+        let panel2 = Arc::clone(&panel);
         let state2 = state.clone();
-        thread::spawn(move || display_loop(panel, state2));
+        thread::spawn(move || display_loop(panel2, state2));
+    }
+
+    // ── Auto-rotation thread ──────────────────────────────────────────────
+    {
+        let state3 = state.clone();
+        thread::spawn(move || rotation_loop(state3));
     }
 
     // ── HTTP server ────────────────────────────────────────────────────────
@@ -685,17 +746,26 @@ async fn run_daemon(
             .app_data(web_state.clone())
             .app_data(web::JsonConfig::default().limit(1024 * 1024))
             .app_data(web::PayloadConfig::default().limit(16 * 1024 * 1024))
-            // API
-            .route("/api/status",   web::get().to(api_status))
-            .route("/api/mode",     web::post().to(api_set_mode))
-            .route("/api/image",    web::post().to(api_upload_image))
-            .route("/api/sysinfo",  web::get().to(api_sysinfo_json))
-            .route("/api/preview",  web::get().to(api_preview_frame))
-            .route("/api/text",     web::post().to(api_text))
+            // Core API
+            .route("/api/status",         web::get().to(api_status))
+            .route("/api/mode",           web::post().to(api_set_mode))
+            .route("/api/image",          web::post().to(api_upload_image))
+            .route("/api/sysinfo",        web::get().to(api_sysinfo_json))
+            .route("/api/preview",        web::get().to(api_preview_frame))
+            .route("/api/text",           web::post().to(api_text))
+            .route("/api/clear",          web::post().to(api_clear))
+            // Presets API
+            .route("/api/presets",        web::get().to(api_presets_list))
+            .route("/api/presets",        web::post().to(api_presets_save))
+            .route("/api/presets/{name}", web::post().to(api_presets_apply))
+            .route("/api/presets/{name}", web::delete().to(api_presets_delete))
+            // Slideshow & rotation
+            .route("/api/slideshow",      web::post().to(api_slideshow))
+            .route("/api/rotation",       web::post().to(api_rotation))
             // Web UI
-            .route("/",                  web::get().to(web_ui_index))
-            .route("/static/app.css",    web::get().to(web_ui_css))
-            .route("/static/app.js",     web::get().to(web_ui_js))
+            .route("/",                   web::get().to(web_ui_index))
+            .route("/static/app.css",     web::get().to(web_ui_css))
+            .route("/static/app.js",      web::get().to(web_ui_js))
     })
     .bind(("0.0.0.0", port))?
     .run()
@@ -705,41 +775,38 @@ async fn run_daemon(
     Ok(())
 }
 
-/// Background loop: renders a frame, (optionally rotates it), stores it as the
-/// last preview, and sends it to the USB panel if not headless.
+// ─── Store a new frame ────────────────────────────────────────────────────────
+
+fn store_frame(state: &DaemonState, jpeg: Vec<u8>) -> Vec<u8> {
+    *state.last_frame.lock().unwrap() = Some(jpeg.clone());
+    *state.frame_seq.lock().unwrap() += 1;
+    jpeg
+}
+
+// ─── Display loop ─────────────────────────────────────────────────────────────
+
 fn display_loop(panel: Arc<Mutex<Option<Panel>>>, state: DaemonState) {
     loop {
         let mode    = state.mode.lock().unwrap().clone();
         let quality = state.quality;
 
-        // Renders the next DynamicImage based on the current mode.
-        // Returns None for Idle (no frame to send, just keepalive) or
-        // CustomImage (handled separately).
         let result: anyhow::Result<()> = (|| {
             match mode {
                 DisplayMode::Idle => {
-                    // Keepalive only — no rendering
-                    let mut guard = panel.lock().unwrap();
-                    if let Some(p) = guard.as_mut() {
-                        p.keepalive()?;
-                    }
+                    let mut g = panel.lock().unwrap();
+                    if let Some(p) = g.as_mut() { p.keepalive()?; }
                     thread::sleep(Duration::from_secs(2));
                     return Ok(());
                 }
                 DisplayMode::CustomImage => {
                     let jpeg = state.pending_jpeg.lock().unwrap().take();
                     if let Some(j) = jpeg {
-                        *state.last_frame.lock().unwrap() = Some(j.clone());
-                        let mut guard = panel.lock().unwrap();
-                        if let Some(p) = guard.as_mut() {
-                            p.send_jpeg(&j)?;
-                        }
+                        let j = store_frame(&state, j);
+                        let mut g = panel.lock().unwrap();
+                        if let Some(p) = g.as_mut() { p.send_jpeg(&j)?; }
                     } else {
-                        // Image already shown; keepalive
-                        let mut guard = panel.lock().unwrap();
-                        if let Some(p) = guard.as_mut() {
-                            p.keepalive()?;
-                        }
+                        let mut g = panel.lock().unwrap();
+                        if let Some(p) = g.as_mut() { p.keepalive()?; }
                     }
                     thread::sleep(Duration::from_secs(2));
                     return Ok(());
@@ -750,70 +817,112 @@ fn display_loop(panel: Arc<Mutex<Option<Panel>>>, state: DaemonState) {
                         let img  = render_custom_text(&p);
                         let img  = apply_rotation(img, state.rotate_deg);
                         let jpeg = encode_for_panel(&img, quality)?;
-                        *state.last_frame.lock().unwrap() = Some(jpeg.clone());
-                        let mut guard = panel.lock().unwrap();
-                        if let Some(panel) = guard.as_mut() {
-                            panel.send_jpeg(&jpeg)?;
-                        }
+                        let jpeg = store_frame(&state, jpeg);
+                        let mut g = panel.lock().unwrap();
+                        if let Some(panel) = g.as_mut() { panel.send_jpeg(&jpeg)?; }
                     } else {
-                        let mut guard = panel.lock().unwrap();
-                        if let Some(p) = guard.as_mut() {
-                            p.keepalive()?;
-                        }
+                        let mut g = panel.lock().unwrap();
+                        if let Some(p) = g.as_mut() { p.keepalive()?; }
                     }
                     thread::sleep(Duration::from_secs(2));
+                    return Ok(());
+                }
+                DisplayMode::Slideshow => {
+                    let paths = state.slideshow_paths.lock().unwrap().clone();
+                    if paths.is_empty() {
+                        let placeholder = render_custom_text(&CustomTextPayload {
+                            title:    Some("Slideshow".into()),
+                            subtitle: Some("No images loaded".into()),
+                            ..Default::default()
+                        });
+                        let placeholder = apply_rotation(placeholder, state.rotate_deg);
+                        let jpeg = store_frame(&state, encode_for_panel(&placeholder, quality)?);
+                        let mut g = panel.lock().unwrap();
+                        if let Some(p) = g.as_mut() { p.send_jpeg(&jpeg)?; }
+                        thread::sleep(Duration::from_secs(2));
+                        return Ok(());
+                    }
+                    let idx = {
+                        let mut g = state.slideshow_idx.lock().unwrap();
+                        let i = *g;
+                        *g = (i + 1) % paths.len();
+                        i
+                    };
+                    let interval = *state.slideshow_interval.lock().unwrap();
+                    let img  = image::open(&paths[idx])?;
+                    let img  = apply_rotation(img, state.rotate_deg);
+                    let jpeg = letterbox_for_panel(&img, quality)?;
+                    let jpeg = store_frame(&state, jpeg);
+                    { let mut g = panel.lock().unwrap(); if let Some(p) = g.as_mut() { p.send_jpeg(&jpeg)?; } }
+                    thread::sleep(Duration::from_secs(interval));
                     return Ok(());
                 }
                 _ => {}
             }
 
-            // For all other modes: render → rotate → encode → store → send
             let (img, sleep_secs): (DynamicImage, u64) = match mode {
-                DisplayMode::Clock        => (render_clock(),        1),
+                DisplayMode::Clock        => (render_clock(),         1),
                 DisplayMode::ClockSysinfo => (render_clock_sysinfo(), 2),
-                DisplayMode::Sysinfo      => (render_sysinfo(),       2),
-                DisplayMode::CpuDetail    => (render_cpu_detail(),    2),
-                DisplayMode::Network      => (render_network(),       2), // 1s internal sleep
-                DisplayMode::DiskUsage    => (render_disk_usage(),    8),
-                DisplayMode::ProcessTop   => (render_process_top(),   3), // ~200ms internal sleep
-                // Handled above
-                DisplayMode::Idle | DisplayMode::CustomImage | DisplayMode::CustomText => unreachable!(),
+                DisplayMode::Sysinfo      => (render_sysinfo(),        2),
+                DisplayMode::CpuDetail    => (render_cpu_detail(),     2),
+                DisplayMode::Network      => (render_network(),        2),
+                DisplayMode::DiskUsage    => (render_disk_usage(),     8),
+                DisplayMode::ProcessTop   => (render_process_top(),    3),
+                DisplayMode::Idle
+                | DisplayMode::CustomImage
+                | DisplayMode::CustomText
+                | DisplayMode::Slideshow => unreachable!(),
             };
 
-            let img = apply_rotation(img, state.rotate_deg);
-            let jpeg = encode_for_panel(&img, quality)?;
-
-            *state.last_frame.lock().unwrap() = Some(jpeg.clone());
-
-            {
-                let mut guard = panel.lock().unwrap();
-                if let Some(p) = guard.as_mut() {
-                    p.send_jpeg(&jpeg)?;
-                }
-            }
-
+            let img  = apply_rotation(img, state.rotate_deg);
+            let jpeg = store_frame(&state, encode_for_panel(&img, quality)?);
+            { let mut g = panel.lock().unwrap(); if let Some(p) = g.as_mut() { p.send_jpeg(&jpeg)?; } }
             thread::sleep(Duration::from_secs(sleep_secs));
             Ok(())
         })();
 
         if let Err(e) = result {
             log::error!("display loop error: {e:#}");
-            log::info!("will retry in 5 s…");
             thread::sleep(Duration::from_secs(5));
-
             if !state.headless {
                 match Panel::open(state.vid, state.pid) {
-                    Ok(mut new_panel) => match new_panel.init() {
-                        Ok(()) => {
-                            log::info!("reconnected to panel (serial={})", new_panel.info.serial);
-                            *panel.lock().unwrap() = Some(new_panel);
-                        }
+                    Ok(mut p) => match p.init() {
+                        Ok(()) => { log::info!("reconnected (serial={})", p.info.serial); *panel.lock().unwrap() = Some(p); }
                         Err(e) => log::warn!("reconnect init failed: {e}"),
                     },
                     Err(e) => log::warn!("reconnect open failed: {e}"),
                 }
             }
         }
+    }
+}
+
+// ─── Auto-rotation loop ───────────────────────────────────────────────────────
+
+fn rotation_loop(state: DaemonState) {
+    loop {
+        let interval = *state.rotation_interval.lock().unwrap();
+        if interval == 0 {
+            // Rotation is disabled; check again after a short sleep.
+            thread::sleep(Duration::from_secs(5));
+            continue;
+        }
+
+        thread::sleep(Duration::from_secs(interval));
+
+        // Only advance if current mode is not transient (user-pushed content).
+        let cur = state.mode.lock().unwrap().clone();
+        if cur.is_transient() { continue; }
+
+        let modes = state.rotation_modes.lock().unwrap().clone();
+        if modes.is_empty() { continue; }
+
+        // Find current mode's position in the rotation list; advance from there.
+        let cur_pos = modes.iter().position(|m| m == &cur).unwrap_or(0);
+        let next    = modes[(cur_pos + 1) % modes.len()].clone();
+        log::info!("auto-rotation: {} → {}", cur.as_str(), next.as_str());
+        *state.prev_mode.lock().unwrap() = next.clone();
+        *state.mode.lock().unwrap()      = next;
     }
 }
 
@@ -826,48 +935,57 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Serialize)]
 struct StatusResponse {
-    mode:            String,
-    version:         &'static str,
-    available_modes: &'static [&'static str],
-    headless:        bool,
-    rotate_deg:      u16,
+    mode:              String,
+    version:           &'static str,
+    available_modes:   &'static [&'static str],
+    headless:          bool,
+    rotate_deg:        u16,
+    frame_seq:         u64,
+    can_clear:         bool,
+    rotation_interval: u64,
+    rotation_modes:    Vec<String>,
 }
 
 async fn api_status(state: web::Data<DaemonState>) -> impl Responder {
-    let mode = state.mode.lock().unwrap().as_str().to_string();
+    let mode      = state.mode.lock().unwrap().as_str().to_string();
+    let frame_seq = *state.frame_seq.lock().unwrap();
+    let can_clear = state.mode.lock().unwrap().is_transient();
+    let rot_interval = *state.rotation_interval.lock().unwrap();
+    let rot_modes: Vec<String> = state.rotation_modes.lock().unwrap()
+        .iter().map(|m| m.as_str().to_string()).collect();
     HttpResponse::Ok().json(StatusResponse {
         mode,
-        version:         env!("CARGO_PKG_VERSION"),
-        available_modes: DisplayMode::ALL_NAMES,
-        headless:        state.headless,
-        rotate_deg:      state.rotate_deg,
+        version:           env!("CARGO_PKG_VERSION"),
+        available_modes:   DisplayMode::ALL_NAMES,
+        headless:          state.headless,
+        rotate_deg:        state.rotate_deg,
+        frame_seq,
+        can_clear,
+        rotation_interval: rot_interval,
+        rotation_modes:    rot_modes,
     })
 }
 
 #[derive(Deserialize)]
-struct SetModeRequest {
-    mode: String,
-}
+struct SetModeRequest { mode: String }
 
-async fn api_set_mode(
-    state: web::Data<DaemonState>,
-    body:  web::Json<SetModeRequest>,
-) -> impl Responder {
-    match body.mode.parse() {
-        Ok(m) => {
-            *state.mode.lock().unwrap() = m;
+async fn api_set_mode(state: web::Data<DaemonState>, body: web::Json<SetModeRequest>) -> impl Responder {
+    match body.mode.parse::<DisplayMode>() {
+        Ok(new_mode) => {
+            if !new_mode.is_transient() {
+                *state.pending_text.lock().unwrap() = None;
+                *state.pending_jpeg.lock().unwrap() = None;
+                *state.prev_mode.lock().unwrap()    = new_mode.clone();
+            }
+            *state.mode.lock().unwrap() = new_mode;
             HttpResponse::Ok().body("ok")
         }
         Err(e) => HttpResponse::BadRequest().body(e),
     }
 }
 
-async fn api_upload_image(
-    state:  web::Data<DaemonState>,
-    mut mp: Multipart,
-) -> impl Responder {
-    let mut raw_bytes: Vec<u8> = Vec::new();
-
+async fn api_upload_image(state: web::Data<DaemonState>, mut mp: Multipart) -> impl Responder {
+    let mut raw: Vec<u8> = Vec::new();
     while let Some(field) = mp.next().await {
         let mut field = match field {
             Ok(f)  => f,
@@ -875,64 +993,166 @@ async fn api_upload_image(
         };
         while let Some(chunk) = field.next().await {
             match chunk {
-                Ok(c)  => raw_bytes.extend_from_slice(&c),
+                Ok(c)  => raw.extend_from_slice(&c),
                 Err(e) => return HttpResponse::BadRequest().body(format!("chunk error: {e}")),
             }
         }
     }
-
-    if raw_bytes.is_empty() {
-        return HttpResponse::BadRequest().body("no image data");
-    }
-
-    let quality    = state.quality;
-    let rotate_deg = state.rotate_deg;
+    if raw.is_empty() { return HttpResponse::BadRequest().body("no image data"); }
 
     let jpeg = match (|| -> anyhow::Result<Vec<u8>> {
-        let img = image::load_from_memory(&raw_bytes)?;
-        let img = apply_rotation(img, rotate_deg);
-        letterbox_for_panel(&img, quality)
+        let img = image::load_from_memory(&raw)?;
+        letterbox_for_panel(&apply_rotation(img, state.rotate_deg), state.quality)
     })() {
         Ok(j)  => j,
         Err(e) => return HttpResponse::UnprocessableEntity().body(format!("decode error: {e}")),
     };
 
+    { let cur = state.mode.lock().unwrap().clone(); if !cur.is_transient() { *state.prev_mode.lock().unwrap() = cur; } }
     *state.pending_jpeg.lock().unwrap() = Some(jpeg);
     *state.mode.lock().unwrap()         = DisplayMode::CustomImage;
-
     HttpResponse::Ok().body("image queued")
 }
 
-/// Push custom text + optional progress bar to the display.
-///
-/// The display mode is switched to `custom_text` and the payload is cached
-/// until a new `POST /api/text` or `POST /api/mode` request arrives.
-///
-/// Example body:
-/// ```json
-/// {"title":"Build","lines":["Running tests…","17 / 20 pass"],"progress":0.85,"color":"green"}
-/// ```
-async fn api_text(
-    state: web::Data<DaemonState>,
-    body:  web::Json<CustomTextPayload>,
-) -> impl Responder {
+async fn api_text(state: web::Data<DaemonState>, body: web::Json<CustomTextPayload>) -> impl Responder {
+    { let cur = state.mode.lock().unwrap().clone(); if !cur.is_transient() { *state.prev_mode.lock().unwrap() = cur; } }
     *state.pending_text.lock().unwrap() = Some(body.into_inner());
     *state.mode.lock().unwrap()         = DisplayMode::CustomText;
     HttpResponse::Ok().body("ok")
 }
 
-/// Serves the last rendered frame as JPEG (great for headless testing).
+async fn api_clear(state: web::Data<DaemonState>) -> impl Responder {
+    let prev = state.prev_mode.lock().unwrap().clone();
+    *state.mode.lock().unwrap()         = prev;
+    *state.pending_text.lock().unwrap() = None;
+    *state.pending_jpeg.lock().unwrap() = None;
+    HttpResponse::Ok().body("ok")
+}
+
+// ─── Presets ──────────────────────────────────────────────────────────────────
+
+#[derive(Serialize)]
+struct PresetEntry { name: String, payload: CustomTextPayload }
+
+async fn api_presets_list(state: web::Data<DaemonState>) -> impl Responder {
+    let guard = state.presets.lock().unwrap();
+    let mut list: Vec<PresetEntry> = guard.iter()
+        .map(|(k, v)| PresetEntry { name: k.clone(), payload: v.clone() })
+        .collect();
+    list.sort_by(|a, b| a.name.cmp(&b.name));
+    HttpResponse::Ok().json(list)
+}
+
+#[derive(Deserialize)]
+struct SavePresetRequest { name: String, payload: CustomTextPayload }
+
+async fn api_presets_save(state: web::Data<DaemonState>, body: web::Json<SavePresetRequest>) -> impl Responder {
+    let req = body.into_inner();
+    if req.name.trim().is_empty() { return HttpResponse::BadRequest().body("name must not be empty"); }
+    {
+        let mut guard = state.presets.lock().unwrap();
+        guard.insert(req.name.clone(), req.payload);
+        save_presets_to_disk(&guard);
+    }
+    HttpResponse::Ok().body(format!("saved '{}'", req.name))
+}
+
+async fn api_presets_apply(state: web::Data<DaemonState>, name: web::Path<String>) -> impl Responder {
+    let payload = state.presets.lock().unwrap().get(name.as_str()).cloned();
+    match payload {
+        Some(p) => {
+            { let cur = state.mode.lock().unwrap().clone(); if !cur.is_transient() { *state.prev_mode.lock().unwrap() = cur; } }
+            *state.pending_text.lock().unwrap() = Some(p);
+            *state.mode.lock().unwrap()         = DisplayMode::CustomText;
+            HttpResponse::Ok().body("ok")
+        }
+        None => HttpResponse::NotFound().body(format!("preset '{}' not found", name)),
+    }
+}
+
+async fn api_presets_delete(state: web::Data<DaemonState>, name: web::Path<String>) -> impl Responder {
+    let removed = {
+        let mut guard = state.presets.lock().unwrap();
+        let r = guard.remove(name.as_str()).is_some();
+        if r { save_presets_to_disk(&guard); }
+        r
+    };
+    if removed { HttpResponse::Ok().body("deleted") }
+    else        { HttpResponse::NotFound().body(format!("'{}' not found", name)) }
+}
+
+// ─── Slideshow ────────────────────────────────────────────────────────────────
+
+#[derive(Deserialize)]
+struct SlideshowRequest {
+    dir:      String,
+    #[serde(default = "default_ss_interval")]
+    interval: u64,
+}
+fn default_ss_interval() -> u64 { 5 }
+
+async fn api_slideshow(state: web::Data<DaemonState>, body: web::Json<SlideshowRequest>) -> impl Responder {
+    let req = body.into_inner();
+    let dir = PathBuf::from(&req.dir);
+    if !dir.is_dir() { return HttpResponse::BadRequest().body(format!("'{}' is not a directory", req.dir)); }
+    let paths = collect_image_paths(&dir);
+    if paths.is_empty() { return HttpResponse::BadRequest().body(format!("no supported images in '{}'", req.dir)); }
+    let count    = paths.len();
+    let interval = req.interval.max(1);
+    { let cur = state.mode.lock().unwrap().clone(); if !cur.is_transient() { *state.prev_mode.lock().unwrap() = cur; } }
+    *state.slideshow_paths.lock().unwrap()    = paths;
+    *state.slideshow_idx.lock().unwrap()      = 0;
+    *state.slideshow_interval.lock().unwrap() = interval;
+    *state.mode.lock().unwrap()               = DisplayMode::Slideshow;
+    HttpResponse::Ok().body(format!("slideshow started: {} images, {}s/frame", count, interval))
+}
+
+// ─── Auto-rotation API ────────────────────────────────────────────────────────
+
+#[derive(Deserialize)]
+struct RotationRequest {
+    modes:    Vec<String>,
+    /// Seconds between advances. 0 = stop rotation.
+    interval: u64,
+}
+
+async fn api_rotation(state: web::Data<DaemonState>, body: web::Json<RotationRequest>) -> impl Responder {
+    let req = body.into_inner();
+    let modes: Vec<DisplayMode> = req.modes.iter()
+        .filter_map(|s| DisplayMode::from_str_name(s))
+        .filter(|m| !m.is_transient())
+        .collect();
+
+    if req.interval > 0 && modes.is_empty() {
+        return HttpResponse::BadRequest().body("no valid (non-transient) modes specified");
+    }
+
+    *state.rotation_modes.lock().unwrap()    = modes;
+    *state.rotation_interval.lock().unwrap() = req.interval;
+
+    if req.interval == 0 {
+        HttpResponse::Ok().body("rotation stopped")
+    } else {
+        let count = state.rotation_modes.lock().unwrap().len();
+        HttpResponse::Ok().body(format!("rotation started: {} modes, {}s interval", count, req.interval))
+    }
+}
+
+// ─── Preview & sysinfo ────────────────────────────────────────────────────────
+
 async fn api_preview_frame(state: web::Data<DaemonState>) -> impl Responder {
     let guard = state.last_frame.lock().unwrap();
     match guard.as_ref() {
         Some(jpeg) => HttpResponse::Ok()
+            .insert_header(("Cache-Control", "no-store"))
             .content_type("image/jpeg")
             .body(jpeg.clone()),
-        None => HttpResponse::NoContent().finish(),
+        None => HttpResponse::NoContent()
+            .insert_header(("Cache-Control", "no-store"))
+            .finish(),
     }
 }
 
-/// Live system snapshot as JSON.
 #[derive(Serialize)]
 struct SysinfoJson {
     cpu_pct:   f32,
@@ -943,16 +1163,22 @@ struct SysinfoJson {
     load5:     f64,
     load15:    f64,
     hostname:  String,
+    cpu_temp:  Option<f32>,
 }
 
 async fn api_sysinfo_json() -> impl Responder {
-    use sysinfo::System;
-
+    use sysinfo::{Components, System};
     let mut sys = System::new_all();
     sys.refresh_cpu_usage();
     sys.refresh_memory();
-
     let load = System::load_average();
+    let mut comps = Components::new_with_refreshed_list();
+    comps.refresh(false);
+    let cpu_temp: Option<f32> = comps.iter()
+        .filter(|c| { let l = c.label().to_lowercase(); l.contains("cpu") || l.contains("core") || l.contains("package") })
+        .filter_map(|c| c.temperature())
+        .filter(|t| *t > 0.0 && !t.is_nan())
+        .reduce(f32::max);
     HttpResponse::Ok().json(SysinfoJson {
         cpu_pct:   sys.global_cpu_usage(),
         mem_used:  sys.used_memory(),
@@ -962,27 +1188,20 @@ async fn api_sysinfo_json() -> impl Responder {
         load5:     load.five,
         load15:    load.fifteen,
         hostname:  System::host_name().unwrap_or_default(),
+        cpu_temp,
     })
 }
 
 // ─── Embedded web UI ─────────────────────────────────────────────────────────
 
 async fn web_ui_index() -> HttpResponse {
-    HttpResponse::Ok()
-        .content_type("text/html; charset=utf-8")
-        .body(include_str!("../../src/web/index.html"))
+    HttpResponse::Ok().content_type("text/html; charset=utf-8").body(include_str!("../../src/web/index.html"))
 }
-
 async fn web_ui_css() -> HttpResponse {
-    HttpResponse::Ok()
-        .content_type("text/css")
-        .body(include_str!("../../src/web/app.css"))
+    HttpResponse::Ok().content_type("text/css").body(include_str!("../../src/web/app.css"))
 }
-
 async fn web_ui_js() -> HttpResponse {
-    HttpResponse::Ok()
-        .content_type("application/javascript")
-        .body(include_str!("../../src/web/app.js"))
+    HttpResponse::Ok().content_type("application/javascript").body(include_str!("../../src/web/app.js"))
 }
 
 // ─── Gradient test pattern ────────────────────────────────────────────────────
@@ -995,11 +1214,7 @@ fn test_pattern() -> DynamicImage {
         let b = (((x + y) * 255) / (PANEL_WIDTH + PANEL_HEIGHT - 2)) as u8;
         let on_diag = x == y || x + y == PANEL_WIDTH - 1;
         let on_edge = x < 4 || y < 4 || x >= PANEL_WIDTH - 4 || y >= PANEL_HEIGHT - 4;
-        *px = if on_diag || on_edge {
-            image::Rgb([255, 255, 255])
-        } else {
-            image::Rgb([r, g, b])
-        };
+        *px = if on_diag || on_edge { image::Rgb([255, 255, 255]) } else { image::Rgb([r, g, b]) };
     }
     DynamicImage::ImageRgb8(img)
 }

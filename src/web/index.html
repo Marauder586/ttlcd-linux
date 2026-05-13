@@ -15,6 +15,7 @@
     <div id="status-bar">
       <span class="label">mode:</span>
       <span id="current-mode" class="badge">—</span>
+      <button id="return-btn" class="return-btn" style="display:none" title="Return to previous live mode">← Return</button>
     </div>
   </header>
 
@@ -23,31 +24,60 @@
     <section class="card">
       <h2>Display Mode</h2>
       <div class="mode-grid">
-        <button class="mode-btn" data-mode="clock" title="Large digital clock with date and load avg">
-          🕐<span>Clock</span>
-        </button>
-        <button class="mode-btn" data-mode="clock_sysinfo" title="Clock + quick stats split screen">
-          🕐📊<span>Clock+Stats</span>
-        </button>
-        <button class="mode-btn" data-mode="sysinfo" title="CPU · RAM · temperature · uptime">
-          📊<span>Sysinfo</span>
-        </button>
-        <button class="mode-btn" data-mode="cpu_detail" title="Per-core CPU usage grid">
-          🔢<span>CPU Cores</span>
-        </button>
-        <button class="mode-btn" data-mode="network" title="Network Rx/Tx rates per interface">
-          🌐<span>Network</span>
-        </button>
-        <button class="mode-btn" data-mode="disk_usage" title="Disk partition usage bars">
-          💽<span>Disks</span>
-        </button>
-        <button class="mode-btn" data-mode="process_top" title="Top processes by CPU usage">
-          📋<span>Processes</span>
-        </button>
-        <button class="mode-btn" data-mode="idle" title="Keepalive — no display update">
-          💤<span>Idle</span>
-        </button>
+        <button class="mode-btn" data-mode="clock"         title="Large digital clock">🕐<span>Clock</span></button>
+        <button class="mode-btn" data-mode="clock_sysinfo" title="Clock + quick stats">🕐📊<span>Clock+Stats</span></button>
+        <button class="mode-btn" data-mode="sysinfo"       title="CPU · RAM · temp · uptime">📊<span>Sysinfo</span></button>
+        <button class="mode-btn" data-mode="cpu_detail"    title="Per-core CPU usage">🔢<span>CPU Cores</span></button>
+        <button class="mode-btn" data-mode="network"       title="Network Rx/Tx rates">🌐<span>Network</span></button>
+        <button class="mode-btn" data-mode="disk_usage"    title="Disk partition usage">💽<span>Disks</span></button>
+        <button class="mode-btn" data-mode="process_top"   title="Top processes by CPU">📋<span>Processes</span></button>
+        <button class="mode-btn" data-mode="idle"          title="Keepalive — no display update">💤<span>Idle</span></button>
       </div>
+    </section>
+
+    <!-- ── Auto-rotation ─────────────────────────────────────────── -->
+    <section class="card">
+      <h2>Auto-Rotation</h2>
+      <p class="card-hint">Cycle through modes automatically. Active modes are highlighted above.</p>
+      <div class="rotation-form">
+        <div class="form-row two-col">
+          <div class="form-group">
+            <label for="rot-modes">Modes <span class="hint-inline">(comma-separated)</span></label>
+            <input type="text" id="rot-modes" placeholder="clock,sysinfo,cpu_detail,network">
+          </div>
+          <div class="form-group">
+            <label for="rot-interval">Interval (s)</label>
+            <input type="number" id="rot-interval" value="30" min="5" max="3600">
+          </div>
+        </div>
+        <div class="form-actions">
+          <button id="rot-start-btn" class="primary">▶ Start Rotation</button>
+          <button id="rot-stop-btn">■ Stop</button>
+          <span id="rot-status"></span>
+        </div>
+        <div id="rot-indicator" class="rot-indicator" style="display:none">
+          <span class="rot-label">Rotating:</span>
+          <span id="rot-mode-list" class="rot-mode-list"></span>
+          <span class="rot-timer">every <strong id="rot-interval-display">—</strong>s</span>
+        </div>
+      </div>
+    </section>
+
+    <!-- ── Quick notify ───────────────────────────────────────────── -->
+    <section class="card">
+      <h2>Quick Notify</h2>
+      <p class="card-hint">One-click notifications — sends immediately and fills the form below.</p>
+      <div class="quick-grid">
+        <button class="quick-btn ok"      data-quick="ok">✓ OK</button>
+        <button class="quick-btn fail"    data-quick="fail">✗ Failed</button>
+        <button class="quick-btn warn"    data-quick="warn">⚠ Warning</button>
+        <button class="quick-btn run"     data-quick="run">⟳ Running</button>
+        <button class="quick-btn deploy"  data-quick="deploy">↑ Deploying</button>
+        <button class="quick-btn done"    data-quick="done">✓ Done</button>
+        <button class="quick-btn info"    data-quick="info">ℹ Info</button>
+        <button class="quick-btn reboot"  data-quick="reboot">↺ Reboot</button>
+      </div>
+      <div id="quick-status" class="quick-status"></div>
     </section>
 
     <!-- ── Custom text push ───────────────────────────────────────── -->
@@ -97,6 +127,17 @@
           <button id="txt-send-btn" class="primary">📤 Send to panel</button>
           <span id="txt-status"></span>
         </div>
+
+        <!-- Preset row -->
+        <div class="preset-row">
+          <span class="preset-label">Presets:</span>
+          <select id="preset-select">
+            <option value="">— saved presets —</option>
+          </select>
+          <button id="preset-apply-btn" title="Apply selected preset">Apply</button>
+          <button id="preset-save-btn"  title="Save current form as preset">💾 Save</button>
+          <button id="preset-del-btn"   title="Delete selected preset" class="danger-btn">🗑</button>
+        </div>
       </div>
     </section>
 
@@ -121,9 +162,31 @@
       <div id="upload-status"></div>
     </section>
 
+    <!-- ── Slideshow ─────────────────────────────────────────────── -->
+    <section class="card">
+      <h2>Slideshow</h2>
+      <p class="card-hint">Loop images from a directory on the server (absolute path).</p>
+      <div class="slideshow-form">
+        <div class="form-row two-col">
+          <div class="form-group">
+            <label for="ss-dir">Directory path</label>
+            <input type="text" id="ss-dir" placeholder="/home/user/wallpapers">
+          </div>
+          <div class="form-group">
+            <label for="ss-interval">Interval (s)</label>
+            <input type="number" id="ss-interval" value="5" min="1" max="3600">
+          </div>
+        </div>
+        <div class="form-actions">
+          <button id="ss-start-btn" class="primary">▶ Start Slideshow</button>
+          <span id="ss-status"></span>
+        </div>
+      </div>
+    </section>
+
     <!-- ── Panel preview (live render) ───────────────────────────── -->
-    <section class="card" id="panel-preview-card">
-      <h2>Panel Preview <span class="refresh-hint">(refreshes with frame)</span></h2>
+    <section class="card">
+      <h2>Panel Preview <span class="refresh-hint">(auto-refreshes)</span></h2>
       <div class="panel-preview-wrap">
         <img id="panel-preview-img" alt="panel preview" class="panel-preview-img">
         <div id="panel-preview-empty" class="panel-preview-empty">
@@ -153,6 +216,11 @@
         <div class="stat-block">
           <div class="stat-label">Uptime</div>
           <div class="stat-val mono" id="stat-uptime">—</div>
+        </div>
+        <div class="stat-block" id="stat-temp-block" style="display:none">
+          <div class="stat-label">CPU Temp</div>
+          <div class="stat-val" id="stat-temp">—</div>
+          <div class="mini-bar-track"><div class="mini-bar" id="bar-temp"></div></div>
         </div>
       </div>
     </section>

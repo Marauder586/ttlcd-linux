@@ -14,7 +14,7 @@
 # TCP port for the web UI and REST API.
 port = 7070
 
-# Initial display mode.
+# Initial display mode on startup.
 # Choices: clock  clock_sysinfo  sysinfo  cpu_detail
 #          network  disk_usage  process_top  idle
 mode = "clock_sysinfo"
@@ -29,3 +29,14 @@ rotate = 0
 # Set to true to start the web server without opening the USB device.
 # Useful for testing the UI or pushing text updates from scripts.
 headless = false
+
+# ── Auto-rotation ──────────────────────────────────────────────────────────────
+# Automatically cycle through a list of display modes.
+# Useful for dashboards that should show different stats over time.
+#
+# rotation_modes    — comma-style array of mode names to cycle through
+# rotation_interval — seconds per mode (0 = disabled)
+#
+# Example: cycle clock → sysinfo → cpu_detail → network, 30 seconds each
+# rotation_modes    = ["clock", "sysinfo", "cpu_detail", "network"]
+# rotation_interval = 30

@@ -79,6 +79,22 @@ header h1 .version {
   letter-spacing: 0.05em;
 }
 
+.return-btn {
+  background: transparent;
+  border: 1px solid var(--overlay0);
+  border-radius: 6px;
+  color: var(--subtext);
+  padding: 0.25rem 0.75rem;
+  font-size: 0.8rem;
+  font-family: var(--font);
+  cursor: pointer;
+  transition: border-color 0.15s, color 0.15s;
+}
+.return-btn:hover {
+  border-color: var(--teal);
+  color: var(--teal);
+}
+
 main {
   width: 100%;
   max-width: 760px;
@@ -102,6 +118,13 @@ main {
   text-transform: uppercase;
   letter-spacing: 0.1em;
   margin-bottom: 1rem;
+}
+
+.card-hint {
+  font-size: 0.78rem;
+  color: var(--surface1);
+  margin-top: -0.6rem;
+  margin-bottom: 0.8rem;
 }
 
 .refresh-hint {
@@ -152,6 +175,49 @@ main {
   border-color: var(--mauve);
   color: var(--mauve);
   background: var(--mantle);
+}
+
+/* ── Quick notify grid ────────────────────────────────────── */
+.quick-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 0.5rem;
+  margin-bottom: 0.6rem;
+}
+
+@media (max-width: 520px) {
+  .quick-grid { grid-template-columns: repeat(2, 1fr); }
+}
+
+.quick-btn {
+  border: 1px solid var(--surface1);
+  border-radius: 8px;
+  padding: 0.5rem 0.4rem;
+  font-size: 0.82rem;
+  font-family: var(--font);
+  font-weight: 600;
+  cursor: pointer;
+  transition: opacity 0.15s, border-color 0.15s;
+  background: var(--mantle);
+  color: var(--text);
+}
+
+.quick-btn:hover  { opacity: 0.85; }
+.quick-btn:active { opacity: 0.7;  }
+
+.quick-btn.ok     { border-color: var(--green);  color: var(--green);  }
+.quick-btn.fail   { border-color: var(--red);    color: var(--red);    }
+.quick-btn.warn   { border-color: var(--yellow); color: var(--yellow); }
+.quick-btn.run    { border-color: var(--blue);   color: var(--blue);   }
+.quick-btn.deploy { border-color: var(--teal);   color: var(--teal);   }
+.quick-btn.done   { border-color: var(--mauve);  color: var(--mauve);  }
+.quick-btn.info   { border-color: var(--subtext);color: var(--subtext);}
+.quick-btn.reboot { border-color: var(--peach);  color: var(--peach);  }
+
+.quick-status {
+  font-size: 0.82rem;
+  min-height: 1.2rem;
+  color: var(--subtext);
 }
 
 /* ── Drop zone ────────────────────────────────────────────── */
@@ -257,7 +323,7 @@ button.primary {
 button.primary:hover { opacity: 0.85; }
 button.primary:disabled { opacity: 0.45; cursor: not-allowed; }
 
-button:not(.primary):not(.mode-btn) {
+button:not(.primary):not(.mode-btn):not(.quick-btn):not(.return-btn) {
   background: transparent;
   border: 1px solid var(--surface1);
   border-radius: 8px;
@@ -269,9 +335,25 @@ button:not(.primary):not(.mode-btn) {
   transition: border-color 0.15s, color 0.15s;
 }
 
-button:not(.primary):not(.mode-btn):hover {
+button:not(.primary):not(.mode-btn):not(.quick-btn):not(.return-btn):hover {
   border-color: var(--overlay0);
   color: var(--text);
+}
+
+button.danger-btn {
+  background: transparent;
+  border: 1px solid var(--surface1);
+  border-radius: 8px;
+  color: var(--overlay0);
+  padding: 0.45rem 0.7rem;
+  font-size: 0.9rem;
+  font-family: var(--font);
+  cursor: pointer;
+  transition: border-color 0.15s, color 0.15s;
+}
+button.danger-btn:hover {
+  border-color: var(--red);
+  color: var(--red);
 }
 
 #upload-status {
@@ -408,6 +490,7 @@ button:not(.primary):not(.mode-btn):hover {
 }
 
 .form-group input[type="text"],
+.form-group input[type="number"],
 .form-group textarea,
 .form-group select {
   background: var(--mantle);
@@ -423,6 +506,7 @@ button:not(.primary):not(.mode-btn):hover {
 }
 
 .form-group input[type="text"]:focus,
+.form-group input[type="number"]:focus,
 .form-group textarea:focus,
 .form-group select:focus {
   border-color: var(--blue);
@@ -465,4 +549,127 @@ button:not(.primary):not(.mode-btn):hover {
 #txt-status {
   font-size: 0.85rem;
   min-height: 1.2rem;
+}
+
+/* ── Preset row ───────────────────────────────────────────── */
+.preset-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding-top: 0.4rem;
+  border-top: 1px solid var(--surface0);
+  flex-wrap: wrap;
+}
+
+.preset-label {
+  font-size: 0.78rem;
+  color: var(--overlay0);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  white-space: nowrap;
+}
+
+#preset-select {
+  flex: 1;
+  min-width: 140px;
+  background: var(--mantle);
+  border: 1px solid var(--surface0);
+  border-radius: 6px;
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 0.82rem;
+  padding: 0.35rem 0.55rem;
+  outline: none;
+  cursor: pointer;
+}
+
+#preset-select:focus { border-color: var(--blue); }
+
+#preset-apply-btn,
+#preset-save-btn {
+  background: transparent;
+  border: 1px solid var(--surface1);
+  border-radius: 6px;
+  color: var(--subtext);
+  padding: 0.35rem 0.8rem;
+  font-size: 0.82rem;
+  font-family: var(--font);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: border-color 0.15s, color 0.15s;
+}
+
+#preset-apply-btn:hover { border-color: var(--teal);  color: var(--teal);  }
+#preset-save-btn:hover  { border-color: var(--blue);  color: var(--blue);  }
+
+/* ── Slideshow form ───────────────────────────────────────── */
+.slideshow-form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.8rem;
+}
+
+#ss-status {
+  font-size: 0.85rem;
+  min-height: 1.2rem;
+}
+
+/* ── Auto-rotation form ───────────────────────────────────── */
+.rotation-form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.8rem;
+}
+
+#rot-status {
+  font-size: 0.85rem;
+  min-height: 1.2rem;
+}
+
+.rot-indicator {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.5rem 0.8rem;
+  background: var(--mantle);
+  border: 1px solid var(--surface0);
+  border-radius: 6px;
+  flex-wrap: wrap;
+}
+
+.rot-label {
+  font-size: 0.75rem;
+  color: var(--overlay0);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  font-weight: 600;
+}
+
+.rot-mode-list {
+  display: flex;
+  gap: 0.35rem;
+  flex-wrap: wrap;
+}
+
+.rot-chip {
+  background: var(--surface0);
+  color: var(--teal);
+  border-radius: 999px;
+  padding: 0.1rem 0.55rem;
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.rot-chip.active-rot {
+  background: color-mix(in srgb, var(--teal) 20%, var(--surface0));
+  border: 1px solid var(--teal);
+}
+
+.rot-timer {
+  font-size: 0.78rem;
+  color: var(--subtext);
+  margin-left: auto;
 }
