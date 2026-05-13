@@ -751,6 +751,10 @@ async fn run_daemon(
 
     HttpServer::new(move || {
         App::new()
+            .wrap(actix_web::middleware::DefaultHeaders::new()
+                .add(("Access-Control-Allow-Origin",  "*"))
+                .add(("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS"))
+                .add(("Access-Control-Allow-Headers", "Content-Type")))
             .app_data(web_state.clone())
             .app_data(web::JsonConfig::default().limit(1024 * 1024))
             .app_data(web::PayloadConfig::default().limit(16 * 1024 * 1024))
@@ -758,6 +762,8 @@ async fn run_daemon(
             .route("/api/status",         web::get().to(api_status))
             .route("/api/mode",           web::post().to(api_set_mode))
             .route("/api/image",          web::post().to(api_upload_image))
+            .route("/api/image/path",     web::post().to(api_image_path))
+            .route("/api/render",         web::post().to(api_render))
             .route("/api/sysinfo",        web::get().to(api_sysinfo_json))
             .route("/api/preview",        web::get().to(api_preview_frame))
             .route("/api/text",           web::post().to(api_text))
@@ -1239,6 +1245,65 @@ async fn api_screenshot(state: web::Data<DaemonState>) -> impl Responder {
             .insert_header(("Cache-Control", "no-store"))
             .finish(),
     }
+}
+
+// ─── Text → JPEG preview renderer ───────────────────────────────────────────
+
+/// POST /api/render — render a CustomTextPayload to JPEG and return it as
+/// image/jpeg.  Does NOT affect panel or daemon state.  Useful for previewing
+/// a notification layout in the web UI before sending it to the device.
+async fn api_render(state: web::Data<DaemonState>, body: web::Json<CustomTextPayload>) -> impl Responder {
+    let payload = body.into_inner();
+    let img     = render_custom_text(&payload);
+    let img     = apply_rotation(img, *state.rotate_deg.lock().unwrap());
+    let quality = *state.quality.lock().unwrap();
+    match encode_for_panel(&img, quality) {
+        Ok(jpeg) => HttpResponse::Ok()
+            .insert_header(("Cache-Control", "no-store"))
+            .content_type("image/jpeg")
+            .body(jpeg),
+        Err(e) => HttpResponse::InternalServerError().body(e.to_string()),
+    }
+}
+
+// ─── Server-side image load ───────────────────────────────────────────────────
+
+/// POST /api/image/path — load an image from an absolute server-side path and
+/// send it to the panel.  Avoids multipart upload overhead for files already on
+/// the same machine.
+///
+/// Body (JSON):
+///   { "path": "/absolute/path/to/image.jpg", "letterbox": true }
+#[derive(Deserialize)]
+struct ImagePathRequest {
+    path: String,
+    #[serde(default)]
+    letterbox: bool,
+}
+
+async fn api_image_path(state: web::Data<DaemonState>, body: web::Json<ImagePathRequest>) -> impl Responder {
+    let req  = body.into_inner();
+    let path = PathBuf::from(&req.path);
+    if !path.is_absolute() {
+        return HttpResponse::BadRequest().body("path must be absolute");
+    }
+    if !path.exists() {
+        return HttpResponse::NotFound().body(format!("'{}' not found", req.path));
+    }
+    let quality    = *state.quality.lock().unwrap();
+    let rotate_deg = *state.rotate_deg.lock().unwrap();
+    let jpeg = match (|| -> anyhow::Result<Vec<u8>> {
+        let img = image::open(&path)?;
+        let img = apply_rotation(img, rotate_deg);
+        if req.letterbox { letterbox_for_panel(&img, quality) } else { encode_for_panel(&img, quality) }
+    })() {
+        Ok(j)  => j,
+        Err(e) => return HttpResponse::UnprocessableEntity().body(format!("image error: {e}")),
+    };
+    { let cur = state.mode.lock().unwrap().clone(); if !cur.is_transient() { *state.prev_mode.lock().unwrap() = cur; } }
+    *state.pending_jpeg.lock().unwrap() = Some(jpeg);
+    *state.mode.lock().unwrap()         = DisplayMode::CustomImage;
+    HttpResponse::Ok().body("image queued")
 }
 
 // ─── Notification history ────────────────────────────────────────────────────

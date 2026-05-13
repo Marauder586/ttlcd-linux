@@ -736,3 +736,22 @@ button.danger-btn:hover {
   background: var(--surface1);
   color: var(--text);
 }
+
+/* ── Custom text preview ──────────────────────────────────────────────── */
+
+.txt-preview-wrap {
+  margin-top: 0.8rem;
+  border: 1px solid var(--surface1);
+  border-radius: var(--radius);
+  overflow: hidden;
+  background: var(--crust);
+}
+
+.txt-preview-img {
+  display: block;
+  width: 100%;
+  max-width: 360px;
+  height: auto;
+  margin: 0 auto;
+  border-radius: calc(var(--radius) - 2px);
+}

@@ -48,9 +48,12 @@ const txtLines    = document.getElementById('txt-lines');
 const txtProgress = document.getElementById('txt-progress');
 const txtColor    = document.getElementById('txt-color');
 const txtShowTime = document.getElementById('txt-show-time');
-const txtSendBtn  = document.getElementById('txt-send-btn');
-const txtStatus   = document.getElementById('txt-status');
-const progPctLbl  = document.getElementById('prog-pct-label');
+const txtSendBtn     = document.getElementById('txt-send-btn');
+const txtPreviewBtn  = document.getElementById('txt-preview-btn');
+const txtPreviewWrap = document.getElementById('txt-preview-wrap');
+const txtPreviewImg  = document.getElementById('txt-preview-img');
+const txtStatus      = document.getElementById('txt-status');
+const progPctLbl     = document.getElementById('prog-pct-label');
 
 // Preset refs
 const presetSelect    = document.getElementById('preset-select');
@@ -414,6 +417,34 @@ txtSendBtn.addEventListener('click', async () => {
     txtStatus.textContent = `✗ ${e.message}`; txtStatus.className = 'status-err';
     logEntry(`Text send error: ${e.message}`, 'err');
   } finally { txtSendBtn.disabled = false; }
+});
+
+// ── Custom text preview ──────────────────────────────────────────────────────
+let lastPreviewUrl = null;
+
+txtPreviewBtn.addEventListener('click', async () => {
+  txtPreviewBtn.disabled = true;
+  try {
+    const r = await fetch('/api/render', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(buildTextPayload()),
+    });
+    if (!r.ok) {
+      logEntry(`Preview error: ${await r.text()}`, 'err');
+      return;
+    }
+    const blob = await r.blob();
+    const url  = URL.createObjectURL(blob);
+    if (lastPreviewUrl) URL.revokeObjectURL(lastPreviewUrl);
+    lastPreviewUrl     = url;
+    txtPreviewImg.src  = url;
+    txtPreviewWrap.style.display = '';
+  } catch (e) {
+    logEntry(`Preview error: ${e.message}`, 'err');
+  } finally {
+    txtPreviewBtn.disabled = false;
+  }
 });
 
 // ── Quick notify ──────────────────────────────────────────────────────────────
