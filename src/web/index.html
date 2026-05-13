@@ -155,6 +155,11 @@
           <button id="preset-save-btn"  title="Save current form as preset">💾 Save</button>
           <button id="preset-del-btn"   title="Delete selected preset" class="danger-btn">🗑</button>
           <button id="preset-clear-btn" title="Delete ALL presets" class="danger-btn">🗑 All</button>
+          <a href="/api/presets/export" download="ttlcd-presets.json" class="btn-link" style="font-size:0.82rem;padding:0.35rem 0.7rem">⬇ Export</a>
+          <label class="btn-link import-label" title="Import presets from JSON file" style="font-size:0.82rem;padding:0.35rem 0.7rem;cursor:pointer">
+            ⬆ Import
+            <input type="file" id="preset-import-input" accept=".json" hidden>
+          </label>
         </div>
       </div>
     </section>

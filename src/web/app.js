@@ -654,6 +654,33 @@ presetClearBtn.addEventListener('click', async () => {
   } catch (e) { logEntry(`Clear presets error: ${e.message}`, 'err'); }
 });
 
+// Preset import
+const presetImportInput = document.getElementById('preset-import-input');
+if (presetImportInput) {
+  presetImportInput.addEventListener('change', async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    try {
+      const text = await file.text();
+      const data = JSON.parse(text);
+      const r = await fetch('/api/presets/import', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(data),
+      });
+      if (r.ok) {
+        logEntry(`${await r.text()}`, 'ok');
+        await refreshPresets();
+      } else {
+        logEntry(`Import failed: ${await r.text()}`, 'err');
+      }
+    } catch (e) {
+      logEntry(`Import error: ${e.message}`, 'err');
+    } finally {
+      presetImportInput.value = '';
+    }
+  });
+}
+
 // ── Panel settings (quality + orient) ────────────────────────────────────────
 setQuality.addEventListener('input', () => {
   setQualityLbl.textContent = `${setQuality.value}%`;

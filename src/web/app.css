@@ -870,3 +870,9 @@ kbd {
 
 /* ── Preview actions flex spacing ─────────────────────────────────────────── */
 .preview-actions { gap: 0.6rem; }
+
+/* ── Import label button ──────────────────────────────────────────────────── */
+.import-label {
+  display: inline-flex;
+  align-items: center;
+}

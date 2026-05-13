@@ -788,6 +788,8 @@ async fn run_daemon(
             .route("/api/image/path",     web::post().to(api_image_path))
             .route("/api/render",         web::post().to(api_render))
             .route("/api/sysinfo",        web::get().to(api_sysinfo_json))
+            .route("/api/processes",      web::get().to(api_processes_json))
+            .route("/api/disks",          web::get().to(api_disks_json))
             .route("/api/preview",        web::get().to(api_preview_frame))
             .route("/api/text",           web::post().to(api_text))
             .route("/api/clear",          web::post().to(api_clear))
@@ -797,6 +799,8 @@ async fn run_daemon(
             .route("/api/presets/{name}",   web::get().to(api_presets_get))
             .route("/api/presets/{name}",   web::post().to(api_presets_apply))
             .route("/api/presets/{name}",   web::delete().to(api_presets_delete))
+            .route("/api/presets/export",   web::get().to(api_presets_export))
+            .route("/api/presets/import",   web::post().to(api_presets_import))
             // Alert shorthand & screenshot download
             .route("/api/alert",          web::post().to(api_alert))
             .route("/api/screenshot",     web::get().to(api_screenshot))
@@ -2377,6 +2381,114 @@ async fn api_info(state: web::Data<DaemonState>) -> impl Responder {
         mode_count:    DisplayMode::ALL_NAMES.len(),
         build_profile: if cfg!(debug_assertions) { "debug" } else { "release" },
     })
+}
+
+// ─── Preset export / import ──────────────────────────────────────────────────
+
+/// GET /api/presets/export — download all presets as a JSON file.
+async fn api_presets_export(state: web::Data<DaemonState>) -> impl Responder {
+    let guard = state.presets.lock().unwrap();
+    match serde_json::to_string_pretty(&*guard) {
+        Ok(json) => HttpResponse::Ok()
+            .content_type("application/json")
+            .insert_header(("Content-Disposition", "attachment; filename=ttlcd-presets.json"))
+            .body(json),
+        Err(e) => HttpResponse::InternalServerError().body(e.to_string()),
+    }
+}
+
+/// POST /api/presets/import — import presets from a JSON body.
+///
+/// The body must be a JSON object mapping preset names to CustomTextPayload objects.
+/// Existing presets with the same name are overwritten.
+async fn api_presets_import(
+    state: web::Data<DaemonState>,
+    body:  web::Json<HashMap<String, CustomTextPayload>>,
+) -> impl Responder {
+    let incoming = body.into_inner();
+    let count = incoming.len();
+    if count == 0 {
+        return HttpResponse::BadRequest().body("no presets in import body");
+    }
+    {
+        let mut guard = state.presets.lock().unwrap();
+        for (name, payload) in incoming {
+            guard.insert(name, payload);
+        }
+        save_presets_to_disk(&guard);
+    }
+    log::info!("imported {} preset(s)", count);
+    HttpResponse::Ok().body(format!("imported {} preset(s)", count))
+}
+
+// ─── System data JSON endpoints ───────────────────────────────────────────────
+
+/// GET /api/processes?limit=N — return top N processes by CPU usage.
+async fn api_processes_json(
+    query: web::Query<std::collections::HashMap<String, String>>,
+) -> impl Responder {
+    use sysinfo::{ProcessesToUpdate, System};
+    let limit: usize = query.get("limit").and_then(|v| v.parse().ok()).unwrap_or(10).min(50);
+    let mut sys = System::new();
+    sys.refresh_processes(ProcessesToUpdate::All, true);
+
+    #[derive(Serialize)]
+    struct ProcessInfo {
+        pid:     u32,
+        name:    String,
+        cpu_pct: f32,
+        mem_kb:  u64,
+        status:  String,
+    }
+
+    let mut procs: Vec<ProcessInfo> = sys.processes().values().map(|p| ProcessInfo {
+        pid:     p.pid().as_u32(),
+        name:    p.name().to_string_lossy().to_string(),
+        cpu_pct: p.cpu_usage(),
+        mem_kb:  p.memory() / 1024,
+        status:  format!("{:?}", p.status()),
+    }).collect();
+
+    procs.sort_by(|a, b| b.cpu_pct.partial_cmp(&a.cpu_pct).unwrap_or(std::cmp::Ordering::Equal));
+    procs.truncate(limit);
+
+    HttpResponse::Ok().json(procs)
+}
+
+/// GET /api/disks — return all disk partition usage info.
+async fn api_disks_json() -> impl Responder {
+    use sysinfo::Disks;
+    let disks = Disks::new_with_refreshed_list();
+
+    #[derive(Serialize)]
+    struct DiskInfo {
+        name:       String,
+        mount:      String,
+        fs:         String,
+        total_gb:   f64,
+        used_gb:    f64,
+        free_gb:    f64,
+        used_pct:   f64,
+        removable:  bool,
+    }
+
+    let info: Vec<DiskInfo> = disks.iter().map(|d| {
+        let total = d.total_space();
+        let free  = d.available_space();
+        let used  = total.saturating_sub(free);
+        DiskInfo {
+            name:      d.name().to_string_lossy().to_string(),
+            mount:     d.mount_point().to_string_lossy().to_string(),
+            fs:        d.file_system().to_string_lossy().to_string(),
+            total_gb:  total as f64 / 1_073_741_824.0,
+            used_gb:   used  as f64 / 1_073_741_824.0,
+            free_gb:   free  as f64 / 1_073_741_824.0,
+            used_pct:  if total > 0 { used as f64 / total as f64 * 100.0 } else { 0.0 },
+            removable: d.is_removable(),
+        }
+    }).collect();
+
+    HttpResponse::Ok().json(info)
 }
 
 // ─── Embedded web UI ─────────────────────────────────────────────────────────
