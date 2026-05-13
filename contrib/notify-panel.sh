@@ -30,6 +30,11 @@
 #   4. Runtime panel settings:
 #      ./notify-panel.sh --quality <1-100>   (change JPEG quality)
 #      ./notify-panel.sh --orient  <0|90|180|270>  (rotate output)
+#      ./notify-panel.sh --blank              (push blank/dark frame)
+#
+#   5. Status and diagnostics:
+#      ./notify-panel.sh --status             (print daemon status JSON)
+#      ./notify-panel.sh --history [N]        (show last N notifications, default 10)
 #
 # Environment:
 #   TTLCD_URL   base URL of the daemon (default: http://localhost:7070)
@@ -127,6 +132,31 @@ if [[ "${1:-}" == "--orient" ]]; then
          -H 'Content-Type: application/json' \
          -d "{\"rotate\":${R}}")
     echo "Orientation → ${result}"
+    exit 0
+fi
+
+# ── Panel blank ──────────────────────────────────────────────────────────────────
+if [[ "${1:-}" == "--blank" ]]; then
+    curl -sf -X POST "${DAEMON_URL}/api/blank" -o /dev/null && echo "Panel blanked"
+    exit 0
+fi
+
+# ── Status and history ────────────────────────────────────────────────────────
+if [[ "${1:-}" == "--status" ]]; then
+    curl -sf "${DAEMON_URL}/api/status"
+    echo
+    exit 0
+fi
+
+if [[ "${1:-}" == "--history" ]]; then
+    LIMIT="${2:-10}"
+    curl -sf "${DAEMON_URL}/api/history?limit=${LIMIT}" | python3 -c "
+import json, sys, datetime
+items = json.load(sys.stdin)
+for item in items:
+    ts = datetime.datetime.fromtimestamp(item['timestamp']).strftime('%H:%M:%S')
+    print(f'[{ts}] ({item["kind"]}) {item["summary"]}')
+"
     exit 0
 fi
 

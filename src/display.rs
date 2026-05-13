@@ -1008,6 +1008,11 @@ mod tests {
         };
         assert_panel_size(&render_custom_text(&payload));
     }
+
+    #[test]
+    fn test_memory_detail_size() {
+        assert_panel_size(&render_memory_detail());
+    }
 }
 
 /// Thermal sensor detail — all available temperature components with color-coded bars.
@@ -1091,6 +1096,90 @@ pub fn render_temperature() -> DynamicImage {
         let more = format!("…and {} more sensors", readings.len() - 10);
         draw_centered(&mut img, &bold, PxScale::from(15.0), y, OVERLAY0, &more);
     }
+
+    DynamicImage::ImageRgb8(img)
+}
+
+/// Detailed memory breakdown: RAM used/cached/available/free, swap, load.
+pub fn render_memory_detail() -> DynamicImage {
+    let mut img  = blank();
+    let bold = font_bold();
+    let mono = font_mono();
+
+    let now      = Local::now();
+    let time_str = now.format("%H:%M:%S").to_string();
+    draw_text_mut(&mut img, MAUVE, 20, 14, PxScale::from(28.0), &bold, "Memory");
+    let tw = text_width(&mono, PxScale::from(24.0), &time_str);
+    draw_text_mut(&mut img, TEAL, 480 - 20 - tw, 18, PxScale::from(24.0), &mono, &time_str);
+    draw_divider(&mut img, 52);
+
+    let mut sys = System::new_all();
+    sys.refresh_memory();
+    let load = System::load_average();
+
+    let total  = sys.total_memory();
+    let used   = sys.used_memory();
+    let avail  = sys.available_memory();
+    let free   = sys.free_memory();
+    let cached = total.saturating_sub(used).saturating_sub(free);
+
+    let sw_total = sys.total_swap();
+    let sw_used  = sys.used_swap();
+
+    let mem_frac  = if total  > 0 { used   as f32 / total  as f32 } else { 0.0 };
+    let swap_frac = if sw_total > 0 { sw_used as f32 / sw_total as f32 } else { 0.0 };
+
+    let lbl = PxScale::from(20.0);
+    let val = PxScale::from(18.0);
+
+    let fmt_gb = |b: u64| -> String {
+        let gb = b as f64 / 1_073_741_824.0;
+        if gb >= 1.0 { format!("{:.2} GB", gb) } else { format!("{:.0} MB", b as f64 / 1_048_576.0) }
+    };
+
+    let mut y: i32 = 60;
+
+    // ── RAM ───────────────────────────────────────────────────────────────────
+    let ram_col = if mem_frac > 0.85 { RED } else if mem_frac > 0.65 { YELLOW } else { GREEN };
+    draw_kv(&mut img, &bold, &mono, lbl, y, GREEN, TEXT, "RAM Used",
+            &format!("{} / {} ({:.0}%)", fmt_gb(used), fmt_gb(total), mem_frac * 100.0));
+    y += 26;
+    draw_bar(&mut img, 20, y, 440, 16, mem_frac, ram_col);
+    y += 24;
+
+    draw_kv(&mut img, &bold, &mono, val, y, SUBTEXT, SUBTEXT, "  Avail.",  &fmt_gb(avail));
+    y += 22;
+    draw_kv(&mut img, &bold, &mono, val, y, SUBTEXT, SUBTEXT, "  Free",    &fmt_gb(free));
+    y += 22;
+    draw_kv(&mut img, &bold, &mono, val, y, SUBTEXT, SUBTEXT, "  Cached",  &fmt_gb(cached));
+    y += 24;
+
+    draw_divider(&mut img, y); y += 10;
+
+    // ── Swap ─────────────────────────────────────────────────────────────────
+    if sw_total > 0 {
+        let sw_col = if swap_frac > 0.5 { RED } else if swap_frac > 0.2 { YELLOW } else { TEAL };
+        draw_kv(&mut img, &bold, &mono, lbl, y, TEAL, TEXT, "Swap",
+                &format!("{} / {} ({:.0}%)", fmt_gb(sw_used), fmt_gb(sw_total), swap_frac * 100.0));
+        y += 26;
+        draw_bar(&mut img, 20, y, 440, 16, swap_frac, sw_col);
+        y += 24;
+        draw_divider(&mut img, y); y += 10;
+    } else {
+        draw_kv(&mut img, &bold, &mono, lbl, y, TEAL, OVERLAY0, "Swap", "not configured");
+        y += 30;
+        draw_divider(&mut img, y); y += 10;
+    }
+
+    // ── Load + uptime ─────────────────────────────────────────────────────────
+    let s = PxScale::from(18.0);
+    let load_str = format!("{:.2}  {:.2}  {:.2}", load.one, load.five, load.fifteen);
+    draw_text_mut(&mut img, OVERLAY0, 20, y, s, &bold, "Load avg");
+    let lw = text_width(&mono, s, &load_str);
+    draw_text_mut(&mut img, SUBTEXT, 480 - 20 - lw, y, s, &mono, &load_str);
+    y += 24;
+    let uptime = format_uptime(System::uptime());
+    draw_text_mut(&mut img, SUBTEXT, 20, y, s, &bold, &format!("Uptime  {}", uptime));
 
     DynamicImage::ImageRgb8(img)
 }

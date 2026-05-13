@@ -19,7 +19,7 @@ use ttlcd::{
         render_clock, render_clock_sysinfo, render_cpu_detail,
         render_disk_usage, render_network, render_process_top,
         render_custom_text, render_sysinfo, render_solid, render_test_card,
-        render_temperature,
+        render_temperature, render_memory_detail,
         CustomTextPayload,
     },
     encode_for_panel, letterbox_for_panel, Panel, DEFAULT_JPEG_QUALITY, PANEL_HEIGHT, PANEL_WIDTH,
@@ -570,6 +570,7 @@ enum DisplayMode {
     DiskUsage,
     ProcessTop,
     Temperature,
+    MemoryDetail,
     Idle,
     CustomImage,
     CustomText,
@@ -579,7 +580,7 @@ enum DisplayMode {
 impl DisplayMode {
     const ALL_NAMES: &'static [&'static str] = &[
         "clock", "clock_sysinfo", "sysinfo", "cpu_detail",
-        "network", "disk_usage", "process_top", "temperature", "idle",
+        "network", "disk_usage", "process_top", "temperature", "memory_detail", "idle",
     ];
 
     fn from_str_name(s: &str) -> Option<Self> {
@@ -592,6 +593,7 @@ impl DisplayMode {
             "disk_usage"    => Some(DisplayMode::DiskUsage),
             "process_top"   => Some(DisplayMode::ProcessTop),
             "temperature"   => Some(DisplayMode::Temperature),
+            "memory_detail" => Some(DisplayMode::MemoryDetail),
             "idle"          => Some(DisplayMode::Idle),
             "custom_text"   => Some(DisplayMode::CustomText),
             "slideshow"     => Some(DisplayMode::Slideshow),
@@ -609,6 +611,7 @@ impl DisplayMode {
             DisplayMode::DiskUsage    => "disk_usage",
             DisplayMode::ProcessTop   => "process_top",
             DisplayMode::Temperature  => "temperature",
+            DisplayMode::MemoryDetail => "memory_detail",
             DisplayMode::Idle         => "idle",
             DisplayMode::CustomImage  => "image",
             DisplayMode::CustomText   => "custom_text",
@@ -786,6 +789,9 @@ async fn run_daemon(
             // Runtime quality and orientation
             .route("/api/quality",        web::post().to(api_set_quality))
             .route("/api/orient",         web::post().to(api_set_orient))
+            // Health check & blank
+            .route("/health",             web::get().to(api_health))
+            .route("/api/blank",          web::post().to(api_blank))
             // Prometheus metrics
             .route("/metrics",            web::get().to(api_metrics))
             // Clear all presets
@@ -901,6 +907,7 @@ fn display_loop(panel: Arc<Mutex<Option<Panel>>>, state: DaemonState) {
                 DisplayMode::DiskUsage    => (render_disk_usage(),     8),
                 DisplayMode::ProcessTop   => (render_process_top(),    3),
                 DisplayMode::Temperature  => (render_temperature(),    5),
+                DisplayMode::MemoryDetail => (render_memory_detail(),  4),
                 DisplayMode::Idle
                 | DisplayMode::CustomImage
                 | DisplayMode::CustomText
@@ -980,6 +987,7 @@ struct StatusResponse {
     rotation_modes:        Vec<String>,
     slideshow_image_count: usize,
     slideshow_interval:    u64,
+    slideshow_current_idx: usize,
 }
 
 async fn api_status(state: web::Data<DaemonState>) -> impl Responder {
@@ -991,6 +999,7 @@ async fn api_status(state: web::Data<DaemonState>) -> impl Responder {
         .iter().map(|m| m.as_str().to_string()).collect();
     let ss_count = state.slideshow_paths.lock().unwrap().len();
     let ss_interval = *state.slideshow_interval.lock().unwrap();
+    let ss_idx = *state.slideshow_idx.lock().unwrap();
     HttpResponse::Ok().json(StatusResponse {
         mode,
         version:               env!("CARGO_PKG_VERSION"),
@@ -1004,6 +1013,7 @@ async fn api_status(state: web::Data<DaemonState>) -> impl Responder {
         rotation_modes:        rot_modes,
         slideshow_image_count: ss_count,
         slideshow_interval:    ss_interval,
+        slideshow_current_idx: ss_idx,
     })
 }
 
@@ -1152,6 +1162,7 @@ async fn api_modes_list() -> impl Responder {
         ModeInfo { name: "disk_usage",    description: "Disk partition usage bars" },
         ModeInfo { name: "process_top",   description: "Top processes sorted by CPU usage" },
         ModeInfo { name: "temperature",   description: "Thermal sensor readings with color-coded bars" },
+        ModeInfo { name: "memory_detail", description: "Detailed RAM breakdown: used, cached, free, swap" },
         ModeInfo { name: "idle",          description: "Keepalive — no display update, prevents blank" },
     ])
 }
@@ -1245,6 +1256,48 @@ async fn api_screenshot(state: web::Data<DaemonState>) -> impl Responder {
             .insert_header(("Cache-Control", "no-store"))
             .finish(),
     }
+}
+
+// ─── Health check ─────────────────────────────────────────────────────────────
+
+/// GET /health — lightweight liveness probe.
+/// Returns 200 with a small JSON body even in headless mode.
+async fn api_health(state: web::Data<DaemonState>) -> impl Responder {
+    #[derive(Serialize)]
+    struct Health {
+        ok:         bool,
+        version:    &'static str,
+        mode:       String,
+        headless:   bool,
+        frame_seq:  u64,
+    }
+    HttpResponse::Ok().json(Health {
+        ok:        true,
+        version:   env!("CARGO_PKG_VERSION"),
+        mode:      state.mode.lock().unwrap().as_str().to_string(),
+        headless:  state.headless,
+        frame_seq: *state.frame_seq.lock().unwrap(),
+    })
+}
+
+// ─── Blank frame ──────────────────────────────────────────────────────────────
+
+/// POST /api/blank — push a solid background-colour frame (effectively
+/// "clears" the panel).  The panel stays on CustomImage mode until /api/clear
+/// is called.
+async fn api_blank(state: web::Data<DaemonState>) -> impl Responder {
+    let quality = *state.quality.lock().unwrap();
+    let rotate  = *state.rotate_deg.lock().unwrap();
+    let blank_img = render_solid(30, 30, 46);
+    let blank_img = apply_rotation(blank_img, rotate);
+    let jpeg = match encode_for_panel(&blank_img, quality) {
+        Ok(j)  => j,
+        Err(e) => return HttpResponse::InternalServerError().body(e.to_string()),
+    };
+    { let cur = state.mode.lock().unwrap().clone(); if !cur.is_transient() { *state.prev_mode.lock().unwrap() = cur; } }
+    *state.pending_jpeg.lock().unwrap() = Some(jpeg);
+    *state.mode.lock().unwrap()         = DisplayMode::CustomImage;
+    HttpResponse::Ok().body("blanked")
 }
 
 // ─── Text → JPEG preview renderer ───────────────────────────────────────────
