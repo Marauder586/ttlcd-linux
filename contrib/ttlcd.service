@@ -10,23 +10,44 @@
 #
 # Logs:  journalctl --user -u ttlcd -f
 # Web UI: http://localhost:7070
+# API:   http://localhost:7070/api/status
 
 [Unit]
 Description=ttlcd USB LCD panel daemon
-Documentation=https://github.com/marauder/ttlcd-rs
+Documentation=https://github.com/njdeary/ttlcd-rs
 After=graphical-session.target
 PartOf=graphical-session.target
+# Automatically restart if the USB device is re-plugged
+StartLimitBurst=10
+StartLimitIntervalSec=60
 
 [Service]
-ExecStart=%h/.cargo/bin/ttlcd daemon --port 7070 --mode clock_sysinfo
+# Adjust path as needed; cargo install puts it in ~/.cargo/bin/
+ExecStart=%h/.cargo/bin/ttlcd daemon \
+    --port 7070 \
+    --bind 127.0.0.1 \
+    --mode clock_sysinfo \
+    --quality 85
+
+# Use a release build from a fixed path (e.g. after `nix build`):
+# ExecStart=/run/current-system/sw/bin/ttlcd daemon --port 7070 --mode clock_sysinfo
+
 Restart=on-failure
 RestartSec=5s
-# Allow time for udev to settle after login
+
+# Allow time for udev to settle after login before claiming the device.
 ExecStartPre=/bin/sleep 2
 
+# Environment
 Environment=RUST_LOG=info
-# Uncomment to use a release build from a specific path:
-# ExecStart=/usr/local/bin/ttlcd daemon --port 7070 --mode clock_sysinfo
+# Uncomment to restrict webhook endpoint to require a secret token:
+# Environment=TTLCD_WEBHOOK_SECRET=changeme
+
+# Resource limits
+# Prevent runaway memory usage (64 MB is well above normal needs)
+MemoryMax=64M
+# Nice the process slightly — it's a background service
+Nice=5
 
 [Install]
 WantedBy=graphical-session.target

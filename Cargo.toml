@@ -1,6 +1,6 @@
 [package]
 name = "ttlcd-rs"
-version = "0.5.0"
+version = "0.12.0"
 edition = "2021"
 description = "Driver and display suite for XinWeiYe/Thermaltake USB LCD panels (480×480)"
 
@@ -37,6 +37,12 @@ tokio       = { version = "1", features = ["full"] }
 actix-web   = "4"
 actix-multipart = "0.7"
 futures-util = "0.3"
+
+# Outbound HTTP (webhook forwarding)
+reqwest     = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+
+# QR code generation
+qrcode      = "0.14"
 
 # Serialisation
 serde       = { version = "1", features = ["derive"] }

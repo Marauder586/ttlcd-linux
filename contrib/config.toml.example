@@ -14,9 +14,34 @@
 # TCP port for the web UI and REST API.
 port = 7070
 
+# Bind address.  Use "127.0.0.1" to restrict to localhost only.
+# "0.0.0.0" (default) listens on all interfaces.
+bind = "127.0.0.1"
+
 # Initial display mode on startup.
-# Choices: clock  clock_sysinfo  sysinfo  cpu_detail
-#          network  disk_usage  process_top  idle
+# The daemon persists the last mode across restarts; this value is only used
+# on the very first launch (or if the persisted state is cleared).
+#
+# Available modes (as of v0.8.0):
+#   clock            — large digital clock with date and uptime
+#   clock_sysinfo    — split: clock above + quick stats below
+#   sysinfo          — CPU · RAM · temperature · load · uptime
+#   cpu_detail       — per-core CPU usage grid (up to 32 cores)
+#   network          — per-interface Rx/Tx rates and totals
+#   disk_usage       — disk partition usage bars
+#   disk_io          — disk read/write throughput per device
+#   process_top      — top processes by CPU usage
+#   process_memory   — top processes by RAM usage
+#   temperature      — thermal sensor readings with colour-coded bars
+#   memory_detail    — detailed RAM/swap breakdown
+#   countdown        — live countdown timer with colour transitions
+#   cpu_graph        — CPU usage history chart (last 2 min)
+#   net_graph        — network Rx/Tx I/O history chart (last 60 s)
+#   recent_alerts    — last 5 notifications as an on-panel log
+#   calendar         — full-month calendar with today highlighted
+#   stopwatch        — running stopwatch with lap times
+#   metrics          — custom key/value dashboard (push via /api/metrics)
+#   idle             — keepalive — no display update, prevents blank
 mode = "clock_sysinfo"
 
 # JPEG quality sent to panel (1–100).  Higher = sharper but larger transfer.
@@ -34,9 +59,24 @@ headless = false
 # Automatically cycle through a list of display modes.
 # Useful for dashboards that should show different stats over time.
 #
-# rotation_modes    — comma-style array of mode names to cycle through
+# rotation_modes    — array of mode names to cycle through
 # rotation_interval — seconds per mode (0 = disabled)
 #
 # Example: cycle clock → sysinfo → cpu_detail → network, 30 seconds each
 # rotation_modes    = ["clock", "sysinfo", "cpu_detail", "network"]
 # rotation_interval = 30
+
+# ── Alert thresholds ───────────────────────────────────────────────────────────
+# Fire a panel alert when CPU usage or temperature exceeds these values.
+# Set to 0 to disable a threshold.
+# [daemon.thresholds]
+# cpu_pct = 95.0          # alert when CPU > 95%
+# temp_c  = 85.0          # alert when any sensor > 85°C
+# cooldown_secs = 120     # minimum seconds between consecutive threshold alerts
+
+# ── Night dim schedule ─────────────────────────────────────────────────────────
+# Automatically dim the panel between start_hour and end_hour (24-h local time).
+# [daemon.dim_schedule]
+# start_hour = 22         # dim at 22:00
+# end_hour   = 7          # restore at 07:00
+# dim_level  = 0.15       # 15% brightness during the window

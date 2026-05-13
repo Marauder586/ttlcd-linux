@@ -17,9 +17,6 @@
 #   2. Severity alert (--alert flag):
 #      Usage: ./notify-panel.sh --alert <level> "Message" ["Detail"] [progress]
 #      Levels: error | warning | info | success | critical
-#      Example:
-#        ./notify-panel.sh --alert error "Disk full" "/dev/sda1 at 100%"
-#        ./notify-panel.sh --alert success "Deploy done" "" 1.0
 #
 #   3. Mode switching:
 #      ./notify-panel.sh --mode <mode-name>
@@ -28,13 +25,52 @@
 #      ./notify-panel.sh --return   (return from custom text / image / slideshow)
 #
 #   4. Runtime panel settings:
-#      ./notify-panel.sh --quality <1-100>   (change JPEG quality)
-#      ./notify-panel.sh --orient  <0|90|180|270>  (rotate output)
-#      ./notify-panel.sh --blank              (push blank/dark frame)
+#      ./notify-panel.sh --quality <1-100>
+#      ./notify-panel.sh --orient  <0|90|180|270>
+#      ./notify-panel.sh --brightness <0-100>
+#      ./notify-panel.sh --blank
+#      ./notify-panel.sh --cancel             (cancel running countdown)
 #
-#   5. Status and diagnostics:
+#   5. Stopwatch:
+#      ./notify-panel.sh --sw-start           (start or resume stopwatch)
+#      ./notify-panel.sh --sw-stop            (pause stopwatch)
+#      ./notify-panel.sh --sw-lap             (record a lap)
+#      ./notify-panel.sh --sw-reset           (reset stopwatch)
+#      ./notify-panel.sh --sw-status          (print current stopwatch state)
+#
+#   6. Display freeze:
+#      ./notify-panel.sh --freeze             (freeze display)
+#      ./notify-panel.sh --unfreeze           (resume display)
+#
+#   7. Custom metrics:
+#      ./notify-panel.sh --metrics "Title" "Label1:Value1" "Label2:Value2" ...
+#      Example: ./notify-panel.sh --metrics "CI" "Build:OK" "Tests:1234" "Cover:92%"
+#
+#   8. Display profiles:
+#      ./notify-panel.sh --profile-save <name>    (save current state)
+#      ./notify-panel.sh --profile-apply <name>   (restore saved state)
+#      ./notify-panel.sh --profile-list           (list saved profiles)
+#
+#   9. Big text banner:
+#      ./notify-panel.sh --banner <line1> [line2] [line3] [color]
+#
+#  10. Weather and notes:
+#      ./notify-panel.sh --weather <city>         (fetch wttr.in weather & push)
+#      ./notify-panel.sh --notes "Title" "Note 1" "Note 2" ...
+#      ./notify-panel.sh --notes-add "Append one note"
+#
+#  11. Settings backup:
+#      ./notify-panel.sh --export [outfile.json]  (export all settings)
+#      ./notify-panel.sh --import <file.json>     (restore settings)
+#
+#  12. Status and diagnostics:
 #      ./notify-panel.sh --status             (print daemon status JSON)
-#      ./notify-panel.sh --history [N]        (show last N notifications, default 10)
+#      ./notify-panel.sh --snapshot           (print full system snapshot)
+#      ./notify-panel.sh --frozen             (check if display is frozen)
+#      ./notify-panel.sh --history [N]        (show last N notifications)
+#      ./notify-panel.sh --version
+#      ./notify-panel.sh --uptime
+#      ./notify-panel.sh --panel-info
 #
 # Environment:
 #   TTLCD_URL   base URL of the daemon (default: http://localhost:7070)
@@ -152,6 +188,23 @@ if [[ "${1:-}" == "--orient" ]]; then
          -H 'Content-Type: application/json' \
          -d "{\"rotate\":${R}}")
     echo "Orientation → ${result}"
+    exit 0
+fi
+
+# ── Brightness: --brightness <0-100> ─────────────────────────────────────────
+if [[ "${1:-}" == "--brightness" ]]; then
+    B="${2:?'--brightness requires a value (0-100)'}"
+    result=$(curl -sf -X POST "${DAEMON_URL}/api/brightness" \
+         -H 'Content-Type: application/json' \
+         -d "{"brightness":${B}}")
+    echo "Brightness → ${result}"
+    exit 0
+fi
+
+# ── Cancel countdown: --cancel ────────────────────────────────────────────────
+if [[ "${1:-}" == "--cancel" ]]; then
+    result=$(curl -sf -X DELETE "${DAEMON_URL}/api/countdown")
+    echo "${result}"
     exit 0
 fi
 
@@ -294,6 +347,213 @@ print(f'Slideshow: {d["count"]} images, current idx={d["current"]}')
 for i, name in enumerate(d['images']):
     marker = ' ◀' if i == d['current'] else ''
     print(f'  [{i}] {name}{marker}')
+"
+    exit 0
+fi
+
+# ── Big text banner: --banner <line1> [line2] [line3] [color] ───────────────
+if [[ "${1:-}" == "--banner" ]]; then
+    L1="${2:?'--banner requires at least one line'}"
+    L2="${3:-}"
+    L3="${4:-}"
+    COLOR="${5:-green}"
+    payload=$(python3 -c "
+import json, sys
+lines = [l for l in [sys.argv[1], sys.argv[2], sys.argv[3]] if l]
+print(json.dumps({'lines': lines, 'color': sys.argv[4], 'show_time': True}))
+" "$L1" "$L2" "$L3" "$COLOR")
+    curl -sf \
+         -X POST "${DAEMON_URL}/api/banner" \
+         -H 'Content-Type: application/json' \
+         -d "$payload" \
+         -o /dev/null \
+      && echo "Banner: ${L1}"
+    exit 0
+fi
+
+# ── Version and uptime: --version / --uptime ─────────────────────────────────
+if [[ "${1:-}" == "--version" ]]; then
+    curl -sf "${DAEMON_URL}/api/version"
+    echo
+    exit 0
+fi
+
+if [[ "${1:-}" == "--uptime" ]]; then
+    curl -sf "${DAEMON_URL}/api/uptime"
+    echo
+    exit 0
+fi
+
+# ── Panel info: --panel-info ──────────────────────────────────────────────────
+if [[ "${1:-}" == "--panel-info" ]]; then
+    curl -sf "${DAEMON_URL}/api/panel/info"
+    echo
+    exit 0
+fi
+
+# ── Stopwatch: --sw-start / --sw-stop / --sw-lap / --sw-reset / --sw-status ──
+if [[ "${1:-}" == "--sw-start" ]]; then
+    curl -sf -X POST "${DAEMON_URL}/api/stopwatch/start" && echo "Stopwatch started"
+    exit 0
+fi
+if [[ "${1:-}" == "--sw-stop" ]]; then
+    curl -sf -X POST "${DAEMON_URL}/api/stopwatch/stop" && echo "Stopwatch paused"
+    exit 0
+fi
+if [[ "${1:-}" == "--sw-lap" ]]; then
+    result=$(curl -sf -X POST "${DAEMON_URL}/api/stopwatch/lap")
+    echo "${result}"
+    exit 0
+fi
+if [[ "${1:-}" == "--sw-reset" ]]; then
+    curl -sf -X POST "${DAEMON_URL}/api/stopwatch/reset" && echo "Stopwatch reset"
+    exit 0
+fi
+if [[ "${1:-}" == "--sw-status" ]]; then
+    curl -sf "${DAEMON_URL}/api/stopwatch"
+    echo
+    exit 0
+fi
+
+# ── Display freeze: --freeze / --unfreeze ────────────────────────────────────
+if [[ "${1:-}" == "--freeze" ]]; then
+    curl -sf -X POST "${DAEMON_URL}/api/display/freeze" && echo "Display frozen"
+    exit 0
+fi
+if [[ "${1:-}" == "--unfreeze" ]]; then
+    curl -sf -X POST "${DAEMON_URL}/api/display/unfreeze" && echo "Display unfrozen"
+    exit 0
+fi
+
+# ── Custom metrics: --metrics <title> <key:val> ... ──────────────────────────
+if [[ "${1:-}" == "--metrics" ]]; then
+    TITLE="${2:?'--metrics requires a title as second arg'}"
+    shift 2
+    payload=$(python3 -c "
+import json, sys
+title = sys.argv[1]
+pairs = sys.argv[2:]
+metrics = []
+for p in pairs:
+    if ':' in p:
+        label, _, value = p.partition(':')
+        metrics.append({'label': label.strip(), 'value': value.strip(), 'color': 'blue'})
+print(json.dumps({'title': title, 'metrics': metrics, 'show': True}))
+" "$TITLE" "$@")
+    curl -sf -X POST "${DAEMON_URL}/api/metrics"          -H 'Content-Type: application/json'          -d "$payload"          -o /dev/null       && echo "Metrics pushed: ${TITLE}"
+    exit 0
+fi
+
+# ── Display profiles: --profile-save / --profile-apply / --profile-list ───────
+if [[ "${1:-}" == "--profile-save" ]]; then
+    NAME="${2:?'--profile-save requires a name'}"
+    curl -sf -X POST "${DAEMON_URL}/api/profiles"          -H 'Content-Type: application/json'          -d "{\"name\":\"${NAME}\"}"          -o /dev/null       && echo "Profile '${NAME}' saved"
+    exit 0
+fi
+if [[ "${1:-}" == "--profile-apply" ]]; then
+    NAME="${2:?'--profile-apply requires a name'}"
+    curl -sf -X POST "${DAEMON_URL}/api/profiles/${NAME}/apply"          -o /dev/null       && echo "Profile '${NAME}' applied"
+    exit 0
+fi
+if [[ "${1:-}" == "--profile-list" ]]; then
+    curl -sf "${DAEMON_URL}/api/profiles" | python3 -c "
+import json, sys
+profiles = json.load(sys.stdin)
+if not profiles:
+    print('No saved profiles.')
+for p in profiles:
+    print(f'  {p["name"]:20s} mode={p["mode"]:16s} bright={p["brightness"]*100:.0f}%')
+"
+    exit 0
+fi
+
+# ── Weather: --weather <city> ─────────────────────────────────────────────────
+if [[ "${1:-}" == "--weather" ]]; then
+    CITY="${2:-London}"
+    # Fetch from wttr.in and push to daemon
+    json=$(curl -sf "https://wttr.in/${CITY}?format=j1" 2>/dev/null) || {
+        echo "Error: could not reach wttr.in" >&2; exit 1; }
+    payload=$(python3 -c "
+import json, sys, time
+d = json.loads(sys.stdin.read())
+cur   = d['current_condition'][0]
+cast  = d['weather'][0] if d['weather'] else {}
+obj = {
+  'city':          sys.argv[1],
+  'temp_c':        float(cur['temp_C']),
+  'feels_like_c':  float(cur['FeelsLikeC']),
+  'condition':     cur['weatherDesc'][0]['value'] if cur.get('weatherDesc') else '',
+  'humidity_pct':  int(cur['humidity']),
+  'wind_kmh':      float(cur['windspeedKmph']),
+  'wind_dir':      cur.get('winddir16Point', ''),
+  'visibility_km': float(cur.get('visibility', 0)),
+  'high_c':        float(cast['maxtempC']) if 'maxtempC' in cast else None,
+  'low_c':         float(cast['mintempC']) if 'mintempC' in cast else None,
+  'show':          True,
+}
+print(json.dumps(obj))
+" "$CITY" <<< "$json")
+    curl -sf -X POST "${DAEMON_URL}/api/weather"          -H 'Content-Type: application/json'          -d "$payload" -o /dev/null
+    echo "Weather pushed for ${CITY}"
+    exit 0
+fi
+
+# ── Notes: --notes <title> <item1> [item2] ... ────────────────────────────────
+if [[ "${1:-}" == "--notes" ]]; then
+    TITLE="${2:?'--notes requires a title'}"
+    shift 2
+    payload=$(python3 -c "
+import json, sys
+print(json.dumps({'title': sys.argv[1], 'items': list(sys.argv[2:]), 'append': False, 'show': True}))
+" "$TITLE" "$@")
+    curl -sf -X POST "${DAEMON_URL}/api/notes"          -H 'Content-Type: application/json'          -d "$payload" -o /dev/null       && echo "Notes pushed: ${TITLE}"
+    exit 0
+fi
+
+# ── Notes append: --notes-add <item> ─────────────────────────────────────────
+if [[ "${1:-}" == "--notes-add" ]]; then
+    ITEM="${2:?'--notes-add requires an item string'}"
+    curl -sf -X POST "${DAEMON_URL}/api/notes"          -H 'Content-Type: application/json'          -d "$(python3 -c "import json, sys; print(json.dumps({'items':[sys.argv[1]],'append':True,'show':True}))" "$ITEM")"          -o /dev/null       && echo "Note added: ${ITEM}"
+    exit 0
+fi
+
+# ── Settings export: --export [outfile] ──────────────────────────────────────
+if [[ "${1:-}" == "--export" ]]; then
+    OUTFILE="${2:-ttlcd-settings.json}"
+    curl -sf "${DAEMON_URL}/api/settings/export" -o "$OUTFILE"
+    echo "Settings exported to ${OUTFILE}"
+    exit 0
+fi
+
+# ── Settings import: --import <file> ─────────────────────────────────────────
+if [[ "${1:-}" == "--import" ]]; then
+    FILE="${2:?'--import requires a filename'}"
+    result=$(curl -sf -X POST "${DAEMON_URL}/api/settings/import"              -H 'Content-Type: application/json'              -d "@${FILE}")
+    echo "Imported: ${result}"
+    exit 0
+fi
+
+# ── Freeze status: --frozen ───────────────────────────────────────────────────
+if [[ "${1:-}" == "--frozen" ]]; then
+    curl -sf "${DAEMON_URL}/api/display/frozen"
+    echo
+    exit 0
+fi
+
+# ── Snapshot: --snapshot ──────────────────────────────────────────────────────
+if [[ "${1:-}" == "--snapshot" ]]; then
+    curl -sf "${DAEMON_URL}/api/sys/snapshot" | python3 -c "
+import json, sys
+d = json.load(sys.stdin)
+cpu = d['cpu']
+mem = d['memory']
+print(f"Host: {d['hostname']}  OS: {d['os']}  Kernel: {d['kernel']}")
+print(f"CPU:  {cpu['pct']:.1f}%  Load: {cpu['load_1']:.2f}/{cpu['load_5']:.2f}/{cpu['load_15']:.2f}")
+used_gb = mem['used'] / 1073741824
+total_gb = mem['total'] / 1073741824
+print(f"RAM:  {used_gb:.1f}/{total_gb:.1f} GB")
+print(f"Uptime: {d['uptime_secs']//3600}h {(d['uptime_secs']%3600)//60}m")
+print(f"Daemon: mode={d['daemon']['mode']}  fps={d['daemon']['fps']:.1f}  frame={d['daemon']['frame_seq']}")
 "
     exit 0
 fi

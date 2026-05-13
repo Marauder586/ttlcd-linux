@@ -26,7 +26,7 @@
       # ── package derivation ───────────────────────────────────────
       ttlcd = pkgs.rustPlatform.buildRustPackage {
         pname = "ttlcd";
-        version = "0.5.0";
+        version = "0.9.0";
         src = ./.;
 
         cargoLock.lockFile = ./Cargo.lock;
@@ -81,6 +81,7 @@
         cfg = config.services.ttlcd;
 
         # Build the ExecStart argument list
+        bindArgs = " --bind ${cfg.bind}";
         modeArgs =
           lib.optionalString (cfg.rotationModes != [])
           " --rotation-modes ${lib.concatStringsSep "," cfg.rotationModes}";
@@ -128,6 +129,12 @@
             description = "Start without opening the USB device (web UI only).";
           };
 
+          bind = lib.mkOption {
+            type = lib.types.str;
+            default = "127.0.0.1";
+            description = "Bind address for the HTTP server (use 0.0.0.0 to listen on all interfaces).";
+          };
+
           rotationModes = lib.mkOption {
             type = lib.types.listOf lib.types.str;
             default = [];
@@ -159,7 +166,12 @@
           # TAG+="uaccess" handles loginctl seat sessions; MODE/GROUP covers
           # non-seat services running as cfg.user.
           services.udev.extraRules = ''
-            SUBSYSTEM=="usb", ATTRS{idVendor}=="264a", ATTRS{idProduct}=="2343",               TAG+="uaccess", MODE="0660", GROUP="users"
+            # XinWeiYe/Thermaltake 480x480 panel (0x264a:0x2343)
+            SUBSYSTEM=="usb", ATTRS{idVendor}=="264a", ATTRS{idProduct}=="2343", TAG+="uaccess", MODE="0660", GROUP="users"
+            # Sibling SKU 128-height panel (0x264a:0x233d)
+            SUBSYSTEM=="usb", ATTRS{idVendor}=="264a", ATTRS{idProduct}=="233d", TAG+="uaccess", MODE="0660", GROUP="users"
+            # Alternate Thermaltake SKU (0x264a:0x2428)
+            SUBSYSTEM=="usb", ATTRS{idVendor}=="264a", ATTRS{idProduct}=="2428", TAG+="uaccess", MODE="0660", GROUP="users"
           '';
 
           systemd.services.ttlcd = {
@@ -170,6 +182,7 @@
               ExecStart = lib.concatStrings [
                 "${cfg.package}/bin/ttlcd daemon"
                 " --port ${toString cfg.port}"
+                bindArgs
                 " --mode ${cfg.mode}"
                 qualityArgs
                 rotateArgs

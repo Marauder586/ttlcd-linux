@@ -1,988 +1,2907 @@
 /* ttlcd web UI — app.js */
 'use strict';
 
-// ── State ─────────────────────────────────────────────────────────────────────
-let currentFile      = null;
-let previewToken     = 0;
-let lastFrameSeq     = null;  // null = haven't received status yet
-let lastPreviewedSeq = -2;    // -2 = never fetched preview
+// ─── Theme ────────────────────────────────────────────────────────────────────
+(function () {
+  const saved = localStorage.getItem('ttlcd-theme') || 'dark';
+  if (saved === 'latte') document.documentElement.setAttribute('data-theme', 'latte');
+})();
 
-// ── DOM refs ──────────────────────────────────────────────────────────────────
-const currentModeEl    = document.getElementById('current-mode');
-const modeBtns         = document.querySelectorAll('.mode-btn');
-const dropZone         = document.getElementById('drop-zone');
-const fileInput        = document.getElementById('file-input');
-const previewWrap      = document.getElementById('preview-wrap');
-const previewEl        = document.getElementById('preview');
-const sendBtn          = document.getElementById('send-btn');
-const cancelBtn        = document.getElementById('cancel-btn');
-const uploadStatusEl   = document.getElementById('upload-status');
-const logEl            = document.getElementById('log');
-const infoVersion      = document.getElementById('info-version');
-const infoMode         = document.getElementById('info-mode');
-const infoRotate       = document.getElementById('info-rotate');
-const infoQuality      = document.getElementById('info-quality');
-const infoHeadless     = document.getElementById('info-headless');
-const infoPending      = document.getElementById('info-pending');
-const infoHost         = document.getElementById('info-host');
-const hdrVersion       = document.getElementById('hdr-version');
-const panelPreviewImg  = document.getElementById('panel-preview-img');
-const panelPreviewEmpty= document.getElementById('panel-preview-empty');
-const returnBtn        = document.getElementById('return-btn');
-const logClearBtn      = document.getElementById('log-clear-btn');
+// ─── DOM refs ─────────────────────────────────────────────────────────────────
+const $ = id => document.getElementById(id);
 
-// Live stat elements
-const statCpu       = document.getElementById('stat-cpu');
-const statRam       = document.getElementById('stat-ram');
-const statLoad      = document.getElementById('stat-load');
-const statUptime    = document.getElementById('stat-uptime');
-const statTempBlock = document.getElementById('stat-temp-block');
-const statTemp      = document.getElementById('stat-temp');
-const barCpu        = document.getElementById('bar-cpu');
-const barRam        = document.getElementById('bar-ram');
-const barTemp       = document.getElementById('bar-temp');
+// Header
+const hdrVersion    = $('hdr-version');
+const currentMode   = $('current-mode');
+const returnBtn     = $('return-btn');
+const themeToggle   = $('theme-toggle-btn');
 
-// Text form refs
-const txtTitle    = document.getElementById('txt-title');
-const txtSubtitle = document.getElementById('txt-subtitle');
-const txtLines    = document.getElementById('txt-lines');
-const txtProgress = document.getElementById('txt-progress');
-const txtColor    = document.getElementById('txt-color');
-const txtShowTime = document.getElementById('txt-show-time');
-const txtDuration    = document.getElementById('txt-duration');
-const txtSendBtn     = document.getElementById('txt-send-btn');
-const txtPreviewBtn  = document.getElementById('txt-preview-btn');
-const txtPreviewWrap = document.getElementById('txt-preview-wrap');
-const txtPreviewImg  = document.getElementById('txt-preview-img');
-const txtStatus      = document.getElementById('txt-status');
-const progPctLbl     = document.getElementById('prog-pct-label');
+// Mode grid
+const modeBtns      = document.querySelectorAll('.mode-btn');
 
-// Preset refs
-const presetSelect    = document.getElementById('preset-select');
-const presetApplyBtn  = document.getElementById('preset-apply-btn');
-const presetSaveBtn   = document.getElementById('preset-save-btn');
-const presetDelBtn    = document.getElementById('preset-del-btn');
-const presetClearBtn  = document.getElementById('preset-clear-btn');
+// Preview
+const panelImg      = $('panel-preview-img');
+const panelEmpty    = $('panel-preview-empty');
+const freezeBtn     = $('freeze-btn');
 
-// Quick notify refs
-const quickStatus = document.getElementById('quick-status');
+// Quick notify
+const quickBtns     = document.querySelectorAll('.quick-btn');
+const quickStatus   = $('quick-status');
+const testPatternBtn= $('test-pattern-btn');
 
-// Slideshow refs
-const ssDir      = document.getElementById('ss-dir');
-const ssInterval = document.getElementById('ss-interval');
-const ssStartBtn = document.getElementById('ss-start-btn');
-const ssPrevBtn  = document.getElementById('ss-prev-btn');
-const ssNextBtn  = document.getElementById('ss-next-btn');
-const ssStatus   = document.getElementById('ss-status');
+// Custom text
+const txtTitle      = $('txt-title');
+const txtSubtitle   = $('txt-subtitle');
+const txtLines      = $('txt-lines');
+const txtProgress   = $('txt-progress');
+const progPctLabel  = $('prog-pct-label');
+const txtColor      = $('txt-color');
+const txtShowTime   = $('txt-show-time');
+const txtDuration   = $('txt-duration');
+const txtSendBtn    = $('txt-send-btn');
+const txtPreviewBtn = $('txt-preview-btn');
+const txtStatus     = $('txt-status');
+const txtPreviewWrap= $('txt-preview-wrap');
+const txtPreviewImg = $('txt-preview-img');
 
-// Rotation refs
-const rotModes        = document.getElementById('rot-modes');
-const rotInterval     = document.getElementById('rot-interval');
-const rotStartBtn     = document.getElementById('rot-start-btn');
-const rotStopBtn      = document.getElementById('rot-stop-btn');
-const rotStatus       = document.getElementById('rot-status');
-const rotIndicator    = document.getElementById('rot-indicator');
-const rotModeList     = document.getElementById('rot-mode-list');
-const rotIntervalDisp = document.getElementById('rot-interval-display');
+// Presets
+const presetSelect  = $('preset-select');
+const presetApplyBtn= $('preset-apply-btn');
+const presetSaveBtn = $('preset-save-btn');
+const presetDelBtn  = $('preset-del-btn');
+const presetClearBtn= $('preset-clear-btn');
+const presetImport  = $('preset-import-input');
 
-// Panel settings refs
-const setQuality   = document.getElementById('set-quality');
-const setQualityLbl= document.getElementById('set-quality-lbl');
-const setOrient    = document.getElementById('set-orient');
-const setApplyBtn  = document.getElementById('set-apply-btn');
-const setStatus    = document.getElementById('set-status');
+// Image upload
+const dropZone      = $('drop-zone');
+const fileInput     = $('file-input');
+const previewWrap   = $('preview-wrap');
+const previewImg    = $('preview');
+const sendBtn       = $('send-btn');
+const cancelBtn     = $('cancel-btn');
+const uploadStatus  = $('upload-status');
 
+// Slideshow
+const ssDir         = $('ss-dir');
+const ssInterval    = $('ss-interval');
+const ssStartBtn    = $('ss-start-btn');
+const ssPrevBtn     = $('ss-prev-btn');
+const ssNextBtn     = $('ss-next-btn');
+const ssShuffleBtn  = $('ss-shuffle-btn');
+const ssStatus      = $('ss-status');
 
-// Schedule refs
-const schedInSecs = document.getElementById('sched-in-secs');
-const schedLabel  = document.getElementById('sched-label');
-const schedBtn    = document.getElementById('sched-btn');
-const schedStatus = document.getElementById('sched-status');
+// Countdown
+const cdHours       = $('cd-hours');
+const cdMinutes     = $('cd-minutes');
+const cdSecsI       = $('cd-secs-i');
+const cdLabel       = $('cd-label');
+const cdStartBtn    = $('cd-start-btn');
+const cdCancelBtn   = $('cd-cancel-btn');
+const cdStatus      = $('cd-status');
 
-// Countdown refs
-const cdSeconds  = document.getElementById('cd-seconds');
-const cdLabel    = document.getElementById('cd-label');
-const cdStartBtn = document.getElementById('cd-start-btn');
-const cdCancelBtn= document.getElementById('cd-cancel-btn');
-const cdStatus   = document.getElementById('cd-status');
+// Banner
+const banLine1      = $('ban-line1');
+const banLine2      = $('ban-line2');
+const banLine3      = $('ban-line3');
+const banLabel      = $('ban-label');
+const banColor      = $('ban-color');
+const banSendBtn    = $('ban-send-btn');
+const banStatus     = $('ban-status');
 
-// ── Logging ───────────────────────────────────────────────────────────────────
-function logEntry(msg, level = 'info') {
-  const now = new Date();
-  const ts  = now.toTimeString().slice(0, 8);
-  const li  = document.createElement('li');
-  li.className = level;
-  li.innerHTML = `<span class="ts">${ts}</span><span class="msg">${escHtml(msg)}</span>`;
+// Auto-rotation
+const rotModes      = $('rot-modes');
+const rotInterval   = $('rot-interval');
+const rotStartBtn   = $('rot-start-btn');
+const rotStopBtn    = $('rot-stop-btn');
+const rotStatus     = $('rot-status');
+const rotIndicator  = $('rot-indicator');
+const rotModeList   = $('rot-mode-list');
+const rotIntervalDisp=$('rot-interval-display');
+
+// Settings
+const setQuality    = $('set-quality');
+const setQualityLbl = $('set-quality-lbl');
+const setOrient     = $('set-orient');
+const setBrightness = $('set-brightness');
+const setBrightLbl  = $('set-brightness-lbl');
+const setApplyBtn   = $('set-apply-btn');
+const setStatus     = $('set-status');
+
+// System snapshot
+const statCpu       = $('stat-cpu');
+const statRam       = $('stat-ram');
+const statLoad      = $('stat-load');
+const statUptime    = $('stat-uptime');
+const statTempBlock = $('stat-temp-block');
+const statTemp      = $('stat-temp');
+const statNetBlock  = $('stat-net-block');
+const statNet       = $('stat-net');
+const barCpu        = $('bar-cpu');
+const barRam        = $('bar-ram');
+const barTemp       = $('bar-temp');
+const sparklineWrap = $('sparkline-wrap');
+const cpuSparkline  = $('cpu-sparkline');
+const netIfacesWrap = $('net-ifaces-wrap');
+const netIfacesTable= $('net-ifaces-table');
+
+// Panel info
+const infoVersion   = $('info-version');
+const infoMode      = $('info-mode');
+const infoRotate    = $('info-rotate');
+const infoQuality   = $('info-quality');
+const infoHeadless  = $('info-headless');
+const infoHost      = $('info-host');
+const infoSerial    = $('info-serial');
+const infoFirmware  = $('info-firmware');
+const infoPending   = $('info-pending');
+const infoBrightness= $('info-brightness');
+const infoFps       = $('info-fps');
+const infoDaemonUp  = $('info-daemon-uptime');
+const infoFrameSeq  = $('info-frame-seq');
+const infoFrozen    = $('info-frozen');
+const infoSw        = $('info-sw');
+
+// Schedule
+const schedInSecs   = $('sched-in-secs');
+const schedLabelEl  = $('sched-label');
+const schedBtn      = $('sched-btn');
+const schedStatus   = $('sched-status');
+
+// History
+const histRefreshBtn= $('hist-refresh-btn');
+const histClearBtn  = $('hist-clear-btn');
+const historyList   = $('history-list');
+
+// Log
+const logEl         = $('log');
+const logClearBtn   = $('log-clear-btn');
+
+// ─── App state ────────────────────────────────────────────────────────────────
+let lastFrameSeq    = -1;
+let lastMode        = '';
+let isFrozen        = false;
+let imageFile       = null;
+let rotationActive  = false;
+let statusPollTimer = null;
+let snapshotTimer   = null;
+let sparklineData   = [];
+
+// Stopwatch local timer
+let swSyncState = {
+  running: false,
+  base_elapsed_ms: 0,
+  started_at_unix_ms: 0,
+  elapsed_ms: 0,
+  laps: [],
+};
+let swLocalTimer = null;
+
+// ─── Logging ──────────────────────────────────────────────────────────────────
+function log(msg, cls = '') {
+  const li = document.createElement('li');
+  li.textContent = `[${new Date().toLocaleTimeString()}] ${msg}`;
+  if (cls) li.className = cls;
   logEl.prepend(li);
-  if (logEl.children.length > 80) logEl.lastChild.remove();
+  while (logEl.children.length > 100) logEl.lastChild.remove();
 }
 
-logClearBtn.addEventListener('click', () => { logEl.innerHTML = ''; logEntry('Log cleared'); });
-
-function escHtml(s) {
-  return String(s)
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;');
+// ─── Status display helper ────────────────────────────────────────────────────
+function setStatusMsg(el, msg, ok = true, timeout = 3500) {
+  if (!el) return;
+  el.textContent = msg;
+  el.style.color = ok ? 'var(--green)' : 'var(--red)';
+  setTimeout(() => { if (el.textContent === msg) el.textContent = ''; }, timeout);
 }
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
-function fmtBytes(bytes) {
-  if (bytes >= 1_073_741_824) return (bytes / 1_073_741_824).toFixed(1) + ' GB';
-  if (bytes >= 1_048_576)     return (bytes / 1_048_576).toFixed(1)     + ' MB';
-  if (bytes >= 1024)          return (bytes / 1024).toFixed(1)          + ' KB';
-  return bytes + ' B';
+// ─── Fetch helpers ────────────────────────────────────────────────────────────
+async function api(method, path, body) {
+  const opts = { method, headers: {} };
+  if (body !== undefined) {
+    opts.headers['Content-Type'] = 'application/json';
+    opts.body = JSON.stringify(body);
+  }
+  const r = await fetch(path, opts);
+  return r;
+}
+
+async function apiJson(method, path, body) {
+  const r = await api(method, path, body);
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+
+// ─── Theme toggle ─────────────────────────────────────────────────────────────
+themeToggle.addEventListener('click', () => {
+  const current = document.documentElement.getAttribute('data-theme');
+  if (current === 'latte') {
+    document.documentElement.removeAttribute('data-theme');
+    localStorage.setItem('ttlcd-theme', 'dark');
+    themeToggle.textContent = '🌙';
+  } else {
+    document.documentElement.setAttribute('data-theme', 'latte');
+    localStorage.setItem('ttlcd-theme', 'latte');
+    themeToggle.textContent = '☀️';
+  }
+});
+// Restore icon
+if (localStorage.getItem('ttlcd-theme') === 'latte') themeToggle.textContent = '☀️';
+
+// ─── Mode switching ───────────────────────────────────────────────────────────
+modeBtns.forEach(btn => {
+  btn.addEventListener('click', async () => {
+    const mode = btn.dataset.mode;
+    try {
+      await api('POST', '/api/mode', { mode });
+      log(`Mode → ${mode}`);
+      updateActiveModeButton(mode);
+    } catch (e) {
+      log(`Mode change failed: ${e.message}`, 'err');
+    }
+  });
+});
+
+function updateActiveModeButton(mode) {
+  modeBtns.forEach(b => b.classList.toggle('active', b.dataset.mode === mode));
+  currentMode.textContent = mode.replace(/_/g, ' ');
+  lastMode = mode;
+}
+
+// ─── Return button ────────────────────────────────────────────────────────────
+returnBtn.addEventListener('click', async () => {
+  try {
+    await api('POST', '/api/clear');
+    log('Returned to previous mode');
+    returnBtn.style.display = 'none';
+  } catch (e) {
+    log(`Clear failed: ${e.message}`, 'err');
+  }
+});
+
+// ─── Connection status ───────────────────────────────────────────────────────
+let connDot = null;
+function setConnected(state) {
+  // state: 'online' | 'offline' | 'stale'
+  if (!connDot) return;
+  connDot.className = 'conn-dot' + (state === 'online' ? '' : ` ${state}`);
+  connDot.title = state === 'online' ? 'Connected' : state === 'stale' ? 'Reconnecting…' : 'Offline';
+}
+
+(function injectConnDot() {
+  const bar = $('status-bar');
+  if (!bar) return;
+  connDot = document.createElement('span');
+  connDot.className = 'conn-dot offline';
+  connDot.title = 'Connecting…';
+  bar.insertBefore(connDot, bar.firstChild);
+})();
+
+
+// ─── Toast notifications ──────────────────────────────────────────────────────
+function showToast(msg, type = 'info', durationMs = 4000) {
+  const container = document.getElementById('toast-container') || (() => {
+    const el = document.createElement('div');
+    el.id = 'toast-container';
+    document.body.appendChild(el);
+    return el;
+  })();
+  const toast = document.createElement('div');
+  toast.className = 'toast toast-' + type;
+  toast.textContent = msg;
+  container.appendChild(toast);
+  // Animate in
+  requestAnimationFrame(() => toast.classList.add('toast-visible'));
+  setTimeout(() => {
+    toast.classList.remove('toast-visible');
+    toast.addEventListener('transitionend', () => toast.remove(), { once: true });
+  }, durationMs);
+}
+
+// ─── Preview refresh via SSE ──────────────────────────────────────────────────
+function initSSE() {
+  const es = new EventSource('/api/events');
+  let reconnectDelay = 2000;
+
+  es.addEventListener('frame', e => {
+    setConnected('online');
+    try {
+      const data = JSON.parse(e.data);
+      const seq  = data.seq;
+      isFrozen   = data.frozen || false;
+      updateFreezeButton();
+      if (seq !== lastFrameSeq) {
+        lastFrameSeq = seq;
+        refreshPreview();
+      }
+    } catch (_) { refreshPreview(); }
+  });
+
+  es.addEventListener('mode', e => {
+    setConnected('online');
+    try {
+      const data = JSON.parse(e.data);
+      if (data.mode) {
+        updateActiveModeButton(data.mode);
+        // Show toast for mode changes
+        const modeLabel = data.mode.replace(/_/g, ' ');
+        showToast('Mode → ' + modeLabel, 'info', 2500);
+      }
+    } catch (_) {}
+  });
+
+  es.addEventListener('alert', e => {
+    setConnected('online');
+    try {
+      const data = JSON.parse(e.data);
+      if (data.summary) showToast(data.summary, 'alert', 6000);
+    } catch (_) {}
+  });
+
+  es.onerror = () => {
+    setConnected('offline');
+    es.close();
+    setTimeout(initSSE, reconnectDelay);
+    reconnectDelay = Math.min(reconnectDelay * 1.5, 30000);
+  };
+
+  es.onopen = () => {
+    reconnectDelay = 2000;
+    setConnected('online');
+  };
+}
+
+function refreshPreview() {
+  const url = `/api/preview?t=${Date.now()}`;
+  const img = new Image();
+  img.onload = () => {
+    panelImg.src = img.src;
+    panelImg.style.display = 'block';
+    panelEmpty.style.display = 'none';
+  };
+  img.src = url;
+}
+
+// ─── Status polling ───────────────────────────────────────────────────────────
+async function fetchStatus() {
+  try {
+    const d = await apiJson('GET', '/api/status');
+    // Header
+    if (hdrVersion) hdrVersion.textContent = `v${d.version}`;
+    // Mode
+    if (d.mode !== lastMode) {
+      updateActiveModeButton(d.mode);
+      // Show Return button for transient modes
+      const transient = ['custom_text','custom_image','countdown'];
+      returnBtn.style.display = (d.can_clear && transient.some(t => d.mode === t)) ? '' : 'none';
+    }
+    // Rotation indicator
+    if (d.rotation_interval > 0 && d.rotation_modes?.length) {
+      rotationActive = true;
+      rotIndicator.style.display = 'flex';
+      rotModeList.textContent = d.rotation_modes.join(', ');
+      rotIntervalDisp.textContent = d.rotation_interval;
+    } else {
+      rotationActive = false;
+      rotIndicator.style.display = 'none';
+    }
+    // Panel info table
+    if (infoVersion)  infoVersion.textContent  = d.version;
+    if (infoMode)     infoMode.textContent      = d.mode;
+    if (infoRotate)   infoRotate.textContent    = `${d.rotate_deg}°`;
+    if (infoQuality)  infoQuality.textContent   = d.quality;
+    if (infoHeadless) infoHeadless.textContent  = d.headless ? 'Yes' : 'No';
+    if (infoPending)  infoPending.textContent   = d.pending_scheduled ?? '0';
+    if (infoBrightness) infoBrightness.textContent = `${Math.round(d.brightness * 100)}%`;
+    if (infoFps)      infoFps.textContent       = d.render_fps?.toFixed(1) ?? '—';
+    if (infoDaemonUp) infoDaemonUp.textContent  = fmtUptime(d.daemon_uptime_secs ?? 0);
+    if (infoFrameSeq) infoFrameSeq.textContent  = d.frame_seq;
+    if (infoFrozen)   infoFrozen.textContent    = d.frozen ? '❄ Yes' : 'No';
+    if (infoSw)       infoSw.textContent        = d.stopwatch_running
+      ? `▶ ${fmtSwTime(d.stopwatch_elapsed_ms)}`
+      : (d.stopwatch_elapsed_ms > 0 ? `⏸ ${fmtSwTime(d.stopwatch_elapsed_ms)}` : 'Ready');
+    // Frozen state
+    isFrozen = d.frozen || false;
+    updateFreezeButton();
+    // Settings sliders (sync once)
+    if (setQuality.dataset.synced !== '1') {
+      setQuality.value = d.quality;
+      setQualityLbl.textContent = d.quality;
+      setQuality.dataset.synced = '1';
+    }
+    if (setOrient.dataset.synced !== '1') {
+      setOrient.value = String(d.rotate_deg);
+      setOrient.dataset.synced = '1';
+    }
+    if (setBrightness.dataset.synced !== '1') {
+      setBrightness.value = Math.round(d.brightness * 100);
+      setBrightLbl.textContent = `${Math.round(d.brightness * 100)}%`;
+      setBrightness.dataset.synced = '1';
+    }
+  } catch (e) {
+    // silent — daemon may be starting
+  }
 }
 
 function fmtUptime(secs) {
   const d = Math.floor(secs / 86400);
   const h = Math.floor((secs % 86400) / 3600);
   const m = Math.floor((secs % 3600) / 60);
+  const s = secs % 60;
   if (d > 0) return `${d}d ${h}h ${m}m`;
-  if (h > 0) return `${h}h ${m}m`;
-  return `${m}m ${secs % 60}s`;
+  if (h > 0) return `${h}h ${m}m ${s}s`;
+  return `${m}m ${s}s`;
 }
 
-// ── Status polling ────────────────────────────────────────────────────────────
-async function fetchStatus() {
+// ─── Panel hardware info ──────────────────────────────────────────────────────
+async function fetchPanelInfo() {
   try {
-    const r = await fetch('/api/status');
-    if (!r.ok) return;
-    const data = await r.json();
-
-    const ver = data.version ?? '—';
-    currentModeEl.textContent  = data.mode ?? '—';
-    infoVersion.textContent    = ver;
-    infoMode.textContent       = data.mode ?? '—';
-    infoRotate.textContent     = data.rotate_deg != null ? `${data.rotate_deg}°` : '0°';
-    infoQuality.textContent    = data.quality != null ? `${data.quality}%` : '—';
-    infoHeadless.textContent   = data.headless ? 'yes (USB skipped)' : 'no';
-    if (infoPending) infoPending.textContent = data.pending_scheduled > 0 ? `${data.pending_scheduled} scheduled` : 'none';
-    hdrVersion.textContent     = `v${ver}`;
-
-    // Sync the settings sliders/selects with current daemon state
-    if (data.quality != null) {
-      setQuality.value       = data.quality;
-      setQualityLbl.textContent = `${data.quality}%`;
-    }
-    if (data.rotate_deg != null) {
-      setOrient.value = String(data.rotate_deg);
-    }
-
-    modeBtns.forEach(btn => {
-      btn.classList.toggle('active', btn.dataset.mode === data.mode);
-    });
-
-    // Return button for transient modes
-    returnBtn.style.display = data.can_clear ? '' : 'none';
-
-    // Scheduled notifications badge
-    if (data.pending_scheduled > 0) {
-      currentModeEl.title = `${data.pending_scheduled} scheduled notification(s) pending`;
-    } else {
-      currentModeEl.title = '';
-    }
-
-    // Countdown display in status bar
-    if (data.mode === 'countdown' && data.countdown_remaining_secs != null) {
-      const rem = Math.max(0, data.countdown_remaining_secs);
-      const h = Math.floor(rem / 3600);
-      const m = Math.floor((rem % 3600) / 60);
-      const s = rem % 60;
-      const ts = h > 0
-        ? `${h}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`
-        : `${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`;
-      const lbl = data.countdown_label ? ` "${data.countdown_label}"` : '';
-      currentModeEl.textContent = `countdown ${ts}${lbl}`;
-    }
-
-    // Rotation indicator
-    updateRotationIndicator(data.rotation_modes ?? [], data.rotation_interval ?? 0, data.mode);
-
-    // Smarter preview: only fetch when a new frame is available
-    const newSeq = data.frame_seq ?? null;
-    if (newSeq !== lastFrameSeq) {
-      lastFrameSeq = newSeq;
-      fetchPreview();
-    }
-  } catch (_) { /* busy */ }
+    const d = await apiJson('GET', '/api/panel/info');
+    if (infoHost)     infoHost.textContent     = window.location.host;
+    if (infoSerial)   infoSerial.textContent   = d.serial   ?? (d.headless ? '(headless)' : '—');
+    if (infoFirmware) infoFirmware.textContent = d.firmware_byte != null
+      ? `0x${d.firmware_byte.toString(16).padStart(2,'0')}` : '—';
+  } catch (_) {}
 }
 
-function updateRotationIndicator(modes, interval, currentMode) {
-  if (interval > 0 && modes.length > 0) {
-    rotIndicator.style.display  = '';
-    rotIntervalDisp.textContent = interval;
-
-    // Render mode chips
-    rotModeList.innerHTML = '';
-    modes.forEach(m => {
-      const chip = document.createElement('span');
-      chip.className = 'rot-chip' + (m === currentMode ? ' active-rot' : '');
-      chip.textContent = m.replace(/_/g, ' ');
-      rotModeList.appendChild(chip);
-    });
-  } else {
-    rotIndicator.style.display = 'none';
-  }
-}
-
-async function fetchSysinfo() {
+// ─── System snapshot ──────────────────────────────────────────────────────────
+async function fetchSnapshot() {
   try {
-    const r = await fetch('/api/sysinfo');
-    if (!r.ok) return;
-    const d = await r.json();
+    const d = await apiJson('GET', '/api/sys/snapshot');
+    const cpu = d.cpu_pct ?? 0;
+    const ram = d.mem_used != null && d.mem_total
+      ? (d.mem_used / d.mem_total * 100) : 0;
 
-    infoHost.textContent = d.hostname || '—';
+    statCpu.textContent     = `${cpu.toFixed(1)}%`;
+    statRam.textContent     = `${ram.toFixed(1)}%`;
+    barCpu.style.width      = `${cpu}%`;
+    barCpu.style.background = cpu > 85 ? 'var(--red)' : cpu > 60 ? 'var(--yellow)' : 'var(--blue)';
+    barRam.style.width      = `${ram}%`;
+    barRam.style.background = ram > 85 ? 'var(--red)' : ram > 60 ? 'var(--yellow)' : 'var(--green)';
 
-    statCpu.textContent = d.cpu_pct.toFixed(1) + '%';
-    barCpu.style.width  = d.cpu_pct.toFixed(1) + '%';
-    barCpu.style.background =
-      d.cpu_pct > 80 ? 'var(--red)' :
-      d.cpu_pct > 50 ? 'var(--yellow)' : 'var(--blue)';
+    if (d.load_avg) statLoad.textContent = d.load_avg.join(' / ');
+    if (d.uptime_secs != null) statUptime.textContent = fmtUptime(d.uptime_secs);
 
-    const memPct = d.mem_total > 0 ? (d.mem_used / d.mem_total * 100) : 0;
-    statRam.textContent = `${fmtBytes(d.mem_used)} / ${fmtBytes(d.mem_total)}`;
-    barRam.style.width  = memPct.toFixed(1) + '%';
-    barRam.style.background =
-      memPct > 85 ? 'var(--red)' :
-      memPct > 65 ? 'var(--yellow)' : 'var(--green)';
-
-    statLoad.textContent   = `${d.load1.toFixed(2)}  ${d.load5.toFixed(2)}  ${d.load15.toFixed(2)}`;
-    statUptime.textContent = fmtUptime(d.uptime);
-
-    if (d.cpu_temp != null) {
+    // Temperature
+    if (d.temperatures?.length) {
+      const highest = d.temperatures.reduce((a, b) => (b.current > a.current ? b : a));
       statTempBlock.style.display = '';
-      statTemp.textContent = d.cpu_temp.toFixed(1) + '°C';
-      const tempPct = Math.min(d.cpu_temp, 100);
-      barTemp.style.width = tempPct.toFixed(1) + '%';
-      barTemp.style.background =
-        d.cpu_temp > 80 ? 'var(--red)' :
-        d.cpu_temp > 65 ? 'var(--yellow)' : 'var(--green)';
-      statTemp.style.color =
-        d.cpu_temp > 80 ? 'var(--red)' :
-        d.cpu_temp > 65 ? 'var(--yellow)' : 'var(--green)';
-    } else {
-      statTempBlock.style.display = 'none';
+      statTemp.textContent = `${highest.current.toFixed(1)}°C`;
+      const tPct = Math.min(highest.current / (highest.critical || 105) * 100, 100);
+      barTemp.style.width      = `${tPct}%`;
+      barTemp.style.background = tPct > 80 ? 'var(--red)' : tPct > 60 ? 'var(--peach)' : 'var(--teal)';
     }
-  } catch (_) { /* busy */ }
-}
 
-async function fetchPreview() {
-  if (lastFrameSeq !== null && lastPreviewedSeq === lastFrameSeq) return;
-  const token = ++previewToken;
-  try {
-    const r = await fetch('/api/preview');
-    if (r.status === 204 || !r.ok) return;
-    if (token !== previewToken) return;
-    const blob = await r.blob();
-    if (token !== previewToken) return;
-    const url = URL.createObjectURL(blob);
-    const old = panelPreviewImg.src;
-    panelPreviewImg.src = url;
-    panelPreviewImg.classList.add('visible');
-    panelPreviewEmpty.style.display = 'none';
-    if (old && old.startsWith('blob:')) URL.revokeObjectURL(old);
-    lastPreviewedSeq = lastFrameSeq;
-  } catch (_) { /* busy */ }
-}
+    // Network interfaces
+    if (d.network?.length) {
+      statNetBlock.style.display = '';
+      // Total current Rx/Tx across all interfaces
+      const totalRx = d.network.reduce((s, n) => s + (n.rx_bps ?? 0), 0);
+      const totalTx = d.network.reduce((s, n) => s + (n.tx_bps ?? 0), 0);
+      statNet.textContent = `↓${fmtBytes(totalRx)}/s ↑${fmtBytes(totalTx)}/s`;
 
-setInterval(fetchStatus,  2000);
-setInterval(fetchSysinfo, 3000);
-setInterval(fetchPreview, 5000);  // fallback if SSE is absent
-
-fetchStatus();
-fetchSysinfo();
-setTimeout(fetchPreview, 800);
-
-// ── Server-Sent Events (real-time frame push) ─────────────────────────────────
-let evtSource = null;
-
-function connectEvents() {
-  if (evtSource) { evtSource.close(); evtSource = null; }
-  try {
-    evtSource = new EventSource('/api/events');
-    evtSource.addEventListener('frame', e => {
-      const seq = parseInt(e.data, 10);
-      if (!isNaN(seq) && seq !== lastFrameSeq) {
-        lastFrameSeq = seq;
-        fetchPreview();
-      }
-    });
-    evtSource.onerror = () => {
-      // On error, back off for 10 s and reconnect (SSE auto-reconnects anyway,
-      // but this ensures we don't hammer on initial failures)
-      if (evtSource) { evtSource.close(); evtSource = null; }
-      setTimeout(connectEvents, 10_000);
-    };
-  } catch (_) {
-    // Browser doesn't support EventSource (very unlikely), fall back to polling
-  }
-}
-
-connectEvents();
-
-// ── Mode switching ────────────────────────────────────────────────────────────
-modeBtns.forEach(btn => {
-  btn.addEventListener('click', async () => {
-    const mode = btn.dataset.mode;
-    logEntry(`Requesting mode: ${mode}`);
-    try {
-      const r = await fetch('/api/mode', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ mode }),
+      // Network interface table
+      netIfacesWrap.style.display = '';
+      const tbody = netIfacesTable.querySelector('tbody');
+      tbody.innerHTML = '';
+      d.network.forEach(iface => {
+        const tr = document.createElement('tr');
+        tr.innerHTML = `
+          <td class="mono">${escHtml(iface.name)}</td>
+          <td class="mono">${fmtBytes(iface.rx_bps ?? 0)}/s</td>
+          <td class="mono">${fmtBytes(iface.tx_bps ?? 0)}/s</td>
+          <td class="mono">${fmtBytes(iface.total_rx ?? 0)}</td>
+          <td class="mono">${fmtBytes(iface.total_tx ?? 0)}</td>
+        `;
+        tbody.appendChild(tr);
       });
-      if (r.ok) {
-        logEntry(`Mode → ${mode}`, 'ok');
-        fetchStatus();
-      } else {
-        logEntry(`Mode change failed: ${await r.text()}`, 'err');
-      }
+    }
+
+    // Disk usage
+    if (d.disks?.length) {
+      updateDiskTable(d.disks);
+    }
+
+    // Top processes
+    if (d.processes?.length) {
+      updateProcessTable(d.processes);
+    }
+
+    // CPU sparkline
+    await updateSparkline();
+
+  } catch (_) {}
+}
+
+function updateDiskTable(disks) {
+  let wrap = $('disk-usage-wrap');
+  if (!wrap) {
+    wrap = document.createElement('div');
+    wrap.id = 'disk-usage-wrap';
+    wrap.style.marginTop = '0.75rem';
+    wrap.innerHTML = `<div class="sub-label">Disk Usage</div>
+      <table class="iface-table" id="disk-table">
+        <thead><tr><th>Mount</th><th>Used</th><th>Total</th><th>Used%</th></tr></thead>
+        <tbody></tbody>
+      </table>`;
+    netIfacesWrap?.parentElement?.insertBefore(wrap, netIfacesWrap);
+  }
+  wrap.style.display = '';
+  const tbody = wrap.querySelector('tbody');
+  if (!tbody) return;
+  tbody.innerHTML = '';
+  disks.forEach(disk => {
+    if (!disk.total_bytes || disk.total_bytes === 0) return;
+    const pct = (disk.used_bytes / disk.total_bytes * 100);
+    const tr  = document.createElement('tr');
+    tr.innerHTML = `
+      <td class="mono">${escHtml(disk.name || disk.mount_point || '?')}</td>
+      <td class="mono">${fmtBytes(disk.used_bytes ?? 0)}</td>
+      <td class="mono">${fmtBytes(disk.total_bytes)}</td>
+      <td>
+        <div class="mini-bar-track" style="width:80px;display:inline-block">
+          <div class="mini-bar" style="width:${pct.toFixed(0)}%;background:${pct>85?'var(--red)':pct>70?'var(--yellow)':'var(--teal)'}"></div>
+        </div>
+        <span class="mono" style="font-size:0.75rem;margin-left:4px">${pct.toFixed(0)}%</span>
+      </td>
+    `;
+    tbody.appendChild(tr);
+  });
+}
+
+function updateProcessTable(procs) {
+  let wrap = $('proc-wrap');
+  if (!wrap) {
+    wrap = document.createElement('div');
+    wrap.id = 'proc-wrap';
+    wrap.style.marginTop = '0.75rem';
+    wrap.innerHTML = `<div class="sub-label">Top Processes <span class="hint-inline">(CPU)</span></div>
+      <table class="iface-table" id="proc-table">
+        <thead><tr><th>PID</th><th>Name</th><th>CPU%</th><th>RAM</th></tr></thead>
+        <tbody></tbody>
+      </table>`;
+    const sparkWrap = $('sparkline-wrap');
+    sparkWrap?.parentElement?.insertBefore(wrap, sparkWrap?.nextSibling);
+  }
+  wrap.style.display = '';
+  const tbody = wrap.querySelector('tbody');
+  if (!tbody) return;
+  tbody.innerHTML = '';
+  procs.slice(0, 6).forEach(p => {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td class="mono" style="color:var(--overlay0)">${p.pid}</td>
+      <td class="mono">${escHtml((p.name || '').slice(0, 20))}</td>
+      <td class="mono" style="color:${(p.cpu_pct||0)>50?'var(--red)':(p.cpu_pct||0)>20?'var(--yellow)':'var(--green)'}">${(p.cpu_pct ?? 0).toFixed(1)}%</td>
+      <td class="mono">${fmtBytes(p.mem_bytes ?? 0)}</td>
+    `;
+    tbody.appendChild(tr);
+  });
+}
+
+async function updateSparkline() {
+  try {
+    const d = await apiJson('GET', '/api/cpu/history');
+    if (!d.samples?.length) return;
+    sparklineData = d.samples;
+    sparklineWrap.style.display = '';
+    drawSparkline(cpuSparkline, sparklineData);
+  } catch (_) {}
+}
+
+function drawSparkline(canvas, data) {
+  const ctx    = canvas.getContext('2d');
+  const W      = canvas.width;
+  const H      = canvas.height;
+  const n      = data.length;
+  const barW   = W / Math.max(n, 1);
+  ctx.clearRect(0, 0, W, H);
+
+  // Background
+  ctx.fillStyle = 'rgba(49,50,68,0.4)';
+  ctx.fillRect(0, 0, W, H);
+
+  // Gridlines at 25%, 50%, 75%
+  ctx.strokeStyle = 'rgba(108,112,134,0.25)';
+  ctx.lineWidth = 1;
+  [0.25, 0.5, 0.75].forEach(f => {
+    const y = H - H * f;
+    ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke();
+  });
+
+  // Bars
+  data.forEach((v, i) => {
+    const h    = Math.round(H * Math.min(v / 100, 1));
+    const r    = v > 85 ? '#f38ba8' : v > 60 ? '#f9e2af' : '#89b4fa';
+    ctx.fillStyle = r;
+    ctx.fillRect(i * barW, H - h, barW - 1, h);
+  });
+}
+
+function fmtBytes(b) {
+  if (b < 1024)       return `${b}B`;
+  if (b < 1048576)    return `${(b/1024).toFixed(1)}K`;
+  if (b < 1073741824) return `${(b/1048576).toFixed(1)}M`;
+  return `${(b/1073741824).toFixed(2)}G`;
+}
+
+function escHtml(s) {
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+// ─── Quick notify ─────────────────────────────────────────────────────────────
+const QUICK_PRESETS = {
+  ok:     { title:'✓ OK',        lines:['All systems operational'], color:'green', duration:8 },
+  fail:   { title:'✗ FAILED',    lines:['Operation failed'],        color:'red',   duration:15 },
+  warn:   { title:'⚠ Warning',   lines:['Check required'],          color:'yellow',duration:12 },
+  run:    { title:'⟳ Running',   lines:['Operation in progress…'],  color:'teal',  duration:0 },
+  deploy: { title:'↑ Deploying', lines:['Deploy in progress…'],     color:'blue',  duration:0 },
+  done:   { title:'✓ Done',      lines:['Task completed'],          color:'green', duration:10 },
+  info:   { title:'ℹ Info',      lines:['FYI'],                     color:'blue',  duration:8 },
+  reboot: { title:'↺ Rebooting', lines:['System restart initiated'],color:'peach', duration:0 },
+};
+
+quickBtns.forEach(btn => {
+  const key = btn.dataset.quick;
+  if (!key) return;
+  btn.addEventListener('click', async () => {
+    const p = QUICK_PRESETS[key];
+    try {
+      await api('POST', '/api/text', {
+        title: p.title, lines: p.lines, color: p.color,
+        duration_secs: p.duration || undefined,
+        show_time: true,
+      });
+      setStatusMsg(quickStatus, `Sent: ${p.title}`, true);
+      log(`Quick: ${p.title}`);
     } catch (e) {
-      logEntry(`Mode change error: ${e.message}`, 'err');
+      setStatusMsg(quickStatus, `Error: ${e.message}`, false);
     }
   });
 });
 
-// ── Return to previous mode ───────────────────────────────────────────────────
-returnBtn.addEventListener('click', async () => {
+// Test pattern
+testPatternBtn.addEventListener('click', async () => {
   try {
-    const r = await fetch('/api/clear', { method: 'POST' });
-    if (r.ok) { logEntry('Returned to previous mode', 'ok'); fetchStatus(); }
-    else       { logEntry(`Return failed: ${await r.text()}`, 'err'); }
-  } catch (e) { logEntry(`Return error: ${e.message}`, 'err'); }
-});
-
-// ── File drop / upload ────────────────────────────────────────────────────────
-dropZone.addEventListener('click', () => fileInput.click());
-fileInput.addEventListener('change', e => { const f = e.target.files[0]; if (f) setFile(f); });
-
-dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('drag-over'); });
-['dragleave', 'dragend'].forEach(ev => dropZone.addEventListener(ev, () => dropZone.classList.remove('drag-over')));
-dropZone.addEventListener('drop', e => {
-  e.preventDefault(); dropZone.classList.remove('drag-over');
-  const f = e.dataTransfer.files[0];
-  if (f && f.type.startsWith('image/')) setFile(f);
-  else logEntry('Dropped file is not an image', 'err');
-});
-
-function setFile(file) {
-  currentFile = file;
-  const url = URL.createObjectURL(file);
-  previewEl.src = url;
-  previewEl.onload = () => URL.revokeObjectURL(url);
-  previewWrap.classList.remove('hidden');
-  dropZone.style.display = 'none';
-  uploadStatusEl.textContent = '';
-  logEntry(`Selected: ${file.name} (${(file.size / 1024).toFixed(1)} KB)`);
-}
-
-cancelBtn.addEventListener('click', () => {
-  currentFile = null; fileInput.value = '';
-  previewWrap.classList.add('hidden'); dropZone.style.display = '';
-  uploadStatusEl.textContent = '';
-});
-
-sendBtn.addEventListener('click', async () => {
-  if (!currentFile) return;
-  sendBtn.disabled = true;
-  uploadStatusEl.textContent = '⏳ Sending…'; uploadStatusEl.className = '';
-  const fd = new FormData(); fd.append('image', currentFile);
-  try {
-    const r = await fetch('/api/image', { method: 'POST', body: fd });
-    if (r.ok) {
-      uploadStatusEl.textContent = '✓ Image sent'; uploadStatusEl.className = 'status-ok';
-      logEntry(`Image sent: ${currentFile.name}`, 'ok'); fetchStatus();
-    } else {
-      const err = await r.text();
-      uploadStatusEl.textContent = `✗ ${err}`; uploadStatusEl.className = 'status-err';
-      logEntry(`Upload failed: ${err}`, 'err');
-    }
+    await api('POST', '/api/test');
+    setStatusMsg(quickStatus, '🎨 Test card sent (5s)', true);
+    log('Test pattern sent');
   } catch (e) {
-    uploadStatusEl.textContent = `✗ ${e.message}`; uploadStatusEl.className = 'status-err';
-    logEntry(`Upload error: ${e.message}`, 'err');
-  } finally { sendBtn.disabled = false; }
-});
-
-document.addEventListener('keydown', e => {
-  if (e.key === 'Enter' && currentFile && !sendBtn.disabled) sendBtn.click();
-});
-
-// ── Keyboard shortcuts ────────────────────────────────────────────────────────
-// Only fire when focus is NOT inside a text input / textarea / select.
-function isFocusedOnInput() {
-  const tag = document.activeElement?.tagName?.toLowerCase();
-  return tag === 'input' || tag === 'textarea' || tag === 'select';
-}
-
-document.addEventListener('keydown', e => {
-  if (isFocusedOnInput()) return;
-
-  // Escape → return to previous mode (same as the ← Return button)
-  if (e.key === 'Escape' && returnBtn.style.display !== 'none') {
-    e.preventDefault();
-    returnBtn.click();
-    return;
-  }
-
-  // 1–9 → switch to the nth mode button (by DOM order)
-  const num = parseInt(e.key, 10);
-  if (!isNaN(num) && num >= 1 && num <= 9 && !e.ctrlKey && !e.metaKey && !e.altKey) {
-    const btn = [...modeBtns][num - 1];
-    if (btn) { e.preventDefault(); btn.click(); }
+    setStatusMsg(quickStatus, `Error: ${e.message}`, false);
   }
 });
 
-// ── Custom text form ──────────────────────────────────────────────────────────
+// ─── Custom text ──────────────────────────────────────────────────────────────
 txtProgress.addEventListener('input', () => {
   const v = parseInt(txtProgress.value, 10);
-  progPctLbl.textContent = v < 0 ? '(off)' : `${v}%`;
+  progPctLabel.textContent = v < 0 ? 'off' : `${v}%`;
 });
-progPctLbl.textContent = '(off)';
 
 function buildTextPayload() {
-  const title    = txtTitle.value.trim();
-  const subtitle = txtSubtitle.value.trim();
-  const lines    = txtLines.value.split('\n').map(l => l.trim()).filter(Boolean);
-  const progVal  = parseInt(txtProgress.value, 10);
-  const durVal   = parseInt(txtDuration ? txtDuration.value : '0', 10);
-  const payload  = { color: txtColor.value, show_time: txtShowTime.checked };
-  if (title)          payload.title    = title;
-  if (subtitle)       payload.subtitle = subtitle;
-  if (lines.length)   payload.lines    = lines;
-  if (progVal >= 0)   payload.progress = progVal / 100;
-  if (durVal > 0)     payload.duration_secs = durVal;
-  return payload;
-}
-
-async function sendTextPayload(payload) {
-  return fetch('/api/text', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload),
-  });
+  const lines = txtLines.value.split('\n').map(l => l.trim()).filter(Boolean);
+  const prog  = parseInt(txtProgress.value, 10);
+  return {
+    title:        txtTitle.value.trim() || undefined,
+    subtitle:     txtSubtitle.value.trim() || undefined,
+    lines:        lines.length ? lines : undefined,
+    progress:     prog >= 0 ? prog : undefined,
+    color:        txtColor.value,
+    show_time:    txtShowTime.checked,
+    duration_secs: parseInt(txtDuration.value,10) > 0
+      ? parseInt(txtDuration.value,10) : undefined,
+  };
 }
 
 txtSendBtn.addEventListener('click', async () => {
-  const title  = txtTitle.value.trim();
-  const lines  = txtLines.value.split('\n').map(l => l.trim()).filter(Boolean);
-  if (!title && !txtSubtitle.value.trim() && lines.length === 0) {
-    txtStatus.textContent = 'Enter at least a title or some lines.';
-    txtStatus.className   = 'status-err'; return;
-  }
-  txtSendBtn.disabled = true; txtStatus.textContent = '⏳ Sending…'; txtStatus.className = '';
   try {
-    const r = await sendTextPayload(buildTextPayload());
-    if (r.ok) {
-      txtStatus.textContent = '✓ Text sent'; txtStatus.className = 'status-ok';
-      logEntry(`Text sent: "${title || '(no title)'}"`, 'ok'); fetchStatus(); refreshHistory();
-    } else {
-      const err = await r.text();
-      txtStatus.textContent = `✗ ${err}`; txtStatus.className = 'status-err';
-      logEntry(`Text send failed: ${err}`, 'err');
-    }
+    await api('POST', '/api/text', buildTextPayload());
+    setStatusMsg(txtStatus, '✓ Sent', true);
+    log(`Text push: "${txtTitle.value || '(no title)'}"`);
   } catch (e) {
-    txtStatus.textContent = `✗ ${e.message}`; txtStatus.className = 'status-err';
-    logEntry(`Text send error: ${e.message}`, 'err');
-  } finally { txtSendBtn.disabled = false; }
+    setStatusMsg(txtStatus, `Error: ${e.message}`, false);
+  }
 });
-
-// ── Custom text preview ──────────────────────────────────────────────────────
-let lastPreviewUrl = null;
 
 txtPreviewBtn.addEventListener('click', async () => {
-  txtPreviewBtn.disabled = true;
   try {
-    const r = await fetch('/api/render', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(buildTextPayload()),
-    });
-    if (!r.ok) {
-      logEntry(`Preview error: ${await r.text()}`, 'err');
-      return;
-    }
+    const r = await api('POST', '/api/render', buildTextPayload());
+    if (!r.ok) throw new Error(await r.text());
     const blob = await r.blob();
     const url  = URL.createObjectURL(blob);
-    if (lastPreviewUrl) URL.revokeObjectURL(lastPreviewUrl);
-    lastPreviewUrl     = url;
-    txtPreviewImg.src  = url;
+    txtPreviewImg.src = url;
     txtPreviewWrap.style.display = '';
+    setStatusMsg(txtStatus, '👁 Preview rendered', true);
   } catch (e) {
-    logEntry(`Preview error: ${e.message}`, 'err');
-  } finally {
-    txtPreviewBtn.disabled = false;
+    setStatusMsg(txtStatus, `Error: ${e.message}`, false);
   }
 });
 
-// ── Quick notify ──────────────────────────────────────────────────────────────
-const QUICK_DEFS = {
-  ok:     { title: 'OK',        color: 'green',  progress: 1.0 },
-  fail:   { title: 'FAILED',    color: 'red',    progress: 0.0 },
-  warn:   { title: 'Warning',   color: 'yellow', progress: null },
-  run:    { title: 'Running…',  color: 'blue',   progress: 0.5 },
-  deploy: { title: 'Deploying', color: 'teal',   progress: null },
-  done:   { title: 'Done',      color: 'mauve',  progress: 1.0 },
-  info:   { title: 'Info',      color: 'white',  progress: null },
-  reboot: { title: 'Rebooting', color: 'peach',  progress: null },
-};
-
-document.querySelectorAll('.quick-btn').forEach(btn => {
-  btn.addEventListener('click', async () => {
-    const key = btn.dataset.quick;
-    const def = QUICK_DEFS[key];
-    if (!def) return;
-
-    // Fill form
-    txtTitle.value = def.title; txtSubtitle.value = ''; txtLines.value = '';
-    txtColor.value = def.color; txtShowTime.checked = true;
-    if (def.progress != null) {
-      txtProgress.value = Math.round(def.progress * 100);
-      progPctLbl.textContent = `${Math.round(def.progress * 100)}%`;
-    } else {
-      txtProgress.value = -1; progPctLbl.textContent = '(off)';
-    }
-
-    // Send
-    const payload = { title: def.title, color: def.color, show_time: true };
-    if (def.progress != null) payload.progress = def.progress;
-    btn.disabled = true; quickStatus.textContent = '⏳ Sending…'; quickStatus.className = '';
-    try {
-      const r = await sendTextPayload(payload);
-      if (r.ok) {
-        quickStatus.textContent = `✓ "${def.title}" sent`; quickStatus.className = 'status-ok';
-        logEntry(`Quick: "${def.title}" (${def.color})`, 'ok'); fetchStatus(); refreshHistory();
-      } else {
-        const err = await r.text();
-        quickStatus.textContent = `✗ ${err}`; quickStatus.className = 'status-err';
-        logEntry(`Quick failed: ${err}`, 'err');
-      }
-    } catch (e) {
-      quickStatus.textContent = `✗ ${e.message}`; quickStatus.className = 'status-err';
-    } finally { btn.disabled = false; }
-  });
-});
-
-// ── Preset save / load ────────────────────────────────────────────────────────
-async function refreshPresets() {
+// ─── Presets ──────────────────────────────────────────────────────────────────
+async function fetchPresets() {
   try {
-    const r = await fetch('/api/presets');
-    if (!r.ok) return;
-    const list = await r.json();
-    const prev = presetSelect.value;
-    while (presetSelect.options.length > 1) presetSelect.remove(1);
-    list.forEach(entry => {
+    const list = await apiJson('GET', '/api/presets');
+    presetSelect.innerHTML = '<option value="">— saved presets —</option>';
+    list.forEach(p => {
       const opt = document.createElement('option');
-      opt.value = opt.textContent = entry.name;
+      opt.value       = p.name;
+      opt.textContent = p.name;
       presetSelect.appendChild(opt);
     });
-    if (prev && [...presetSelect.options].some(o => o.value === prev)) presetSelect.value = prev;
-  } catch (_) { /* ignore */ }
+  } catch (_) {}
 }
-
-/** Load preset payload into the text form fields (does not send to panel). */
-function loadPresetIntoForm(p) {
-  txtTitle.value    = p.title    ?? '';
-  txtSubtitle.value = p.subtitle ?? '';
-  txtLines.value    = (p.lines   ?? []).join('\n');
-  if (p.color) {
-    const lc = p.color.toLowerCase();
-    const opt = [...txtColor.options].find(o => o.value === lc);
-    if (opt) txtColor.value = lc;
-  }
-  txtShowTime.checked = p.show_time !== false;
-  if (p.progress != null) {
-    const pct = Math.round(p.progress * 100);
-    txtProgress.value       = pct;
-    progPctLbl.textContent  = `${pct}%`;
-  } else {
-    txtProgress.value      = -1;
-    progPctLbl.textContent = '(off)';
-  }
-}
-
-presetSaveBtn.addEventListener('click', async () => {
-  const name = prompt('Preset name:');
-  if (!name?.trim()) return;
-  try {
-    const r = await fetch('/api/presets', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name: name.trim(), payload: buildTextPayload() }),
-    });
-    if (r.ok) {
-      logEntry(`Preset saved: "${name.trim()}"`, 'ok');
-      await refreshPresets(); presetSelect.value = name.trim();
-    } else { logEntry(`Preset save failed: ${await r.text()}`, 'err'); }
-  } catch (e) { logEntry(`Preset save error: ${e.message}`, 'err'); }
-});
 
 presetApplyBtn.addEventListener('click', async () => {
   const name = presetSelect.value;
   if (!name) return;
   try {
-    // First: fetch the preset data so we can populate the form
-    const gr = await fetch(`/api/presets/${encodeURIComponent(name)}`);
-    if (gr.ok) {
-      const p = await gr.json();
-      loadPresetIntoForm(p);
-    }
-    // Then: apply to panel
-    const r = await fetch(`/api/presets/${encodeURIComponent(name)}`, { method: 'POST' });
-    if (r.ok) { logEntry(`Applied preset: "${name}"`, 'ok'); fetchStatus(); refreshHistory(); }
-    else       { logEntry(`Apply preset failed: ${await r.text()}`, 'err'); }
-  } catch (e) { logEntry(`Apply preset error: ${e.message}`, 'err'); }
+    // Load payload into form
+    const p = await apiJson('GET', `/api/presets/${encodeURIComponent(name)}`);
+    txtTitle.value    = p.title    || '';
+    txtSubtitle.value = p.subtitle || '';
+    txtLines.value    = (p.lines   || []).join('\n');
+    txtProgress.value = p.progress ?? -1;
+    progPctLabel.textContent = (p.progress ?? -1) < 0 ? 'off' : `${p.progress}%`;
+    if (p.color) txtColor.value = p.color;
+    txtShowTime.checked = p.show_time !== false;
+    // Apply to panel
+    await api('POST', `/api/presets/${encodeURIComponent(name)}/apply`);
+    log(`Preset applied: ${name}`);
+  } catch (e) {
+    log(`Preset apply error: ${e.message}`, 'err');
+  }
+});
+
+presetSaveBtn.addEventListener('click', async () => {
+  const name = presetSelect.value || prompt('Preset name:');
+  if (!name?.trim()) return;
+  try {
+    await api('POST', '/api/presets', { name: name.trim(), payload: buildTextPayload() });
+    log(`Preset saved: ${name}`);
+    await fetchPresets();
+    presetSelect.value = name;
+  } catch (e) {
+    log(`Preset save error: ${e.message}`, 'err');
+  }
 });
 
 presetDelBtn.addEventListener('click', async () => {
   const name = presetSelect.value;
-  if (!name || !confirm(`Delete preset "${name}"?`)) return;
+  if (!name) return;
+  if (!confirm(`Delete preset "${name}"?`)) return;
   try {
-    const r = await fetch(`/api/presets/${encodeURIComponent(name)}`, { method: 'DELETE' });
-    if (r.ok) { logEntry(`Deleted preset: "${name}"`, 'ok'); await refreshPresets(); }
-    else       { logEntry(`Delete failed: ${await r.text()}`, 'err'); }
-  } catch (e) { logEntry(`Delete error: ${e.message}`, 'err'); }
+    await api('DELETE', `/api/presets/${encodeURIComponent(name)}`);
+    log(`Preset deleted: ${name}`);
+    await fetchPresets();
+  } catch (e) {
+    log(`Preset delete error: ${e.message}`, 'err');
+  }
 });
 
 presetClearBtn.addEventListener('click', async () => {
-  if (!confirm('Delete ALL presets? This cannot be undone.')) return;
+  if (!confirm('Delete ALL presets?')) return;
   try {
-    const r = await fetch('/api/presets', { method: 'DELETE' });
-    if (r.ok) {
-      logEntry(`All presets cleared: ${await r.text()}`, 'ok');
-      await refreshPresets();
-    } else { logEntry(`Clear presets failed: ${await r.text()}`, 'err'); }
-  } catch (e) { logEntry(`Clear presets error: ${e.message}`, 'err'); }
+    await api('DELETE', '/api/presets');
+    log('All presets cleared');
+    await fetchPresets();
+  } catch (e) {
+    log(`Preset clear error: ${e.message}`, 'err');
+  }
 });
 
-// Preset import
-const presetImportInput = document.getElementById('preset-import-input');
-if (presetImportInput) {
-  presetImportInput.addEventListener('change', async (e) => {
-    const file = e.target.files[0];
-    if (!file) return;
-    try {
-      const text = await file.text();
-      const data = JSON.parse(text);
-      const r = await fetch('/api/presets/import', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(data),
-      });
-      if (r.ok) {
-        logEntry(`${await r.text()}`, 'ok');
-        await refreshPresets();
-      } else {
-        logEntry(`Import failed: ${await r.text()}`, 'err');
-      }
-    } catch (e) {
-      logEntry(`Import error: ${e.message}`, 'err');
-    } finally {
-      presetImportInput.value = '';
-    }
-  });
+presetImport.addEventListener('change', async () => {
+  const file = presetImport.files?.[0];
+  if (!file) return;
+  const text = await file.text();
+  const fd   = new FormData();
+  fd.append('file', new Blob([text], { type:'application/json' }), file.name);
+  try {
+    const r = await fetch('/api/presets/import', { method:'POST', body: fd });
+    if (!r.ok) throw new Error(await r.text());
+    log(`Presets imported from ${file.name}`);
+    await fetchPresets();
+  } catch (e) {
+    log(`Preset import error: ${e.message}`, 'err');
+  }
+  presetImport.value = '';
+});
+
+// ─── Image upload ─────────────────────────────────────────────────────────────
+function handleFiles(files) {
+  if (!files?.[0]) return;
+  imageFile = files[0];
+  const reader = new FileReader();
+  reader.onload = e => {
+    previewImg.src    = e.target.result;
+    previewWrap.classList.remove('hidden');
+    previewWrap.style.display = '';
+  };
+  reader.readAsDataURL(imageFile);
 }
 
-// ── Panel settings (quality + orient) ────────────────────────────────────────
-setQuality.addEventListener('input', () => {
-  setQualityLbl.textContent = `${setQuality.value}%`;
+dropZone.addEventListener('click', () => fileInput.click());
+fileInput.addEventListener('change', () => handleFiles(fileInput.files));
+
+dropZone.addEventListener('dragover', e => {
+  e.preventDefault();
+  dropZone.classList.add('drag-over');
+});
+dropZone.addEventListener('dragleave', () => dropZone.classList.remove('drag-over'));
+dropZone.addEventListener('drop', e => {
+  e.preventDefault();
+  dropZone.classList.remove('drag-over');
+  handleFiles(e.dataTransfer.files);
 });
 
-setApplyBtn.addEventListener('click', async () => {
-  const quality = parseInt(setQuality.value, 10);
-  const rotate  = parseInt(setOrient.value, 10);
-  setApplyBtn.disabled = true;
-  setStatus.textContent = '⏳ Applying…'; setStatus.className = '';
+sendBtn.addEventListener('click', async () => {
+  if (!imageFile) return;
+  const fd = new FormData();
+  fd.append('file', imageFile);
+  uploadStatus.textContent = 'Uploading…';
   try {
-    const [qr, or] = await Promise.all([
-      fetch('/api/quality', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ quality }),
-      }),
-      fetch('/api/orient', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ rotate }),
-      }),
-    ]);
-    if (qr.ok && or.ok) {
-      setStatus.textContent = `✓ Quality=${quality}% · Rotate=${rotate}°`;
-      setStatus.className = 'status-ok';
-      logEntry(`Settings applied: quality=${quality}% rotate=${rotate}°`, 'ok');
-      fetchStatus();
-    } else {
-      const err = (!qr.ok ? await qr.text() : '') + (!or.ok ? ` ${await or.text()}` : '');
-      setStatus.textContent = `✗ ${err.trim()}`; setStatus.className = 'status-err';
-      logEntry(`Settings error: ${err.trim()}`, 'err');
-    }
+    const r = await fetch('/api/image', { method: 'POST', body: fd });
+    if (!r.ok) throw new Error(await r.text());
+    uploadStatus.textContent = '✓ Image sent';
+    log(`Image sent: ${imageFile.name}`);
+    setTimeout(() => { uploadStatus.textContent = ''; }, 3000);
   } catch (e) {
-    setStatus.textContent = `✗ ${e.message}`; setStatus.className = 'status-err';
-    logEntry(`Settings error: ${e.message}`, 'err');
-  } finally { setApplyBtn.disabled = false; }
+    uploadStatus.textContent = `Error: ${e.message}`;
+    log(`Image upload error: ${e.message}`, 'err');
+  }
 });
 
-// ── Slideshow ─────────────────────────────────────────────────────────────────
+cancelBtn.addEventListener('click', () => {
+  imageFile = null;
+  previewWrap.classList.add('hidden');
+  previewWrap.style.display = 'none';
+  fileInput.value = '';
+});
+
+// ─── Image from URL ──────────────────────────────────────────────────────────
+document.addEventListener('click', async function(e) {
+  if (e.target.id !== 'img-url-send-btn') return;
+  var urlInput = document.getElementById('img-url-input');
+  var letterboxSel = document.getElementById('img-url-letterbox');
+  var statusEl = document.getElementById('img-url-status');
+  var url = (urlInput?.value || '').trim();
+  if (!url) { setStatusMsg(statusEl, 'Enter a URL first', false); return; }
+  var letterbox = letterboxSel?.value !== 'false';
+  setStatusMsg(statusEl, '⏳ Fetching image…', true, 30000);
+  try {
+    await api('POST', '/api/image/url', { url: url, letterbox: letterbox });
+    setStatusMsg(statusEl, '✓ Image displayed', true);
+    log('Image from URL: ' + url.substring(0, 60));
+  } catch (e) {
+    setStatusMsg(statusEl, 'Error: ' + e.message, false);
+    log('Image URL error: ' + e.message, 'err');
+  }
+});
+
+// ─── Slideshow ────────────────────────────────────────────────────────────────
 ssStartBtn.addEventListener('click', async () => {
-  const dir      = ssDir.value.trim();
-  const interval = parseInt(ssInterval.value, 10) || 5;
-  if (!dir) { ssStatus.textContent = 'Enter a directory path.'; ssStatus.className = 'status-err'; return; }
-  ssStartBtn.disabled = true; ssStatus.textContent = '⏳ Starting…'; ssStatus.className = '';
+  const dir = ssDir.value.trim();
+  if (!dir) { setStatusMsg(ssStatus, 'Enter a directory path', false); return; }
   try {
-    const r = await fetch('/api/slideshow', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ dir, interval }),
+    await api('POST', '/api/slideshow', {
+      dir,
+      interval: parseInt(ssInterval.value, 10) || 5,
     });
-    if (r.ok) {
-      ssStatus.textContent = `✓ ${await r.text()}`; ssStatus.className = 'status-ok';
-      logEntry(`Slideshow started: ${dir}`, 'ok'); fetchStatus();
-    } else {
-      const err = await r.text();
-      ssStatus.textContent = `✗ ${err}`; ssStatus.className = 'status-err';
-      logEntry(`Slideshow error: ${err}`, 'err');
-    }
+    setStatusMsg(ssStatus, '▶ Slideshow started', true);
+    log(`Slideshow started: ${dir}`);
   } catch (e) {
-    ssStatus.textContent = `✗ ${e.message}`; ssStatus.className = 'status-err';
-    logEntry(`Slideshow error: ${e.message}`, 'err');
-  } finally { ssStartBtn.disabled = false; }
-});
-
-async function slideshowNav(dir) {
-  try {
-    const r = await fetch(`/api/slideshow/${dir}`, { method: 'POST' });
-    if (r.ok) {
-      ssStatus.textContent = `✓ ${await r.text()}`; ssStatus.className = 'status-ok';
-      logEntry(`Slideshow ${dir}`, 'ok');
-    } else {
-      ssStatus.textContent = `✗ ${await r.text()}`; ssStatus.className = 'status-err';
-    }
-  } catch (e) {
-    ssStatus.textContent = `✗ ${e.message}`; ssStatus.className = 'status-err';
-  }
-}
-
-if (ssPrevBtn)  ssPrevBtn.addEventListener('click',  () => slideshowNav('prev'));
-if (ssNextBtn)  ssNextBtn.addEventListener('click',  () => slideshowNav('next'));
-
-const ssShuffleBtn = document.getElementById('ss-shuffle-btn');
-if (ssShuffleBtn) {
-  ssShuffleBtn.addEventListener('click', async () => {
-    try {
-      const r = await fetch('/api/slideshow/shuffle', { method: 'POST' });
-      if (r.ok) {
-        ssStatus.textContent = `✓ ${await r.text()}`; ssStatus.className = 'status-ok';
-        logEntry('Slideshow shuffled', 'ok');
-      } else {
-        ssStatus.textContent = `✗ ${await r.text()}`; ssStatus.className = 'status-err';
-      }
-    } catch (e) {
-      ssStatus.textContent = `✗ ${e.message}`; ssStatus.className = 'status-err';
-    }
-  });
-}
-
-// ── Test pattern button ───────────────────────────────────────────────────────
-const testPatternBtn = document.getElementById('test-pattern-btn');
-if (testPatternBtn) {
-  testPatternBtn.addEventListener('click', async () => {
-    testPatternBtn.disabled = true;
-    quickStatus.textContent = '⏳ Showing test pattern…'; quickStatus.className = '';
-    try {
-      const r = await fetch('/api/test', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ duration_secs: 5 }),
-      });
-      if (r.ok) {
-        quickStatus.textContent = '✓ Test pattern: 5s'; quickStatus.className = 'status-ok';
-        logEntry('Test pattern shown (5s)', 'ok'); fetchStatus();
-      } else {
-        quickStatus.textContent = `✗ ${await r.text()}`; quickStatus.className = 'status-err';
-      }
-    } catch (e) {
-      quickStatus.textContent = `✗ ${e.message}`; quickStatus.className = 'status-err';
-    } finally { testPatternBtn.disabled = false; }
-  });
-}
-
-// ── Auto-rotation ─────────────────────────────────────────────────────────────
-rotStartBtn.addEventListener('click', async () => {
-  const modesRaw = rotModes.value.trim();
-  const interval = parseInt(rotInterval.value, 10) || 30;
-  if (!modesRaw) { rotStatus.textContent = 'Enter at least one mode.'; rotStatus.className = 'status-err'; return; }
-  const modes = modesRaw.split(',').map(m => m.trim()).filter(Boolean);
-  rotStartBtn.disabled = true; rotStatus.textContent = '⏳ Starting…'; rotStatus.className = '';
-  try {
-    const r = await fetch('/api/rotation', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ modes, interval }),
-    });
-    if (r.ok) {
-      rotStatus.textContent = `✓ ${await r.text()}`; rotStatus.className = 'status-ok';
-      logEntry(`Rotation started: [${modes.join(', ')}] every ${interval}s`, 'ok'); fetchStatus();
-    } else {
-      const err = await r.text();
-      rotStatus.textContent = `✗ ${err}`; rotStatus.className = 'status-err';
-      logEntry(`Rotation error: ${err}`, 'err');
-    }
-  } catch (e) {
-    rotStatus.textContent = `✗ ${e.message}`; rotStatus.className = 'status-err';
-  } finally { rotStartBtn.disabled = false; }
-});
-
-rotStopBtn.addEventListener('click', async () => {
-  try {
-    const r = await fetch('/api/rotation', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ modes: [], interval: 0 }),
-    });
-    if (r.ok) {
-      rotStatus.textContent = '■ Rotation stopped'; rotStatus.className = 'status-ok';
-      logEntry('Rotation stopped', 'ok'); fetchStatus();
-    } else {
-      rotStatus.textContent = `✗ ${await r.text()}`; rotStatus.className = 'status-err';
-    }
-  } catch (e) {
-    rotStatus.textContent = `✗ ${e.message}`; rotStatus.className = 'status-err';
+    setStatusMsg(ssStatus, `Error: ${e.message}`, false);
   }
 });
 
-// ── Schedule notification ─────────────────────────────────────────────────────
-if (schedBtn) {
-  schedBtn.addEventListener('click', async () => {
-    const inSecs = parseInt(schedInSecs.value, 10);
-    const label  = schedLabel ? schedLabel.value.trim() : '';
-    if (!inSecs || inSecs < 1) {
-      schedStatus.textContent = 'Enter a delay in seconds.';
-      schedStatus.className   = 'status-err'; return;
-    }
-    const payload = buildTextPayload();
-    if (!payload.title && !payload.lines?.length) {
-      schedStatus.textContent = 'Fill in the Custom Text form first.';
-      schedStatus.className   = 'status-err'; return;
-    }
-    schedBtn.disabled = true;
-    schedStatus.textContent = '⏳ Scheduling…'; schedStatus.className = '';
-    try {
-      const body = { in_secs: inSecs, payload };
-      if (label) body.label = label;
-      const r = await fetch('/api/schedule', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
-      });
-      if (r.ok) {
-        schedStatus.textContent = `✓ ${await r.text()}`; schedStatus.className = 'status-ok';
-        logEntry(`Scheduled in ${inSecs}s${label ? ': "' + label + '"' : ''}`, 'ok');
-      } else {
-        const err = await r.text();
-        schedStatus.textContent = `✗ ${err}`; schedStatus.className = 'status-err';
-        logEntry(`Schedule error: ${err}`, 'err');
-      }
-    } catch (e) {
-      schedStatus.textContent = `✗ ${e.message}`; schedStatus.className = 'status-err';
-      logEntry(`Schedule error: ${e.message}`, 'err');
-    } finally { schedBtn.disabled = false; }
-  });
-}
+ssPrevBtn.addEventListener('click', async () => {
+  try { await api('POST', '/api/slideshow/prev'); } catch (_) {}
+});
+ssNextBtn.addEventListener('click', async () => {
+  try { await api('POST', '/api/slideshow/next'); } catch (_) {}
+});
+ssShuffleBtn.addEventListener('click', async () => {
+  try {
+    await api('POST', '/api/slideshow/shuffle');
+    setStatusMsg(ssStatus, '🔀 Shuffled', true);
+  } catch (e) {
+    setStatusMsg(ssStatus, `Error: ${e.message}`, false);
+  }
+});
 
-// ── Countdown timer ──────────────────────────────────────────────────────────
+// ─── Countdown timer ──────────────────────────────────────────────────────────
+// Sync hidden total field from h/m/s pickers
+function syncCdSeconds() {
+  const h = parseInt(cdHours.value, 10)   || 0;
+  const m = parseInt(cdMinutes.value, 10) || 0;
+  const s = parseInt(cdSecsI.value, 10)   || 0;
+  $('cd-seconds').value = h * 3600 + m * 60 + s;
+}
+[cdHours, cdMinutes, cdSecsI].forEach(el => el.addEventListener('input', syncCdSeconds));
+
 cdStartBtn.addEventListener('click', async () => {
-  const secs  = parseInt(cdSeconds.value, 10);
-  const label = cdLabel.value.trim();
-  if (!secs || secs < 1) {
-    cdStatus.textContent = 'Enter a duration in seconds.';
-    cdStatus.className   = 'status-err'; return;
-  }
-  cdStartBtn.disabled = true;
-  cdStatus.textContent = '⏳ Starting…'; cdStatus.className = '';
+  syncCdSeconds();
+  const secs  = parseInt($('cd-seconds').value, 10);
+  if (!secs) { setStatusMsg(cdStatus, 'Set a time > 0', false); return; }
+  const label = cdLabel.value.trim() || undefined;
   try {
-    const body = { seconds: secs };
-    if (label) body.label = label;
-    const r = await fetch('/api/countdown', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-    });
-    if (r.ok) {
-      const msg = label ? `Countdown: ${secs}s "${label}"` : `Countdown: ${secs}s`;
-      cdStatus.textContent = `✓ ${msg}`; cdStatus.className = 'status-ok';
-      logEntry(msg, 'ok'); fetchStatus(); refreshHistory();
-    } else {
-      const err = await r.text();
-      cdStatus.textContent = `✗ ${err}`; cdStatus.className = 'status-err';
-      logEntry(`Countdown error: ${err}`, 'err');
-    }
+    await api('POST', '/api/countdown', { seconds: secs, label });
+    setStatusMsg(cdStatus, `⏳ ${fmtUptime(secs)} countdown started`, true);
+    log(`Countdown started: ${secs}s`);
   } catch (e) {
-    cdStatus.textContent = `✗ ${e.message}`; cdStatus.className = 'status-err';
-    logEntry(`Countdown error: ${e.message}`, 'err');
-  } finally { cdStartBtn.disabled = false; }
+    setStatusMsg(cdStatus, `Error: ${e.message}`, false);
+  }
 });
 
 cdCancelBtn.addEventListener('click', async () => {
   try {
-    const r = await fetch('/api/clear', { method: 'POST' });
-    if (r.ok) {
-      cdStatus.textContent = '✓ Countdown cancelled'; cdStatus.className = 'status-ok';
-      logEntry('Countdown cancelled', 'ok'); fetchStatus();
-    } else {
-      cdStatus.textContent = `✗ ${await r.text()}`; cdStatus.className = 'status-err';
-    }
+    await api('DELETE', '/api/countdown');
+    setStatusMsg(cdStatus, '✕ Countdown cancelled', true);
+    log('Countdown cancelled');
   } catch (e) {
-    cdStatus.textContent = `✗ ${e.message}`; cdStatus.className = 'status-err';
+    setStatusMsg(cdStatus, `Error: ${e.message}`, false);
   }
 });
 
-// ── History ───────────────────────────────────────────────────────────────────
-const historyListEl  = document.getElementById('history-list');
-const histRefreshBtn = document.getElementById('hist-refresh-btn');
-const histClearBtn   = document.getElementById('hist-clear-btn');
-
-async function refreshHistory() {
-  try {
-    const r = await fetch('/api/history?limit=20');
-    if (!r.ok) return;
-    const items = await r.json();
-    historyListEl.innerHTML = '';
-    if (items.length === 0) {
-      const li = document.createElement('li');
-      li.className = 'hist-empty';
-      li.textContent = 'No notifications yet.';
-      historyListEl.appendChild(li);
-      return;
-    }
-    items.forEach(item => {
-      const li  = document.createElement('li');
-      const ts  = new Date(item.timestamp * 1000).toTimeString().slice(0, 8);
-      const kind = item.kind === 'alert' ? '🔔' : '📝';
-      li.innerHTML =
-        `<span class="hist-ts">${ts}</span>` +
-        `<span class="hist-kind">${kind}</span>` +
-        `<span class="hist-msg">${escHtml(item.summary)}</span>`;
-      historyListEl.appendChild(li);
-    });
-  } catch (_) { /* busy */ }
-}
-
-if (histRefreshBtn) {
-  histRefreshBtn.addEventListener('click', refreshHistory);
-}
-
-if (histClearBtn) {
-  histClearBtn.addEventListener('click', async () => {
-    if (!confirm('Clear all notification history?')) return;
-    try {
-      const r = await fetch('/api/history', { method: 'DELETE' });
-      if (r.ok) {
-        logEntry(`History cleared: ${await r.text()}`, 'ok');
-        await refreshHistory();
-      } else {
-        logEntry(`History clear failed: ${await r.text()}`, 'err');
+// Countdown preset bar (added below the form via JS since it's not in HTML)
+(function buildCdPresets() {
+  const presets = [
+    { label:'5m',  secs: 300 },
+    { label:'10m', secs: 600 },
+    { label:'15m', secs: 900 },
+    { label:'25m 🍅', secs: 1500 },
+    { label:'1h',  secs: 3600 },
+  ];
+  const bar = document.createElement('div');
+  bar.className = 'cd-preset-bar';
+  presets.forEach(p => {
+    const btn = document.createElement('button');
+    btn.className   = 'cd-preset-btn';
+    btn.textContent = p.label;
+    btn.title       = `Start ${p.label} countdown`;
+    btn.addEventListener('click', async () => {
+      try {
+        await api('POST', '/api/countdown', { seconds: p.secs });
+        setStatusMsg(cdStatus, `⏳ ${p.label} countdown started`, true);
+        log(`Preset countdown started: ${p.label}`);
+      } catch (e) {
+        setStatusMsg(cdStatus, `Error: ${e.message}`, false);
       }
-    } catch (e) {
-      logEntry(`History clear error: ${e.message}`, 'err');
+    });
+    bar.appendChild(btn);
+  });
+  cdCancelBtn.parentElement.insertAdjacentElement('afterend', bar);
+})();
+
+// ─── Big text banner ──────────────────────────────────────────────────────────
+banSendBtn.addEventListener('click', async () => {
+  const lines = [banLine1.value, banLine2.value, banLine3.value].filter(Boolean);
+  if (!lines.length) { setStatusMsg(banStatus, 'Enter at least one line', false); return; }
+  try {
+    await api('POST', '/api/banner', {
+      lines,
+      label:     banLabel.value.trim() || undefined,
+      color:     banColor.value,
+      show_time: true,
+      duration:  0,
+    });
+    setStatusMsg(banStatus, '✓ Banner shown', true);
+    log(`Banner: ${lines[0]}`);
+  } catch (e) {
+    setStatusMsg(banStatus, `Error: ${e.message}`, false);
+  }
+});
+
+// ─── Auto-rotation ────────────────────────────────────────────────────────────
+rotStartBtn.addEventListener('click', async () => {
+  const modes    = rotModes.value.split(',').map(m => m.trim()).filter(Boolean);
+  const interval = parseInt(rotInterval.value, 10) || 30;
+  if (!modes.length) { setStatusMsg(rotStatus, 'Enter at least one mode', false); return; }
+  try {
+    await api('POST', '/api/rotation', { modes, interval });
+    setStatusMsg(rotStatus, '▶ Rotation active', true);
+    log(`Auto-rotation started: ${modes.join(', ')} every ${interval}s`);
+  } catch (e) {
+    setStatusMsg(rotStatus, `Error: ${e.message}`, false);
+  }
+});
+
+rotStopBtn.addEventListener('click', async () => {
+  try {
+    await api('POST', '/api/rotation', { modes: [], interval: 0 });
+    setStatusMsg(rotStatus, '■ Rotation stopped', true);
+    log('Auto-rotation stopped');
+  } catch (e) {
+    setStatusMsg(rotStatus, `Error: ${e.message}`, false);
+  }
+});
+
+// ─── Panel settings ───────────────────────────────────────────────────────────
+setQuality.addEventListener('input', () => {
+  setQualityLbl.textContent = setQuality.value;
+});
+
+setBrightness.addEventListener('input', () => {
+  setBrightLbl.textContent = `${setBrightness.value}%`;
+});
+
+setApplyBtn.addEventListener('click', async () => {
+  try {
+    await api('POST', '/api/quality',    { quality: parseInt(setQuality.value, 10) });
+    await api('POST', '/api/orient',     { degrees: parseInt(setOrient.value, 10) });
+    await api('POST', '/api/brightness', { brightness: parseInt(setBrightness.value, 10) / 100 });
+    // Re-enable sync on next poll so sliders reflect server state
+    setQuality.dataset.synced    = '1';
+    setOrient.dataset.synced     = '1';
+    setBrightness.dataset.synced = '1';
+    setStatusMsg(setStatus, '✓ Settings applied', true);
+    log(`Settings: quality=${setQuality.value} rotate=${setOrient.value}° brightness=${setBrightness.value}%`);
+  } catch (e) {
+    setStatusMsg(setStatus, `Error: ${e.message}`, false);
+  }
+});
+
+// ─── Freeze / unfreeze ────────────────────────────────────────────────────────
+function updateFreezeButton() {
+  if (!freezeBtn) return;
+  if (isFrozen) {
+    freezeBtn.textContent = '▶ Unfreeze';
+    freezeBtn.classList.add('active');
+  } else {
+    freezeBtn.textContent = '❄ Freeze';
+    freezeBtn.classList.remove('active');
+  }
+}
+
+freezeBtn.addEventListener('click', async () => {
+  try {
+    if (isFrozen) {
+      await api('POST', '/api/display/unfreeze');
+      isFrozen = false;
+      log('Display unfrozen');
+    } else {
+      await api('POST', '/api/display/freeze');
+      isFrozen = true;
+      log('Display frozen');
     }
+    updateFreezeButton();
+  } catch (e) {
+    log(`Freeze toggle error: ${e.message}`, 'err');
+  }
+});
+
+// ─── Schedule notification ────────────────────────────────────────────────────
+schedBtn.addEventListener('click', async () => {
+  const secs = parseInt(schedInSecs.value, 10);
+  if (!secs || secs < 1) { setStatusMsg(schedStatus, 'Enter delay > 0', false); return; }
+  try {
+    await api('POST', '/api/schedule', {
+      delay_secs: secs,
+      label:      schedLabelEl.value.trim() || undefined,
+      payload:    buildTextPayload(),
+    });
+    setStatusMsg(schedStatus, `✓ Scheduled in ${fmtUptime(secs)}`, true);
+    log(`Notification scheduled: +${secs}s`);
+  } catch (e) {
+    setStatusMsg(schedStatus, `Error: ${e.message}`, false);
+  }
+});
+
+// ─── Notification history ─────────────────────────────────────────────────────
+var histKindFilter = '';
+
+async function fetchHistory(kind) {
+  if (kind !== undefined) histKindFilter = kind;
+  try {
+    var url = '/api/history?limit=30';
+    if (histKindFilter) url += '&kind=' + histKindFilter;
+    var d = await apiJson('GET', url);
+    var entries = Array.isArray(d) ? d : (d.entries || []);
+    historyList.innerHTML = '';
+    if (!entries.length) {
+      var li = document.createElement('li');
+      li.textContent = histKindFilter ? ('No ' + histKindFilter + ' entries') : 'No history yet';
+      li.style.color = 'var(--overlay0)';
+      historyList.appendChild(li);
+    } else {
+      entries.forEach(function(entry) {
+        var li = document.createElement('li');
+        var ts   = new Date((entry.timestamp != null ? entry.timestamp : (entry.ts_secs || 0)) * 1000).toLocaleTimeString();
+        var ekind = entry.kind || 'text';
+        var msg  = (entry.summary != null) ? entry.summary : (entry.message || '');
+        li.innerHTML = '<span class="hist-ts">' + ts + '</span>'
+          + '<span class="hist-kind hist-' + ekind + '">' + ekind + '</span>'
+          + '<span class="hist-msg">' + escHtml(msg) + '</span>';
+        historyList.appendChild(li);
+      });
+    }
+    document.querySelectorAll('.hist-filter-btn').forEach(function(b) {
+      b.classList.toggle('active', b.dataset.kind === histKindFilter);
+    });
+    // Update CSV download link to match current filter
+    var csvLink = document.querySelector('a[download="ttlcd-history.csv"]');
+    if (csvLink) {
+      var csvUrl = '/api/history?format=csv&limit=500';
+      if (histKindFilter) csvUrl += '&kind=' + histKindFilter;
+      csvLink.href = csvUrl;
+    }
+  } catch (_) {}
+}
+
+histRefreshBtn.addEventListener('click', function() { fetchHistory(); });
+histClearBtn.addEventListener('click', async () => {
+  try {
+    await api('DELETE', '/api/history');
+    log('History cleared');
+    await fetchHistory();
+  } catch (e) {
+    log(`History clear error: ${e.message}`, 'err');
+  }
+});
+
+logClearBtn.addEventListener('click', () => { logEl.innerHTML = ''; });
+
+// ─── Stopwatch ────────────────────────────────────────────────────────────────
+function fmtSwTime(ms) {
+  ms = Math.max(0, Math.floor(ms));
+  const h  = Math.floor(ms / 3600000);
+  const m  = Math.floor((ms % 3600000) / 60000);
+  const s  = Math.floor((ms % 60000) / 1000);
+  const cs = Math.floor((ms % 1000) / 10);
+  const pad2 = n => String(n).padStart(2,'0');
+  if (h > 0) return `${h}:${pad2(m)}:${pad2(s)}.${pad2(cs)}`;
+  return `${pad2(m)}:${pad2(s)}.${pad2(cs)}`;
+}
+
+function swCurrentMs() {
+  if (swSyncState.running && swSyncState.started_at_unix_ms > 0) {
+    return swSyncState.base_elapsed_ms + (Date.now() - swSyncState.started_at_unix_ms);
+  }
+  return swSyncState.elapsed_ms;
+}
+
+function updateSwDisplay() {
+  const swDisplay    = $('sw-display');
+  const swStatusLbl  = $('sw-status-label');
+  if (!swDisplay) return;
+  swDisplay.textContent = fmtSwTime(swCurrentMs());
+  if (swStatusLbl) {
+    swStatusLbl.textContent = swSyncState.running ? 'RUNNING'
+      : (swSyncState.elapsed_ms > 0 ? 'PAUSED' : 'READY');
+    swStatusLbl.className = 'sw-status-label ' + (swSyncState.running ? 'sw-running'
+      : (swSyncState.elapsed_ms > 0 ? 'sw-paused' : ''));
+  }
+}
+
+function startLocalSwTimer() {
+  if (swLocalTimer) return;
+  swLocalTimer = setInterval(updateSwDisplay, 50);
+}
+
+function stopLocalSwTimer() {
+  if (swLocalTimer) { clearInterval(swLocalTimer); swLocalTimer = null; }
+  updateSwDisplay();
+}
+
+async function fetchStopwatch() {
+  try {
+    const d = await apiJson('GET', '/api/stopwatch');
+    swSyncState = {
+      running:            d.running,
+      base_elapsed_ms:    d.base_elapsed_ms,
+      started_at_unix_ms: d.started_at_unix_ms,
+      elapsed_ms:         d.elapsed_ms,
+      laps:               d.laps || [],
+    };
+    if (d.running) startLocalSwTimer(); else stopLocalSwTimer();
+    renderSwLaps(d.laps || []);
+  } catch (_) {}
+}
+
+function renderSwLaps(laps) {
+  const table = $('sw-laps-table');
+  const tbody = document.querySelector('#sw-laps-table tbody');
+  if (!tbody) return;
+  tbody.innerHTML = '';
+  laps.forEach((cumMs, idx) => {
+    const prev  = idx > 0 ? laps[idx-1] : 0;
+    const delta = cumMs - prev;
+    const tr    = document.createElement('tr');
+    if (idx === laps.length - 1) tr.className = 'sw-latest-lap';
+    tr.innerHTML = `<td>${idx + 1}</td>
+      <td class="mono">${fmtSwTime(cumMs)}</td>
+      <td class="mono sw-delta">+${fmtSwTime(delta)}</td>`;
+    tbody.prepend(tr);
+  });
+  if (table) table.style.display = laps.length ? '' : 'none';
+}
+
+// Stopwatch buttons — injected section in index.html (IDs: sw-start-btn, etc.)
+document.addEventListener('click', async e => {
+  const id = e.target.closest('button')?.id;
+  if (!id) return;
+  switch (id) {
+    case 'sw-start-btn':
+      try {
+        await api('POST', swSyncState.running ? '/api/stopwatch/stop' : '/api/stopwatch/start');
+        await fetchStopwatch();
+      } catch (err) { log(`Stopwatch error: ${err.message}`, 'err'); }
+      break;
+    case 'sw-lap-btn':
+      try {
+        const r = await apiJson('POST', '/api/stopwatch/lap');
+        log(`Lap ${r.lap}: ${fmtSwTime(r.elapsed_ms)}`);
+        await fetchStopwatch();
+      } catch (err) { log(`Lap error: ${err.message}`, 'err'); }
+      break;
+    case 'sw-reset-btn':
+      try {
+        await api('POST', '/api/stopwatch/reset');
+        swSyncState = { running:false, base_elapsed_ms:0, started_at_unix_ms:0, elapsed_ms:0, laps:[] };
+        stopLocalSwTimer();
+        renderSwLaps([]);
+        log('Stopwatch reset');
+      } catch (err) { log(`Reset error: ${err.message}`, 'err'); }
+      break;
+  }
+});
+
+// Inject stopwatch section if not already present
+(function injectStopwatchSection() {
+  if ($('sw-display')) return; // already present
+  const section = document.createElement('section');
+  section.className = 'card';
+  section.innerHTML = `
+    <h2>Stopwatch</h2>
+    <div class="sw-main">
+      <div class="stopwatch-display" id="sw-display">00:00.00</div>
+      <div class="stopwatch-status" id="sw-status-label">READY</div>
+    </div>
+    <div class="form-actions" style="margin-top:0.75rem">
+      <button id="sw-start-btn" class="primary">▶ Start</button>
+      <button id="sw-lap-btn">⊙ Lap</button>
+      <button id="sw-reset-btn">↺ Reset</button>
+    </div>
+    <table id="sw-laps-table" class="sw-laps-table" style="margin-top:0.75rem;width:100%;display:none">
+      <thead><tr><th>#</th><th>Cumulative</th><th>Split</th></tr></thead>
+      <tbody></tbody>
+    </table>
+  `;
+  // Insert after panel preview section
+  const previewSection = freezeBtn.closest('section');
+  previewSection?.insertAdjacentElement('afterend', section);
+})();
+
+// ─── Alert thresholds ─────────────────────────────────────────────────────────
+(function injectThresholdsSection() {
+  if ($('thr-cpu')) return;
+  const section = document.createElement('section');
+  section.className = 'card';
+  section.innerHTML = `
+    <h2>Alert Thresholds</h2>
+    <p class="card-hint">Panel flashes a custom text alert when CPU or temperature exceeds these limits.</p>
+    <div class="form-row three-col">
+      <div class="form-group">
+        <label for="thr-cpu">CPU % trigger <span class="hint-inline">(0 = off)</span></label>
+        <input type="number" id="thr-cpu" min="0" max="100" value="0" step="1">
+      </div>
+      <div class="form-group">
+        <label for="thr-temp">Temp °C trigger <span class="hint-inline">(0 = off)</span></label>
+        <input type="number" id="thr-temp" min="0" max="200" value="0" step="1">
+      </div>
+      <div class="form-group">
+        <label for="thr-cooldown">Cooldown (s)</label>
+        <input type="number" id="thr-cooldown" min="0" value="300" step="30">
+      </div>
+    </div>
+    <div class="form-actions">
+      <button id="thr-save-btn" class="primary">💾 Save Thresholds</button>
+      <span id="thr-status"></span>
+    </div>
+  `;
+  const settingsSection = setApplyBtn.closest('section');
+  settingsSection?.insertAdjacentElement('afterend', section);
+})();
+
+async function fetchThresholds() {
+  try {
+    const d = await apiJson('GET', '/api/alerts/thresholds');
+    const thrCpu = $('thr-cpu'), thrTemp = $('thr-temp'), thrCooldown = $('thr-cooldown');
+    if (thrCpu)      thrCpu.value      = d.cpu_pct       ?? 0;
+    if (thrTemp)     thrTemp.value     = d.temp_c        ?? 0;
+    if (thrCooldown) thrCooldown.value = d.cooldown_secs ?? 300;
+  } catch (_) {}
+}
+
+document.addEventListener('click', async e => {
+  if (e.target.id !== 'thr-save-btn') return;
+  try {
+    await api('POST', '/api/alerts/thresholds', {
+      cpu_pct:       parseFloat($('thr-cpu')?.value || 0),
+      temp_c:        parseFloat($('thr-temp')?.value || 0),
+      cooldown_secs: parseInt($('thr-cooldown')?.value || 300, 10),
+    });
+    setStatusMsg($('thr-status'), '✓ Saved', true);
+    log('Alert thresholds updated');
+  } catch (e) {
+    setStatusMsg($('thr-status'), `Error: ${e.message}`, false);
+  }
+});
+
+// ─── Night dim schedule ───────────────────────────────────────────────────────
+(function injectDimSection() {
+  if ($('dim-start')) return;
+  const section = document.createElement('section');
+  section.className = 'card';
+  section.innerHTML = `
+    <h2>Night Dim Schedule</h2>
+    <p class="card-hint">Automatically dim the panel during a specified hour range (e.g. 22:00 – 07:00).</p>
+    <div class="form-row three-col">
+      <div class="form-group">
+        <label for="dim-start">Start hour <span class="hint-inline">(0–23)</span></label>
+        <input type="number" id="dim-start" min="0" max="23" value="22">
+      </div>
+      <div class="form-group">
+        <label for="dim-end">End hour <span class="hint-inline">(0–23)</span></label>
+        <input type="number" id="dim-end" min="0" max="23" value="7">
+      </div>
+      <div class="form-group">
+        <label for="dim-level">Dim level <span class="hint-inline">(0–100%)</span></label>
+        <input type="number" id="dim-level" min="0" max="100" value="20">
+      </div>
+    </div>
+    <div class="form-actions">
+      <button id="dim-set-btn" class="primary">🌙 Set Schedule</button>
+      <button id="dim-clear-btn">✕ Clear</button>
+      <span id="dim-status"></span>
+    </div>
+    <div id="dim-active-info" style="display:none;margin-top:0.5rem;font-size:0.85rem;color:var(--subtext)"></div>
+  `;
+  $('thr-save-btn')?.closest('section')?.insertAdjacentElement('afterend', section);
+})();
+
+async function fetchDimSchedule() {
+  try {
+    const d  = await apiJson('GET', '/api/dim/schedule');
+    const sched = d.schedule;
+    const info  = $('dim-active-info');
+    if (sched) {
+      const dimStart = $('dim-start'), dimEnd = $('dim-end'), dimLevel = $('dim-level');
+      if (dimStart) dimStart.value = sched.start_hour;
+      if (dimEnd)   dimEnd.value   = sched.end_hour;
+      if (dimLevel) dimLevel.value = Math.round(sched.dim_level * 100);
+      if (info) {
+        info.style.display = '';
+        info.textContent   = `Active: ${sched.start_hour}:00 → ${sched.end_hour}:00 @ ${Math.round(sched.dim_level*100)}%`;
+      }
+    } else if (info) {
+      info.style.display = 'none';
+    }
+  } catch (_) {}
+}
+
+document.addEventListener('click', async e => {
+  const id = e.target.id;
+  if (id === 'dim-set-btn') {
+    try {
+      await api('POST', '/api/dim/schedule', {
+        start_hour: parseInt($('dim-start')?.value || 22, 10),
+        end_hour:   parseInt($('dim-end')?.value   || 7,  10),
+        dim_level:  parseInt($('dim-level')?.value || 20, 10) / 100,
+      });
+      setStatusMsg($('dim-status'), '✓ Schedule set', true);
+      log('Dim schedule updated');
+      await fetchDimSchedule();
+    } catch (err) {
+      setStatusMsg($('dim-status'), `Error: ${err.message}`, false);
+    }
+  } else if (id === 'dim-clear-btn') {
+    try {
+      await api('DELETE', '/api/dim/schedule');
+      setStatusMsg($('dim-status'), '✓ Cleared', true);
+      log('Dim schedule cleared');
+      await fetchDimSchedule();
+    } catch (err) {
+      setStatusMsg($('dim-status'), `Error: ${err.message}`, false);
+    }
+  }
+});
+
+// ─── Custom metrics dashboard ─────────────────────────────────────────────────
+(function injectMetricsSection() {
+  if ($('met-title')) return;
+  const section = document.createElement('section');
+  section.className = 'card';
+  section.innerHTML = `
+    <h2>Custom Metrics Dashboard</h2>
+    <p class="card-hint">Push up to 8 key/value metrics to the panel's Metrics display mode.</p>
+    <div class="form-group" style="margin-bottom:0.6rem">
+      <label for="met-title">Dashboard title</label>
+      <input type="text" id="met-title" placeholder="CI Dashboard" maxlength="28">
+    </div>
+    <div id="met-rows"></div>
+    <div class="form-actions" style="margin-top:0.5rem">
+      <button id="met-add-btn">+ Add metric</button>
+      <button id="met-push-btn" class="primary">📊 Push to panel</button>
+      <button id="met-clear-btn" class="danger-btn">🗑 Clear</button>
+      <span id="met-status"></span>
+    </div>
+  `;
+  $('dim-set-btn')?.closest('section')?.insertAdjacentElement('afterend', section);
+})();
+
+function addMetricRow(label = '', value = '', color = 'blue') {
+  const rows = $('met-rows');
+  if (!rows) return;
+  if (rows.children.length >= 8) return;
+  const div = document.createElement('div');
+  div.className = 'metric-row';
+  div.innerHTML = `
+    <input type="text"  class="met-label" placeholder="Label" value="${escHtml(label)}" maxlength="14" style="flex:1">
+    <input type="text"  class="met-value" placeholder="Value" value="${escHtml(value)}" maxlength="14" style="flex:1">
+    <select class="met-color">
+      ${['blue','green','red','yellow','teal','mauve','peach','white'].map(c =>
+        `<option value="${c}"${c===color?' selected':''}>${c}</option>`).join('')}
+    </select>
+    <button class="met-del-btn danger-btn" title="Remove">✕</button>
+  `;
+  div.querySelector('.met-del-btn').addEventListener('click', () => div.remove());
+  rows.appendChild(div);
+}
+
+document.addEventListener('click', async e => {
+  const id = e.target.id;
+  if (id === 'met-add-btn') {
+    addMetricRow();
+  } else if (id === 'met-push-btn') {
+    const rows  = $('met-rows');
+    const title = $('met-title')?.value.trim() || '';
+    const metrics = [];
+    rows?.querySelectorAll('.metric-row').forEach(row => {
+      const label = row.querySelector('.met-label')?.value.trim();
+      const value = row.querySelector('.met-value')?.value.trim();
+      const color = row.querySelector('.met-color')?.value;
+      if (label && value) metrics.push({ label, value, color });
+    });
+    try {
+      await api('POST', '/api/metrics', { title, metrics, show: true });
+      setStatusMsg($('met-status'), `✓ ${metrics.length} metric(s) pushed`, true);
+      log(`Metrics pushed: ${metrics.length} items`);
+    } catch (err) {
+      setStatusMsg($('met-status'), `Error: ${err.message}`, false);
+    }
+  } else if (id === 'met-clear-btn') {
+    try {
+      await api('DELETE', '/api/metrics');
+      const rows = $('met-rows');
+      if (rows) rows.innerHTML = '';
+      setStatusMsg($('met-status'), '✓ Cleared', true);
+      log('Metrics cleared');
+    } catch (err) {
+      setStatusMsg($('met-status'), `Error: ${err.message}`, false);
+    }
+  }
+});
+
+async function fetchMetrics() {
+  try {
+    const d   = await apiJson('GET', '/api/metrics');
+    const met  = d.metrics || [];
+    const rows = $('met-rows');
+    if (!rows || rows.children.length > 0) return; // don't overwrite user edits
+    if ($('met-title')) $('met-title').value = d.title || '';
+    met.forEach(m => addMetricRow(m.label, m.value, m.color || 'blue'));
+  } catch (_) {}
+}
+
+// ─── Display profiles ─────────────────────────────────────────────────────────
+(function injectProfilesSection() {
+  if ($('prof-name')) return;
+  const section = document.createElement('section');
+  section.className = 'card';
+  section.innerHTML = `
+    <h2>Display Profiles</h2>
+    <p class="card-hint">Save and restore complete panel configurations (mode, quality, rotation, brightness).</p>
+    <div class="form-row two-col">
+      <div class="form-group">
+        <label for="prof-name">Profile name</label>
+        <input type="text" id="prof-name" placeholder="e.g. night-mode" maxlength="40">
+      </div>
+      <div class="form-group">
+        <label for="prof-select">Saved profiles</label>
+        <select id="prof-select"><option value="">— select profile —</option></select>
+      </div>
+    </div>
+    <div class="form-actions">
+      <button id="prof-save-btn" class="primary">💾 Save Current</button>
+      <button id="prof-apply-btn">▶ Apply</button>
+      <button id="prof-del-btn" class="danger-btn">🗑 Delete</button>
+      <span id="prof-status"></span>
+    </div>
+  `;
+  $('met-push-btn')?.closest('section')?.insertAdjacentElement('afterend', section);
+})();
+
+async function fetchProfiles() {
+  try {
+    const profiles = await apiJson('GET', '/api/profiles');
+    const sel = $('prof-select');
+    if (!sel) return;
+    const prev = sel.value;
+    sel.innerHTML = '<option value="">— select profile —</option>';
+    profiles.forEach(p => {
+      const opt = document.createElement('option');
+      opt.value       = p.name;
+      opt.textContent = `${p.name} (${p.mode}, q${p.quality})`;
+      sel.appendChild(opt);
+    });
+    if (prev) sel.value = prev;
+  } catch (_) {}
+}
+
+document.addEventListener('click', async e => {
+  const id = e.target.id;
+  if (id === 'prof-save-btn') {
+    const name = $('prof-name')?.value.trim() || prompt('Profile name:');
+    if (!name) return;
+    try {
+      await api('POST', '/api/profiles', { name });
+      setStatusMsg($('prof-status'), `✓ Saved "${name}"`, true);
+      log(`Profile saved: ${name}`);
+      await fetchProfiles();
+      const sel = $('prof-select');
+      if (sel) sel.value = name;
+    } catch (err) {
+      setStatusMsg($('prof-status'), `Error: ${err.message}`, false);
+    }
+  } else if (id === 'prof-apply-btn') {
+    const name = $('prof-select')?.value;
+    if (!name) { setStatusMsg($('prof-status'), 'Select a profile first', false); return; }
+    try {
+      await api('POST', `/api/profiles/${encodeURIComponent(name)}/apply`);
+      setStatusMsg($('prof-status'), `✓ Applied "${name}"`, true);
+      log(`Profile applied: ${name}`);
+      // Reset slider sync so they pick up new values
+      setQuality.dataset.synced    = '';
+      setOrient.dataset.synced     = '';
+      setBrightness.dataset.synced = '';
+    } catch (err) {
+      setStatusMsg($('prof-status'), `Error: ${err.message}`, false);
+    }
+  } else if (id === 'prof-del-btn') {
+    const name = $('prof-select')?.value;
+    if (!name) return;
+    if (!confirm(`Delete profile "${name}"?`)) return;
+    try {
+      await api('DELETE', `/api/profiles/${encodeURIComponent(name)}`);
+      setStatusMsg($('prof-status'), `✓ Deleted "${name}"`, true);
+      log(`Profile deleted: ${name}`);
+      await fetchProfiles();
+    } catch (err) {
+      setStatusMsg($('prof-status'), `Error: ${err.message}`, false);
+    }
+  }
+});
+
+// ─── Notes / bulletin board section ─────────────────────────────────────────
+(function injectNotesSection() {
+  if ($('notes-title-input')) return;
+  const section = document.createElement('section');
+  section.className = 'card';
+  section.innerHTML = `
+    <h2>Notes / Bulletin Board</h2>
+    <p class="card-hint">Push a list of text items to the panel. Useful for sprint boards, checklists, or reminders.</p>
+    <div class="form-group" style="margin-bottom:0.6rem">
+      <label for="notes-title-input">Board title</label>
+      <input type="text" id="notes-title-input" placeholder="Sprint 42, TODO, Meeting Agenda…" maxlength="28">
+    </div>
+    <div id="notes-items-wrap"></div>
+    <div class="form-actions" style="margin-top:0.5rem">
+      <button id="notes-add-btn">+ Add note</button>
+      <button id="notes-push-btn" class="primary">📝 Push to panel</button>
+      <button id="notes-append-btn">➕ Append</button>
+      <button id="notes-clear-btn" class="danger-btn">🗑 Clear</button>
+      <span id="notes-status"></span>
+    </div>
+  `;
+  // Insert after weather section (or fallback to metrics section)
+  const weatherBtn = document.getElementById('weather-fetch-btn');
+  weatherBtn?.closest('section')?.insertAdjacentElement('afterend', section);
+})();
+
+function addNoteRow(text = '') {
+  const wrap = $('notes-items-wrap');
+  if (!wrap) return;
+  if (wrap.children.length >= 10) return;
+  const div = document.createElement('div');
+  div.className = 'notes-item-row';
+  div.style.cssText = 'display:flex;gap:0.4rem;align-items:center;margin-bottom:0.3rem';
+  div.innerHTML = `
+    <input type="text" class="note-text" placeholder="Note text…" value="${escHtml(text)}" maxlength="40"
+           style="flex:1;padding:0.3rem 0.5rem;font-size:0.85rem">
+    <button class="note-del danger-btn" title="Remove">✕</button>
+  `;
+  div.querySelector('.note-del').addEventListener('click', () => div.remove());
+  wrap.appendChild(div);
+}
+
+document.addEventListener('click', async e => {
+  const id = e.target.id;
+  if (id === 'notes-add-btn') {
+    addNoteRow();
+  } else if (id === 'notes-push-btn' || id === 'notes-append-btn') {
+    const title  = $('notes-title-input')?.value.trim() || '';
+    const append = id === 'notes-append-btn';
+    const items  = Array.from($('notes-items-wrap')?.querySelectorAll('.note-text') || [])
+      .map(el => el.value.trim()).filter(Boolean);
+    try {
+      await api('POST', '/api/notes', { title, items, append, show: true });
+      setStatusMsg($('notes-status'), `✓ ${items.length} note(s) pushed`, true);
+      log(`Notes: ${items.length} item(s)${append ? ' (appended)' : ''}`);
+    } catch (err) {
+      setStatusMsg($('notes-status'), `Error: ${err.message}`, false);
+    }
+  } else if (id === 'notes-clear-btn') {
+    try {
+      await api('DELETE', '/api/notes');
+      const wrap = $('notes-items-wrap');
+      if (wrap) wrap.innerHTML = '';
+      if ($('notes-title-input')) $('notes-title-input').value = '';
+      setStatusMsg($('notes-status'), '✓ Cleared', true);
+      log('Notes cleared');
+    } catch (err) {
+      setStatusMsg($('notes-status'), `Error: ${err.message}`, false);
+    }
+  }
+});
+
+async function fetchCachedNotes() {
+  try {
+    const d = await apiJson('GET', '/api/notes');
+    if (!d.items?.length) return;
+    const titleEl = $('notes-title-input');
+    if (titleEl && !titleEl.value) titleEl.value = d.title || '';
+    const wrap = $('notes-items-wrap');
+    if (wrap && !wrap.children.length) {
+      d.items.forEach(item => addNoteRow(item));
+    }
+  } catch (_) {}
+}
+
+// ─── Weather section ─────────────────────────────────────────────────────────
+(function injectWeatherSection() {
+  if ($('weather-city')) return;
+  const section = document.createElement('section');
+  section.className = 'card';
+  section.innerHTML = `
+    <h2>Weather Dashboard</h2>
+    <p class="card-hint">Fetches current conditions from <a href="https://wttr.in" target="_blank" rel="noopener">wttr.in</a> (public API, no key needed) and pushes them to the panel.</p>
+    <div class="form-row two-col">
+      <div class="form-group">
+        <label for="weather-city">City / location</label>
+        <input type="text" id="weather-city" placeholder="London, Paris, Tokyo…" value="">
+      </div>
+      <div class="form-group">
+        <label>Auto-refresh</label>
+        <select id="weather-refresh-interval">
+          <option value="0">Manual only</option>
+          <option value="300">Every 5 min</option>
+          <option value="600" selected>Every 10 min</option>
+          <option value="1800">Every 30 min</option>
+          <option value="3600">Every 1 hour</option>
+        </select>
+      </div>
+    </div>
+    <div class="form-actions" style="margin-top:0.6rem">
+      <button id="weather-fetch-btn" class="primary">🌤 Fetch &amp; Push Weather</button>
+      <button id="weather-clear-btn">✕ Clear</button>
+      <span id="weather-status"></span>
+    </div>
+    <div id="weather-display" class="weather-display" style="display:none;margin-top:0.75rem">
+      <div class="weather-temp" id="weather-temp">—</div>
+      <div class="weather-cond" id="weather-cond">—</div>
+      <div class="weather-details" id="weather-details"></div>
+    </div>
+  `;
+  $('prof-save-btn')?.closest('section')?.insertAdjacentElement('afterend', section);
+})();
+
+let weatherRefreshTimer = null;
+
+async function fetchAndPushWeather(silent = false) {
+  const city = ($('weather-city')?.value.trim()) || 'London';
+  const statusEl = $('weather-status');
+  if (!silent) setStatusMsg(statusEl, '⏳ Fetching weather…', true, 60000);
+
+  try {
+    // wttr.in returns JSON with current_condition, weather (forecast)
+    const url = `https://wttr.in/${encodeURIComponent(city)}?format=j1`;
+    const r   = await fetch(url);
+    if (!r.ok) throw new Error(`wttr.in returned ${r.status}`);
+    const data = await r.json();
+
+    const cur  = data.current_condition?.[0];
+    const cast = data.weather?.[0];
+    if (!cur)  throw new Error('No current_condition in response');
+
+    const payload = {
+      city:          city,
+      temp_c:        parseFloat(cur.temp_C),
+      feels_like_c:  parseFloat(cur.FeelsLikeC),
+      condition:     cur.weatherDesc?.[0]?.value || '',
+      humidity_pct:  parseInt(cur.humidity, 10),
+      wind_kmh:      parseFloat(cur.windspeedKmph),
+      wind_dir:      cur.winddir16Point || '',
+      visibility_km: parseFloat(cur.visibility),
+      high_c:        cast ? parseFloat(cast.maxtempC) : undefined,
+      low_c:         cast ? parseFloat(cast.mintempC) : undefined,
+      show:          true,
+    };
+
+    await api('POST', '/api/weather', payload);
+
+    // Update local display
+    const tempEl    = $('weather-temp');
+    const condEl    = $('weather-cond');
+    const detailsEl = $('weather-details');
+    const dispEl    = $('weather-display');
+    if (tempEl)    tempEl.textContent = `${payload.temp_c?.toFixed(0)}°C`;
+    if (condEl)    condEl.textContent = payload.condition;
+    if (detailsEl) detailsEl.innerHTML = [
+      `💧 ${payload.humidity_pct}%`,
+      `💨 ${payload.wind_kmh?.toFixed(0)} km/h ${payload.wind_dir}`,
+      `▲ ${payload.high_c?.toFixed(0)}° ▼ ${payload.low_c?.toFixed(0)}°`,
+    ].map(s => `<span>${s}</span>`).join('');
+    if (dispEl) dispEl.style.display = '';
+
+    if (!silent) {
+      setStatusMsg(statusEl, `✓ Weather pushed for ${city}`, true);
+      log(`Weather: ${city} ${payload.temp_c?.toFixed(0)}°C ${payload.condition}`);
+    }
+  } catch (e) {
+    if (!silent) setStatusMsg(statusEl, `Error: ${e.message}`, false);
+  }
+}
+
+document.addEventListener('click', async e => {
+  const id = e.target.id;
+  if (id === 'weather-fetch-btn') {
+    await fetchAndPushWeather(false);
+    // Set up auto-refresh if requested
+    const interval = parseInt($('weather-refresh-interval')?.value || '0', 10);
+    if (weatherRefreshTimer) { clearInterval(weatherRefreshTimer); weatherRefreshTimer = null; }
+    if (interval > 0) {
+      weatherRefreshTimer = setInterval(() => fetchAndPushWeather(true), interval * 1000);
+      log(`Weather auto-refresh every ${interval}s`);
+    }
+  } else if (id === 'weather-clear-btn') {
+    try {
+      await api('DELETE', '/api/weather');
+      if (weatherRefreshTimer) { clearInterval(weatherRefreshTimer); weatherRefreshTimer = null; }
+      const dispEl = $('weather-display');
+      if (dispEl) dispEl.style.display = 'none';
+      setStatusMsg($('weather-status'), '✓ Weather cleared', true);
+      log('Weather cleared');
+    } catch (err) {
+      setStatusMsg($('weather-status'), `Error: ${err.message}`, false);
+    }
+  }
+});
+
+// Load cached weather on boot
+async function fetchCachedWeather() {
+  try {
+    const d = await apiJson('GET', '/api/weather');
+    if (!d.city && !d.temp_c) return;
+    const cityEl = $('weather-city');
+    if (cityEl && !cityEl.value) cityEl.value = d.city || '';
+    const tempEl = $('weather-temp'), condEl = $('weather-cond'), dispEl = $('weather-display');
+    if (tempEl) tempEl.textContent = d.temp_c != null ? `${d.temp_c.toFixed(0)}°C` : '—';
+    if (condEl) condEl.textContent = d.condition || '—';
+    if (dispEl) dispEl.style.display = '';
+  } catch (_) {}
+}
+
+
+
+// ─── QR Code section ─────────────────────────────────────────────────────────
+(function injectQrSection() {
+  if (document.getElementById('qr-payload')) return;
+  var sec = document.createElement('section');
+  sec.id = 'qr-section';
+  sec.className = 'card';
+  sec.innerHTML = [
+    '<h2>QR Code</h2>',
+    '<p class="card-hint">Generate a scannable QR code on the panel — great for sharing URLs, Wi-Fi passwords, or any short text.</p>',
+    '<div class="form-row two-col">',
+      '<div class="form-group"><label for="qr-payload">Payload (URL or text)</label>',
+        '<input type="text" id="qr-payload" placeholder="https://example.com" maxlength="300"></div>',
+      '<div class="form-group"><label for="qr-title">Title <span class="hint-inline">(opt.)</span></label>',
+        '<input type="text" id="qr-title" placeholder="QR Code" maxlength="32"></div>',
+    '</div>',
+    '<div class="form-actions">',
+      '<button id="qr-show-btn" class="primary">🔲 Show QR Code</button>',
+      '<button id="qr-clear-btn">✕ Clear</button>',
+      '<span id="qr-status"></span>',
+    '</div>',
+    '<div id="qr-preview-wrap" style="display:none;margin-top:0.75rem">',
+      '<div class="sub-label">Last payload</div>',
+      '<div id="qr-payload-display" class="mono" style="font-size:0.82rem;color:var(--teal);word-break:break-all;margin-top:0.3rem"></div>',
+    '</div>',
+  ].join('');
+
+  // Insert after the notes section (or before history)
+  var notesSection = document.querySelector('section.card h2');
+  // Find notes card by searching all h2s
+  var inserted = false;
+  document.querySelectorAll('section.card h2').forEach(function(h2) {
+    if (h2.textContent.trim() === 'Notes / Bulletin Board' && !inserted) {
+      h2.closest('section').insertAdjacentElement('afterend', sec);
+      inserted = true;
+    }
+  });
+  if (!inserted) {
+    var histCard = historyList && historyList.closest('.card');
+    if (histCard) histCard.insertAdjacentElement('beforebegin', sec);
+  }
+
+  document.getElementById('qr-show-btn').addEventListener('click', async function() {
+    var payload = (document.getElementById('qr-payload').value || '').trim();
+    var title   = (document.getElementById('qr-title').value || '').trim();
+    var statusEl = document.getElementById('qr-status');
+    if (!payload) { setStatusMsg(statusEl, 'Enter a payload first', false); return; }
+    try {
+      await api('POST', '/api/qr', { payload: payload, title: title, show: true });
+      setStatusMsg(statusEl, '✓ QR code on panel', true);
+      var wrap = document.getElementById('qr-preview-wrap');
+      var disp = document.getElementById('qr-payload-display');
+      if (wrap) wrap.style.display = '';
+      if (disp) disp.textContent = payload;
+      log('QR code: ' + payload.substring(0, 60));
+    } catch (e) { setStatusMsg(statusEl, 'Error: ' + e.message, false); }
+  });
+
+  document.getElementById('qr-clear-btn').addEventListener('click', async function() {
+    var statusEl = document.getElementById('qr-status');
+    try {
+      await api('DELETE', '/api/qr');
+      setStatusMsg(statusEl, '✓ Cleared', true);
+      var wrap = document.getElementById('qr-preview-wrap');
+      if (wrap) wrap.style.display = 'none';
+      document.getElementById('qr-payload').value = '';
+    } catch (e) { setStatusMsg(statusEl, 'Error: ' + e.message, false); }
+  });
+})();
+
+async function fetchQrState() {
+  try {
+    var d = await apiJson('GET', '/api/qr');
+    if (d.payload) {
+      var inp = document.getElementById('qr-payload');
+      if (inp && !inp.value) inp.value = d.payload;
+      var titleInp = document.getElementById('qr-title');
+      if (titleInp && !titleInp.value && d.title !== 'QR Code') titleInp.value = d.title;
+      var wrap = document.getElementById('qr-preview-wrap');
+      var disp = document.getElementById('qr-payload-display');
+      if (wrap && d.payload) { wrap.style.display = ''; }
+      if (disp && d.payload) { disp.textContent = d.payload; }
+    }
+  } catch (_) {}
+}
+
+// ─── History filter bar (────────────────────────────────────────────────
+(function injectHistoryFilters() {
+  if (document.getElementById('hist-filter-bar')) return;
+  var par = historyList && historyList.parentElement;
+  if (!par) return;
+  var bar = document.createElement('div');
+  bar.id = 'hist-filter-bar';
+  bar.className = 'hist-filter-bar';
+  bar.innerHTML = '<span class="hist-filter-label">Filter:</span>'
+    + ['','text','alert','image','system'].map(function(k) {
+        return '<button class="hist-filter-btn small-btn" data-kind="' + k + '">'+(k||'all')+'</button>';
+      }).join('');
+  par.insertBefore(bar, historyList);
+  bar.addEventListener('click', function(e) {
+    var btn = e.target.closest('.hist-filter-btn');
+    if (btn) fetchHistory(btn.dataset.kind);
+  });
+})();
+
+// ─── Webhook test UI ───────────────────────────────────────────────────────────────
+(function injectWebhookSection() {
+  if (document.getElementById('wh-section')) return;
+  var sec = document.createElement('section');
+  sec.id = 'wh-section';
+  sec.className = 'card';
+  sec.innerHTML = [
+    '<h2>Webhook</h2>',
+    '<p class="card-hint">Test the webhook endpoint or configure a forward URL for outbound delivery.</p>',
+    '<div class="form-row two-col">',
+      '<div class="form-group"><label for="wh-status">Status</label>',
+        '<select id="wh-status">',
+          '<option value="success">success</option>',
+          '<option value="failure">failure</option>',
+          '<option value="warning">warning</option>',
+          '<option value="running">running</option>',
+          '<option value="info">info</option>',
+        '</select></div>',
+      '<div class="form-group"><label for="wh-message">Message</label>',
+        '<input type="text" id="wh-message" placeholder="Test webhook message" maxlength="80"></div>',
+    '</div>',
+    '<div class="form-actions">',
+      '<button id="wh-test-btn" class="primary">⚡ Send Test Webhook</button>',
+      '<span id="wh-test-status"></span>',
+    '</div>',
+    '<hr style="border-color:var(--surface0);margin:0.75rem 0">',
+    '<p class="card-hint">Forward URL — if set, all incoming webhooks are also forwarded here.</p>',
+    '<div class="form-row two-col">',
+      '<div class="form-group"><label for="wh-forward-url">Forward URL</label>',
+        '<input type="text" id="wh-forward-url" placeholder="https://hooks.example.com/..." maxlength="200"></div>',
+    '</div>',
+    '<div class="form-actions">',
+      '<button id="wh-url-save-btn" class="primary">💾 Save URL</button>',
+      '<button id="wh-url-clear-btn" class="danger-btn">✕ Clear</button>',
+      '<span id="wh-url-status"></span>',
+    '</div>',
+    '<div id="wh-url-display" style="display:none;margin-top:0.4rem;font-size:0.82rem;color:var(--overlay0)">',
+      'Forwarding to: <span id="wh-url-current" class="mono" style="color:var(--teal)"></span>',
+    '</div>',
+    '<p class="card-hint" style="margin-top:0.75rem">Endpoint: <span class="mono" id="wh-endpoint-url" style="color:var(--blue)"></span></p>',
+  ].join('');
+
+  var histCard = historyList && historyList.closest('.card');
+  if (histCard) histCard.insertAdjacentElement('beforebegin', sec);
+
+  var epEl = document.getElementById('wh-endpoint-url');
+  if (epEl) epEl.textContent = window.location.origin + '/api/webhook';
+
+  document.getElementById('wh-test-btn').addEventListener('click', async function() {
+    var status  = document.getElementById('wh-status').value;
+    var message = document.getElementById('wh-message').value || 'Test from ttlcd web UI';
+    var statusEl = document.getElementById('wh-test-status');
+    try {
+      await api('POST', '/api/webhook', {status: status, message: message});
+      setStatusMsg(statusEl, '✓ Webhook sent', true);
+      log('Webhook test: ' + status + ' — ' + message);
+    } catch (e) { setStatusMsg(statusEl, 'Error: ' + e.message, false); }
+  });
+
+  document.getElementById('wh-url-save-btn').addEventListener('click', async function() {
+    var url = (document.getElementById('wh-forward-url').value || '').trim();
+    var statusEl = document.getElementById('wh-url-status');
+    if (!url) { setStatusMsg(statusEl, 'Enter a URL first', false); return; }
+    try {
+      await api('POST', '/api/webhook/config', {url: url});
+      setStatusMsg(statusEl, '✓ URL saved', true);
+      updateWebhookUrlDisplay(url);
+    } catch (e) { setStatusMsg(statusEl, 'Error: ' + e.message, false); }
+  });
+
+  document.getElementById('wh-url-clear-btn').addEventListener('click', async function() {
+    var statusEl = document.getElementById('wh-url-status');
+    try {
+      await api('DELETE', '/api/webhook/config');
+      setStatusMsg(statusEl, '✓ Cleared', true);
+      updateWebhookUrlDisplay(null);
+      document.getElementById('wh-forward-url').value = '';
+    } catch (e) { setStatusMsg(statusEl, 'Error: ' + e.message, false); }
+  });
+})();
+
+function updateWebhookUrlDisplay(url) {
+  var disp = document.getElementById('wh-url-display');
+  var span = document.getElementById('wh-url-current');
+  if (!disp || !span) return;
+  if (url) { disp.style.display = ''; span.textContent = url; }
+  else      { disp.style.display = 'none'; }
+}
+
+async function fetchWebhookConfig() {
+  try {
+    var d = await apiJson('GET', '/api/webhook/config');
+    if (d.url) {
+      var inp = document.getElementById('wh-forward-url');
+      if (inp && !inp.value) inp.value = d.url;
+      updateWebhookUrlDisplay(d.url);
+    }
+  } catch (_) {}
+}
+
+// ─── FPS sparkline in panel info ────────────────────────────────────────────────────────────────
+(function injectFpsSparkline() {
+  if (document.getElementById('fps-sparkline-row')) return;
+  var tbl = document.getElementById('info-table');
+  if (!tbl) return;
+  var fpsRow = null;
+  tbl.querySelectorAll('tr').forEach(function(r) {
+    if (r.querySelector('#info-fps')) fpsRow = r;
+  });
+  if (!fpsRow) return;
+  var row = document.createElement('tr');
+  row.id = 'fps-sparkline-row';
+  row.innerHTML = '<td class="info-label">FPS graph</td><td>'
+    + '<canvas id="fps-sparkline-canvas" width="200" height="28" style="vertical-align:middle;border-radius:3px"></canvas>'
+    + '</td>';
+  fpsRow.insertAdjacentElement('afterend', row);
+})();
+
+async function fetchFpsHistory() {
+  try {
+    var d = await apiJson('GET', '/api/fps/history');
+    if (!d.samples || !d.samples.length) return;
+    drawFpsSparkline(document.getElementById('fps-sparkline-canvas'), d.samples);
+  } catch (_) {}
+}
+
+function drawFpsSparkline(canvas, data) {
+  if (!canvas || !data.length) return;
+  var ctx = canvas.getContext('2d');
+  var W = canvas.width, H = canvas.height;
+  ctx.clearRect(0, 0, W, H);
+  ctx.fillStyle = 'rgba(49,50,68,0.6)';
+  ctx.fillRect(0, 0, W, H);
+  var max = 0;
+  data.forEach(function(v) { if (v > max) max = v; });
+  if (max < 1) max = 1;
+  var bw = W / data.length;
+  data.forEach(function(v, i) {
+    var h = Math.round(H * (v / max));
+    ctx.fillStyle = v < 0.5 ? '#f38ba8' : v < 1.5 ? '#f9e2af' : '#a6e3a1';
+    ctx.fillRect(i * bw, H - h, Math.max(bw - 1, 1), h);
   });
 }
 
-// ── Init ──────────────────────────────────────────────────────────────────────
-refreshPresets();
-refreshHistory();
+// ─── Net sparkline ─────────────────────────────────────────────────────────────────────────
+(function injectNetSparkline() {
+  if (document.getElementById('net-sparkline-wrap')) return;
+  var sparkWrap = document.getElementById('sparkline-wrap');
+  if (!sparkWrap) return;
+  var div = document.createElement('div');
+  div.id = 'net-sparkline-wrap';
+  div.style.cssText = 'margin-top:0.5rem;display:none';
+  div.innerHTML = '<div class="sub-label">Net history <span class="hint-inline">(→3 Rx | ↑ Tx, last 60 s)</span></div>'
+    + '<div style="display:flex;gap:4px">'
+    + '<div style="flex:1"><div class="sub-label" style="font-size:0.7rem">↓ Rx</div>'
+    +   '<canvas id="net-rx-sparkline" class="cpu-sparkline" width="210" height="45"></canvas></div>'
+    + '<div style="flex:1"><div class="sub-label" style="font-size:0.7rem">↑ Tx</div>'
+    +   '<canvas id="net-tx-sparkline" class="cpu-sparkline" width="210" height="45"></canvas></div>'
+    + '</div>';
+  sparkWrap.insertAdjacentElement('afterend', div);
+})();
 
-// Sync quality slider label on load
-setQualityLbl.textContent = `${setQuality.value}%`;
+async function updateNetSparkline() {
+  try {
+    var d = await apiJson('GET', '/api/net/history');
+    if (!d.samples || !d.samples.length) return;
+    var wrap = document.getElementById('net-sparkline-wrap');
+    if (wrap) wrap.style.display = '';
+    drawLineSparkline(
+      document.getElementById('net-rx-sparkline'),
+      d.samples.map(function(s) { return s.rx_bps || 0; }), '#89b4fa');
+    drawLineSparkline(
+      document.getElementById('net-tx-sparkline'),
+      d.samples.map(function(s) { return s.tx_bps || 0; }), '#a6e3a1');
+  } catch (_) {}
+}
 
-logEntry('ttlcd UI ready', 'ok');
+function drawLineSparkline(canvas, data, color) {
+  if (!canvas || !data.length) return;
+  var ctx = canvas.getContext('2d');
+  var W = canvas.width, H = canvas.height;
+  ctx.clearRect(0, 0, W, H);
+  ctx.fillStyle = 'rgba(49,50,68,0.4)';
+  ctx.fillRect(0, 0, W, H);
+  var max = 0;
+  data.forEach(function(v) { if (v > max) max = v; });
+  if (max < 1) max = 1;
+  ctx.beginPath();
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 1.5;
+  var first = true;
+  data.forEach(function(v, i) {
+    var x = (data.length > 1) ? (i / (data.length - 1)) * W : W / 2;
+    var y = H - (v / max) * (H - 4) - 2;
+    if (first) { ctx.moveTo(x, y); first = false; } else ctx.lineTo(x, y);
+  });
+  ctx.stroke();
+}
+
+
+// ─── Mode schedule section ───────────────────────────────────────────────────
+(function injectModeScheduleSection() {
+  if (document.getElementById('sched-hour')) return;
+  var sec = document.createElement('section');
+  sec.id = 'mode-schedule-section';
+  sec.className = 'card';
+  sec.innerHTML = [
+    '<h2>Mode Schedule</h2>',
+    '<p class="card-hint">Automatically switch display modes at specific times of day. The daemon applies the most recently past slot on startup and every 30 seconds.</p>',
+    '<div class="form-row three-col">',
+      '<div class="form-group"><label for="sched-hour">Hour <span class="hint-inline">(0–23)</span></label>',
+        '<input type="number" id="sched-hour" min="0" max="23" value="9"></div>',
+      '<div class="form-group"><label for="sched-minute">Minute <span class="hint-inline">(0–59)</span></label>',
+        '<input type="number" id="sched-minute" min="0" max="59" value="0"></div>',
+      '<div class="form-group"><label for="sched-mode">Mode</label>',
+        '<select id="sched-mode"></select></div>',
+    '</div>',
+    '<div class="form-row two-col">',
+      '<div class="form-group"><label for="sched-label">Label <span class="hint-inline">(opt.)</span></label>',
+        '<input type="text" id="sched-label" placeholder="Work hours" maxlength="40"></div>',
+    '</div>',
+    '<div class="form-actions">',
+      '<button id="sched-add-btn" class="primary">+ Add Slot</button>',
+      '<button id="sched-clear-btn" class="danger-btn">✕ Clear All</button>',
+      '<span id="sched-status"></span>',
+    '</div>',
+    '<ul id="sched-list" class="sched-list" style="margin-top:0.75rem;list-style:none;padding:0"></ul>',
+  ].join('');
+
+  // Insert after dim schedule section
+  var dimSection = document.getElementById('dim-start')?.closest('section');
+  if (dimSection) dimSection.insertAdjacentElement('afterend', sec);
+  else document.body.appendChild(sec);
+
+  // Populate mode select
+  var modeSelect = document.getElementById('sched-mode');
+  if (modeSelect) {
+    var modes = [
+      'clock','big_clock','clock_sysinfo','sysinfo','cpu_detail','network','disk_usage',
+      'process_top','temperature','memory_detail','cpu_graph','net_graph','recent_alerts',
+      'process_memory','disk_io','calendar','stopwatch','metrics','weather','notes',
+      'qr_code','idle'
+    ];
+    modes.forEach(function(m) {
+      var opt = document.createElement('option');
+      opt.value = m;
+      opt.textContent = m.replace(/_/g,' ');
+      modeSelect.appendChild(opt);
+    });
+  }
+
+  document.getElementById('sched-add-btn').addEventListener('click', async function() {
+    var hour   = parseInt(document.getElementById('sched-hour')?.value || 0, 10);
+    var minute = parseInt(document.getElementById('sched-minute')?.value || 0, 10);
+    var mode   = document.getElementById('sched-mode')?.value;
+    var label  = (document.getElementById('sched-label')?.value || '').trim();
+    var statusEl = document.getElementById('sched-status');
+    if (!mode) { setStatusMsg(statusEl, 'Select a mode', false); return; }
+    try {
+      await api('POST', '/api/schedule/mode', { hour, minute, mode, label });
+      setStatusMsg(statusEl, '✓ Slot added', true);
+      log('Schedule: ' + String(hour).padStart(2,'0') + ':' + String(minute).padStart(2,'0') + ' → ' + mode);
+      await fetchModeSchedule();
+    } catch (e) { setStatusMsg(statusEl, 'Error: ' + e.message, false); }
+  });
+
+  document.getElementById('sched-clear-btn').addEventListener('click', async function() {
+    var statusEl = document.getElementById('sched-status');
+    try {
+      await api('DELETE', '/api/schedule/mode');
+      setStatusMsg(statusEl, '✓ Cleared', true);
+      await fetchModeSchedule();
+    } catch (e) { setStatusMsg(statusEl, 'Error: ' + e.message, false); }
+  });
+
+  document.getElementById('sched-list').addEventListener('click', async function(e) {
+    var btn = e.target.closest('[data-sched-remove]');
+    if (!btn) return;
+    var idx = parseInt(btn.dataset.schedRemove, 10);
+    try {
+      await fetch('/api/schedule/mode/' + idx, { method: 'DELETE' });
+      await fetchModeSchedule();
+    } catch (_) {}
+  });
+})();
+
+async function fetchModeSchedule() {
+  try {
+    var entries = await apiJson('GET', '/api/schedule/mode');
+    var list = document.getElementById('sched-list');
+    if (!list) return;
+    list.innerHTML = '';
+    if (!entries.length) {
+      var li = document.createElement('li');
+      li.textContent = 'No schedule entries yet.';
+      li.style.color = 'var(--overlay0)';
+      li.style.fontSize = '0.85rem';
+      list.appendChild(li);
+      return;
+    }
+    entries.forEach(function(entry, idx) {
+      var li = document.createElement('li');
+      li.className = 'sched-entry';
+      var h = String(entry.hour).padStart(2,'0');
+      var m = String(entry.minute).padStart(2,'0');
+      li.innerHTML = '<span class="sched-time mono">' + h + ':' + m + '</span>'
+        + '<span class="sched-mode">' + entry.mode.replace(/_/g,' ') + '</span>'
+        + (entry.label ? '<span class="sched-label">' + escHtml(entry.label) + '</span>' : '')
+        + '<button class="sched-remove small-btn" data-sched-remove="' + idx + '" title="Remove">✕</button>';
+      list.appendChild(li);
+    });
+  } catch (_) {}
+}
+
+
+// ─── Pomodoro section ────────────────────────────────────────────────────────
+(function injectPomodoroSection() {
+  if (document.getElementById('pomo-start-btn')) return;
+  var sec = document.createElement('section');
+  sec.id = 'pomodoro-section';
+  sec.className = 'card';
+  sec.innerHTML = [
+    '<h2>🍅 Pomodoro Timer</h2>',
+    '<p class="card-hint">Focus timer: 25 min work → 5 min break → repeat. After 4 sessions, take a 15 min long break.</p>',
+    '<div id="pomo-status-row" style="display:flex;align-items:center;gap:1rem;flex-wrap:wrap;margin-bottom:0.75rem">',
+    '  <div id="pomo-phase-badge" class="badge" style="font-size:1rem;padding:0.3rem 0.7rem">—</div>',
+    '  <div id="pomo-time" style="font-family:var(--mono-font);font-size:2rem;color:var(--teal);min-width:5rem">--:--</div>',
+    '  <div id="pomo-sessions" style="font-size:0.85rem;color:var(--overlay0)"></div>',
+    '</div>',
+    '<div class="form-row" style="gap:0.5rem;flex-wrap:wrap">',
+    '  <button id="pomo-start-btn"  class="btn-primary" style="min-width:6rem">▶ Start</button>',
+    '  <button id="pomo-stop-btn"   class="btn-secondary" style="min-width:6rem" title="Stop and return to previous mode">⏹ Stop</button>',
+    '  <button id="pomo-pause-btn"  class="btn-secondary" style="min-width:6rem">⏸ Pause</button>',
+    '  <button id="pomo-skip-btn"   class="btn-secondary" style="min-width:6rem" title="Skip to next phase">⏭ Skip</button>',
+    '  <button id="pomo-reset-btn"  class="btn-danger"    style="min-width:6rem" title="Reset all sessions">↺ Reset</button>',
+    '</div>',
+    '<details style="margin-top:0.75rem">',
+    '  <summary style="cursor:pointer;color:var(--subtext0);font-size:0.85rem">Configure durations</summary>',
+    '  <div class="form-row two-col" style="margin-top:0.5rem">',
+    '    <div class="form-group"><label>Work (min)</label><input type="number" id="pomo-work-mins"  value="25" min="1" max="120" style="width:80px"></div>',
+    '    <div class="form-group"><label>Short break (min)</label><input type="number" id="pomo-short-mins" value="5"  min="1" max="60"  style="width:80px"></div>',
+    '    <div class="form-group"><label>Long break (min)</label><input type="number"  id="pomo-long-mins"  value="15" min="1" max="120" style="width:80px"></div>',
+    '    <div class="form-group"><label>Sessions / set</label><input type="number"    id="pomo-interval"   value="4"  min="1" max="12"  style="width:80px"></div>',
+    '  </div>',
+    '  <button id="pomo-config-btn" class="btn-secondary" style="margin-top:0.4rem">Apply Config</button>',
+    '</details>'
+  ].join('\n');
+
+  // Insert before the mode-schedule section
+  var schedSec = document.getElementById('mode-schedule-section');
+  if (schedSec) {
+    schedSec.parentNode.insertBefore(sec, schedSec);
+  } else {
+    document.querySelector('main').appendChild(sec);
+  }
+
+  // Button handlers
+  document.getElementById('pomo-stop-btn').addEventListener('click', async function() {
+    await apiJson('POST', '/api/pomodoro/stop');
+    fetchPomodoroState();
+    fetchStatus();
+  });
+  document.getElementById('pomo-start-btn').addEventListener('click', async function() {
+    await apiJson('POST', '/api/pomodoro/start');
+    fetchPomodoroState();
+  fetchWorldClock();
+  });
+  document.getElementById('pomo-pause-btn').addEventListener('click', async function() {
+    await apiJson('POST', '/api/pomodoro/pause');
+    fetchPomodoroState();
+  fetchWorldClock();
+  });
+  document.getElementById('pomo-skip-btn').addEventListener('click', async function() {
+    await apiJson('POST', '/api/pomodoro/skip');
+    fetchPomodoroState();
+  fetchWorldClock();
+  });
+  document.getElementById('pomo-reset-btn').addEventListener('click', async function() {
+    if (!confirm('Reset all Pomodoro sessions?')) return;
+    await apiJson('POST', '/api/pomodoro/reset');
+    fetchPomodoroState();
+  fetchWorldClock();
+  });
+  document.getElementById('pomo-config-btn').addEventListener('click', async function() {
+    var body = {
+      work_mins:           parseInt(document.getElementById('pomo-work-mins').value)  || 25,
+      short_break_mins:    parseInt(document.getElementById('pomo-short-mins').value) || 5,
+      long_break_mins:     parseInt(document.getElementById('pomo-long-mins').value)  || 15,
+      long_break_interval: parseInt(document.getElementById('pomo-interval').value)   || 4,
+    };
+    await apiJson('POST', '/api/pomodoro/config', body);
+    fetchPomodoroState();
+  fetchWorldClock();
+  });
+})();
+
+async function fetchPomodoroState() {
+  try {
+    var d = await apiJson('GET', '/api/pomodoro');
+    var badge = document.getElementById('pomo-phase-badge');
+    var timeEl = document.getElementById('pomo-time');
+    var sessEl = document.getElementById('pomo-sessions');
+    if (!badge) return;
+
+    var phaseLabel = { work: '🍅 Focus', short_break: '☕ Short Break', long_break: '🌿 Long Break' }[d.phase] || d.phase;
+    badge.textContent = phaseLabel;
+    badge.style.background = d.phase === 'work' ? 'var(--red)' : d.phase === 'short_break' ? 'var(--green)' : 'var(--teal)';
+    badge.style.color = 'var(--base)';
+
+    var rem = Math.max(0, d.remaining_secs);
+    timeEl.textContent = String(Math.floor(rem / 60)).padStart(2,'0') + ':' + String(rem % 60).padStart(2,'0');
+    timeEl.style.color = d.running ? 'var(--teal)' : 'var(--overlay0)';
+
+    var dots = '';
+    for (var i = 0; i < d.long_break_interval; i++) {
+      var filled = i < d.sessions_in_set;
+      var active = d.phase === 'work' && i === d.sessions_in_set;
+      dots += '<span style="display:inline-block;width:12px;height:12px;border-radius:50%;margin:0 3px;background:' +
+        (filled ? 'var(--red)' : active ? 'var(--overlay0)' : 'var(--surface0)') + '"></span>';
+    }
+    sessEl.innerHTML = dots + ' &nbsp;' + d.completed_sessions + ' completed';
+
+    // Update config inputs if not focused
+    var fields = ['pomo-work-mins','pomo-short-mins','pomo-long-mins','pomo-interval'];
+    var vals = [d.work_secs/60, d.short_break_secs/60, d.long_break_secs/60, d.long_break_interval];
+    fields.forEach(function(id, i) {
+      var el = document.getElementById(id);
+      if (el && document.activeElement !== el) el.value = vals[i];
+    });
+  } catch (_) {}
+}
+
+
+
+// ─── Ticker section ───────────────────────────────────────────────────────────
+(function injectTickerSection() {
+  if (document.getElementById('ticker-send-btn')) return;
+  var sec = document.createElement('section');
+  sec.id = 'ticker-section';
+  sec.className = 'card';
+  sec.innerHTML = [
+    '<h2>📡 Scrolling Ticker</h2>',
+    '<p class="card-hint">Display a scrolling text message on the panel. Useful for long announcements or notifications.</p>',
+    '<div class="form-row two-col" style="align-items:flex-end">',
+    '  <div class="form-group" style="flex:3"><label>Ticker Text</label>',
+    '    <input type="text" id="ticker-text" placeholder="Your scrolling message here…" style="width:100%"></div>',
+    '  <div class="form-group" style="flex:1"><label>Color</label>',
+    '    <select id="ticker-color"><option value="blue">Blue</option><option value="green">Green</option>',
+    '      <option value="yellow">Yellow</option><option value="red">Red</option>',
+    '      <option value="teal">Teal</option><option value="mauve">Mauve</option>',
+    '      <option value="peach">Peach</option><option value="white">White</option></select></div>',
+    '</div>',
+    '<div class="form-row" style="gap:0.5rem;margin-top:0.5rem">',
+    '  <button id="ticker-send-btn" class="btn-primary">Send to Panel</button>',
+    '  <button id="ticker-stop-btn" class="btn-secondary">Stop Ticker</button>',
+    '</div>'
+  ].join('\n');
+
+  // Insert before world clock section
+  var wcSec = document.getElementById('world-clock-section');
+  if (wcSec) {
+    wcSec.parentNode.insertBefore(sec, wcSec);
+  } else {
+    document.querySelector('main').appendChild(sec);
+  }
+
+  document.getElementById('ticker-send-btn').addEventListener('click', async function() {
+    var text  = document.getElementById('ticker-text').value.trim();
+    var color = document.getElementById('ticker-color').value;
+    if (!text) return;
+    await apiJson('POST', '/api/ticker', { text: text, color: color, switch_mode: true });
+    fetchStatus();
+    showToast('Ticker set: ' + text.substring(0, 40) + (text.length > 40 ? '…' : ''), 'ok', 2500);
+  });
+
+  document.getElementById('ticker-stop-btn').addEventListener('click', async function() {
+    await apiJson('DELETE', '/api/ticker');
+    fetchStatus();
+  });
+})();
+
+// ─── World clock section ──────────────────────────────────────────────────────
+(function injectWorldClockSection() {
+  if (document.getElementById('wc-add-btn')) return;
+  var sec = document.createElement('section');
+  sec.id = 'world-clock-section';
+  sec.className = 'card';
+  sec.innerHTML = [
+    '<h2>🌍 World Clock</h2>',
+    '<p class="card-hint">Show up to 4 cities with configurable UTC offsets. Leave empty for defaults (UTC, New York, London, Tokyo).</p>',
+    '<ul id="wc-list" class="sched-list" style="margin-bottom:0.75rem"></ul>',
+    '<div class="form-row" style="gap:0.5rem;flex-wrap:wrap;align-items:flex-end">',
+    '  <div class="form-group" style="flex:2"><label>City name</label>',
+    '    <input type="text" id="wc-city" placeholder="e.g. Berlin" style="width:100%"></div>',
+    '  <div class="form-group" style="flex:1"><label>UTC offset (min)</label>',
+    '    <input type="number" id="wc-offset" value="0" min="-840" max="840" style="width:100%"></div>',
+    '  <button id="wc-add-btn" class="btn-primary">Add City</button>',
+    '  <button id="wc-clear-btn" class="btn-danger" title="Reset to defaults">Reset</button>',
+    '</div>'
+  ].join('\n');
+
+  // Insert after pomodoro section
+  var pomoSec = document.getElementById('pomodoro-section');
+  if (pomoSec && pomoSec.nextSibling) {
+    pomoSec.parentNode.insertBefore(sec, pomoSec.nextSibling);
+  } else if (pomoSec) {
+    pomoSec.parentNode.appendChild(sec);
+  } else {
+    document.querySelector('main').appendChild(sec);
+  }
+
+  document.getElementById('wc-add-btn').addEventListener('click', async function() {
+    var city   = document.getElementById('wc-city').value.trim();
+    var offset = parseInt(document.getElementById('wc-offset').value) || 0;
+    if (!city) return;
+    var existing = await apiJson('GET', '/api/world_clock');
+    var cities = (existing.cities || []).slice(0, 3);
+    cities.push({ city: city, utc_offset_mins: offset });
+    await apiJson('POST', '/api/world_clock', cities);
+    document.getElementById('wc-city').value = '';
+    fetchWorldClock();
+  });
+
+  document.getElementById('wc-clear-btn').addEventListener('click', async function() {
+    await apiJson('DELETE', '/api/world_clock');
+    fetchWorldClock();
+  });
+})();
+
+async function fetchWorldClock() {
+  try {
+    var d = await apiJson('GET', '/api/world_clock');
+    var list = document.getElementById('wc-list');
+    if (!list) return;
+    list.innerHTML = '';
+    if (!d.cities || !d.cities.length) {
+      var li = document.createElement('li');
+      li.textContent = 'Using defaults: UTC, New York, London, Tokyo';
+      li.style.color = 'var(--overlay0)';
+      li.style.fontSize = '0.85rem';
+      list.appendChild(li);
+      return;
+    }
+    d.cities.forEach(function(c, idx) {
+      var li = document.createElement('li');
+      li.className = 'sched-entry';
+      var h = Math.floor(Math.abs(c.utc_offset_mins) / 60);
+      var m = Math.abs(c.utc_offset_mins) % 60;
+      var sign = c.utc_offset_mins >= 0 ? '+' : '-';
+      var offsetStr = 'UTC' + sign + h + (m ? ':' + String(m).padStart(2,'0') : '');
+      li.innerHTML = '<span class="sched-mode" style="color:var(--mauve)">' + escHtml(c.city) + '</span>'
+        + '<span class="sched-time">' + offsetStr + '</span>'
+        + '<button class="sched-remove" data-wc-remove="' + idx + '" title="Remove">✕</button>';
+      list.appendChild(li);
+    });
+
+    list.addEventListener('click', async function(e) {
+      var btn = e.target.closest('[data-wc-remove]');
+      if (!btn) return;
+      var removeIdx = parseInt(btn.dataset.wcRemove);
+      var cities = d.cities.filter(function(_, i) { return i !== removeIdx; });
+      await apiJson('POST', '/api/world_clock', cities);
+      fetchWorldClock();
+    }, { once: true });
+  } catch (_) {}
+}
+
+
+// ─── HTTP Status Monitor section ─────────────────────────────────────────────
+(function injectHttpStatusSection() {
+  if (document.getElementById('hs-add-btn')) return;
+  var sec = document.createElement('section');
+  sec.id = 'http-status-section';
+  sec.className = 'card';
+  sec.innerHTML = [
+    '<h2>🌐 HTTP Monitor</h2>',
+    '<p class="card-hint">Ping up to 10 URLs; status shown on panel with response codes and latency. Checks run every 30 s.</p>',
+    '<ul id="hs-list" class="sched-list" style="margin-bottom:0.75rem"></ul>',
+    '<div class="form-row" style="gap:0.5rem;flex-wrap:wrap;align-items:flex-end">',
+    '  <div class="form-group" style="flex:1"><label>Label</label>',
+    '    <input type="text" id="hs-label" placeholder="My Site" style="width:100%"></div>',
+    '  <div class="form-group" style="flex:2"><label>URL</label>',
+    '    <input type="url" id="hs-url" placeholder="https://example.com" style="width:100%"></div>',
+    '  <button id="hs-add-btn" class="btn-primary">Add</button>',
+    '</div>',
+    '<div class="form-row" style="gap:0.5rem;margin-top:0.5rem">',
+    '  <button id="hs-mode-btn" class="btn-primary" style="flex:1">Switch to HTTP Monitor Mode</button>',
+    '  <button id="hs-check-btn" class="btn-secondary" style="flex:1" title="Trigger immediate check">Check Now</button>',
+    '</div>',
+    '<div id="hs-results" style="margin-top:0.5rem;font-size:0.85rem;color:var(--overlay0)"></div>'
+  ].join('\n');
+
+  // Insert after world-clock section
+  var wcSec = document.getElementById('world-clock-section');
+  if (wcSec && wcSec.nextSibling) {
+    wcSec.parentNode.insertBefore(sec, wcSec.nextSibling);
+  } else if (wcSec) {
+    wcSec.parentNode.appendChild(sec);
+  } else {
+    document.querySelector('main').appendChild(sec);
+  }
+
+  document.getElementById('hs-add-btn').addEventListener('click', async function() {
+    var label = document.getElementById('hs-label').value.trim();
+    var url   = document.getElementById('hs-url').value.trim();
+    if (!label || !url) return;
+    try {
+      await apiJson('POST', '/api/http_status', { label, url });
+      document.getElementById('hs-label').value = '';
+      document.getElementById('hs-url').value = '';
+      fetchHttpStatus();
+      showToast('Monitor added: ' + label, 'ok', 2000);
+    } catch (e) { showToast('Error: ' + e.message, 'alert', 3000); }
+  });
+
+  document.getElementById('hs-mode-btn').addEventListener('click', async function() {
+    await api('POST', '/api/mode', { mode: 'http_status' });
+    fetchStatus();
+  });
+
+  document.getElementById('hs-check-btn').addEventListener('click', function() {
+    showToast('HTTP check triggered (runs in background)', 'ok', 2000);
+    fetchHttpStatus();
+  });
+})();
+
+async function fetchHttpStatus() {
+  try {
+    var d = await apiJson('GET', '/api/http_status');
+    var list = document.getElementById('hs-list');
+    var resultsDiv = document.getElementById('hs-results');
+    if (!list) return;
+    list.innerHTML = '';
+    if (!d.monitors || !d.monitors.length) {
+      var li = document.createElement('li');
+      li.textContent = 'No monitors configured yet.';
+      li.style.color = 'var(--overlay0)';
+      li.style.fontSize = '0.85rem';
+      list.appendChild(li);
+      if (resultsDiv) resultsDiv.textContent = '';
+      return;
+    }
+    d.monitors.forEach(function(m, idx) {
+      var res = (d.results || [])[idx];
+      var ok = res ? res.ok : null;
+      var code = res ? res.status_code : null;
+      var lat  = res ? res.latency_ms  : null;
+      var statusText = ok === null ? '…' : (ok ? '✓' : '✗');
+      var statusColor = ok === null ? 'var(--overlay0)' : (ok ? 'var(--green)' : 'var(--red)');
+      var li = document.createElement('li');
+      li.className = 'sched-entry';
+      li.innerHTML = '<span class="sched-mode" style="color:' + statusColor + '">' + statusText + ' ' + escHtml(m.label) + '</span>'
+        + '<span class="sched-time" style="font-size:0.8rem;color:var(--overlay0)">' + escHtml(m.url.slice(0,40)) + '</span>'
+        + (res ? '<span style="margin-left:0.5rem;font-size:0.8rem;color:' + statusColor + '">' + (code || 'timeout') + (lat ? ' ' + lat + 'ms' : '') + '</span>' : '')
+        + '<button class="sched-remove" data-hs-remove="' + idx + '" title="Remove">✕</button>';
+      list.appendChild(li);
+    });
+
+    list.addEventListener('click', async function(e) {
+      var btn = e.target.closest('[data-hs-remove]');
+      if (!btn) return;
+      var idx = parseInt(btn.dataset.hsRemove);
+      await api('DELETE', '/api/http_status/' + idx);
+      fetchHttpStatus();
+    }, { once: true });
+  } catch (_) {}
+}
+
+// ─── Shell Command section ────────────────────────────────────────────────────
+(function injectShellCmdSection() {
+  if (document.getElementById('sc-run-btn')) return;
+  var sec = document.createElement('section');
+  sec.id = 'shell-cmd-section';
+  sec.className = 'card';
+  sec.innerHTML = [
+    '<h2>💻 Shell Command</h2>',
+    '<p class="card-hint">Execute a shell command and display stdout on the panel. Refreshes on the configured interval.</p>',
+    '<div class="form-group"><label>Command</label>',
+    '  <input type="text" id="sc-cmd" placeholder="uptime && df -h | head -4" style="width:100%"></div>',
+    '<div class="form-row" style="gap:0.5rem;align-items:flex-end">',
+    '  <div class="form-group" style="flex:1"><label>Refresh (seconds; 0 = manual)</label>',
+    '    <input type="number" id="sc-interval" value="10" min="0" style="width:100%"></div>',
+    '  <button id="sc-run-btn" class="btn-primary">Set &amp; Run</button>',
+    '  <button id="sc-now-btn" class="btn-secondary" title="Force re-run now">↺ Now</button>',
+    '  <button id="sc-clear-btn" class="btn-danger">✕</button>',
+    '</div>',
+    '<div id="sc-output" style="font-family:monospace;font-size:0.8rem;background:var(--crust);border-radius:6px;padding:0.6rem;margin-top:0.5rem;white-space:pre-wrap;max-height:150px;overflow-y:auto;color:var(--text)"></div>'
+  ].join('\n');
+
+  // Insert after http-status section
+  var hsSec = document.getElementById('http-status-section');
+  if (hsSec && hsSec.nextSibling) {
+    hsSec.parentNode.insertBefore(sec, hsSec.nextSibling);
+  } else if (hsSec) {
+    hsSec.parentNode.appendChild(sec);
+  } else {
+    document.querySelector('main').appendChild(sec);
+  }
+
+  document.getElementById('sc-run-btn').addEventListener('click', async function() {
+    var cmd      = document.getElementById('sc-cmd').value.trim();
+    var interval = parseInt(document.getElementById('sc-interval').value) || 10;
+    if (!cmd) return;
+    try {
+      await apiJson('POST', '/api/shell_cmd', { cmd, interval_secs: interval, switch_mode: true });
+      showToast('Command set, running…', 'ok', 2000);
+      setTimeout(fetchShellCmd, 2000);
+    } catch (e) { showToast('Error: ' + e.message, 'alert', 3000); }
+  });
+
+  document.getElementById('sc-now-btn').addEventListener('click', async function() {
+    try {
+      await apiJson('POST', '/api/shell_cmd/run');
+      showToast('Re-running command…', 'ok', 1500);
+      setTimeout(fetchShellCmd, 2000);
+    } catch (e) { showToast('Error: ' + e.message, 'alert', 3000); }
+  });
+
+  document.getElementById('sc-clear-btn').addEventListener('click', async function() {
+    await api('DELETE', '/api/shell_cmd');
+    document.getElementById('sc-output').textContent = '';
+    document.getElementById('sc-cmd').value = '';
+    fetchStatus();
+    showToast('Shell command cleared', 'ok', 1500);
+  });
+})();
+
+async function fetchShellCmd() {
+  try {
+    var d = await apiJson('GET', '/api/shell_cmd');
+    var out = document.getElementById('sc-output');
+    var cmdInput = document.getElementById('sc-cmd');
+    if (!out) return;
+    if (cmdInput && d.cmd) cmdInput.value = d.cmd;
+    if (d.output) {
+      out.style.color = d.exit_ok ? 'var(--text)' : 'var(--red)';
+      out.textContent = d.output;
+    } else {
+      out.textContent = d.cmd ? '(no output yet)' : '(no command set)';
+    }
+  } catch (_) {}
+}
+
+// ─── Ping Monitor section ────────────────────────────────────────────────────
+(function injectPingSection() {
+  if (document.getElementById('pm-add-btn')) return;
+  var sec = document.createElement('section');
+  sec.id = 'ping-section';
+  sec.className = 'card';
+  sec.innerHTML = [
+    '<h2>📶 Ping Monitor</h2>',
+    '<p class="card-hint">ICMP ping up to 12 hosts; displays RTT and packet loss on panel. Checks run every 10 s.</p>',
+    '<ul id="pm-list" class="sched-list" style="margin-bottom:0.75rem"></ul>',
+    '<div class="form-row" style="gap:0.5rem;flex-wrap:wrap;align-items:flex-end">',
+    '  <div class="form-group" style="flex:1"><label>Label</label>',
+    '    <input type="text" id="pm-label" placeholder="Router" style="width:100%"></div>',
+    '  <div class="form-group" style="flex:2"><label>Host / IP</label>',
+    '    <input type="text" id="pm-host" placeholder="192.168.1.1" style="width:100%"></div>',
+    '  <button id="pm-add-btn" class="btn-primary">Add</button>',
+    '</div>',
+    '<div class="form-row" style="gap:0.5rem;margin-top:0.5rem">',
+    '  <button id="pm-mode-btn" class="btn-primary" style="flex:1">Switch to Ping Monitor Mode</button>',
+    '</div>',
+    '<div id="pm-results" style="margin-top:0.5rem;font-size:0.85rem;color:var(--overlay0)"></div>'
+  ].join('\n');
+
+  var scSec = document.getElementById('shell-cmd-section');
+  if (scSec && scSec.nextSibling) {
+    scSec.parentNode.insertBefore(sec, scSec.nextSibling);
+  } else if (scSec) {
+    scSec.parentNode.appendChild(sec);
+  } else {
+    document.querySelector('main').appendChild(sec);
+  }
+
+  document.getElementById('pm-add-btn').addEventListener('click', async function() {
+    var label = document.getElementById('pm-label').value.trim();
+    var host  = document.getElementById('pm-host').value.trim();
+    if (!label || !host) return;
+    try {
+      await apiJson('POST', '/api/ping_monitor', { label, host });
+      document.getElementById('pm-label').value = '';
+      document.getElementById('pm-host').value = '';
+      fetchPing();
+      showToast('Ping host added: ' + label, 'ok', 2000);
+    } catch (e) { showToast('Error: ' + e.message, 'alert', 3000); }
+  });
+
+  document.getElementById('pm-mode-btn').addEventListener('click', async function() {
+    await api('POST', '/api/mode', { mode: 'ping_monitor' });
+    fetchStatus();
+  });
+})();
+
+async function fetchPing() {
+  try {
+    var d = await apiJson('GET', '/api/ping_monitor');
+    var list = document.getElementById('pm-list');
+    if (!list) return;
+    list.innerHTML = '';
+    if (!d.hosts || !d.hosts.length) {
+      var li = document.createElement('li');
+      li.textContent = 'No hosts configured yet.';
+      li.style.color = 'var(--overlay0)';
+      li.style.fontSize = '0.85rem';
+      list.appendChild(li);
+      return;
+    }
+    d.hosts.forEach(function(h, idx) {
+      var res = (d.results || [])[idx];
+      var lat = res ? res.latency_ms : null;
+      var loss = res ? res.loss_pct : null;
+      var ok = lat !== null && lat !== undefined;
+      var statusColor = ok ? (lat < 50 ? 'var(--green)' : lat < 200 ? 'var(--yellow)' : 'var(--peach)') : 'var(--red)';
+      var latStr = ok ? lat.toFixed(1) + ' ms' : 'timeout';
+      var lossStr = (loss && loss > 0) ? ' ' + loss.toFixed(0) + '% loss' : '';
+      var li = document.createElement('li');
+      li.className = 'sched-entry';
+      li.innerHTML = '<span class="sched-mode" style="color:' + statusColor + '">' + escHtml(h.label) + '</span>'
+        + '<span class="sched-time" style="font-size:0.8rem;color:var(--overlay0)">' + escHtml(h.host) + '</span>'
+        + (res ? '<span style="margin-left:0.5rem;font-size:0.8rem;color:' + statusColor + '">' + latStr + lossStr + '</span>' : '')
+        + '<button class="sched-remove" data-pm-remove="' + idx + '" title="Remove">✕</button>';
+      list.appendChild(li);
+    });
+
+    list.addEventListener('click', async function(e) {
+      var btn = e.target.closest('[data-pm-remove]');
+      if (!btn) return;
+      var idx = parseInt(btn.dataset.pmRemove);
+      await api('DELETE', '/api/ping_monitor/' + idx);
+      fetchPing();
+    }, { once: true });
+  } catch (_) {}
+}
+
+// ─── Keyboard shortcuts ───────────────────────────────────────────────────────
+document.addEventListener('keydown', e => {
+  // Don't fire shortcuts when typing in a text input
+  const tag = document.activeElement.tagName;
+  if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+  if (e.metaKey || e.ctrlKey) return;
+
+  const modeList = Array.from(modeBtns).map(b => b.dataset.mode);
+
+  switch (e.key) {
+    case ' ':
+      e.preventDefault();
+      document.getElementById('sw-start-btn')?.click();
+      break;
+    case 'l':
+      document.getElementById('sw-lap-btn')?.click();
+      break;
+    case 'f':
+      freezeBtn.click();
+      break;
+    case 'w':
+      document.getElementById('weather-fetch-btn')?.click();
+      break;
+    case 'D':  // Shift+D = Dashboard mode
+      api('POST', '/api/mode', { mode: 'dashboard' }).then(() => fetchStatus()).catch(() => {});
+      break;
+    case 'H':  // Shift+H = HTTP Monitor mode
+      api('POST', '/api/mode', { mode: 'http_status' }).then(() => fetchStatus()).catch(() => {});
+      break;
+    case 'P':  // Shift+P = Pomodoro start/pause toggle
+      (async () => {
+        try {
+          var d = await apiJson('GET', '/api/pomodoro');
+          await apiJson('POST', d.running ? '/api/pomodoro/pause' : '/api/pomodoro/start');
+          fetchPomodoroState();
+        } catch (_) {}
+      })();
+      break;
+    case 'S':  // Shift+S = Pomodoro skip phase
+      (async () => {
+        try {
+          await apiJson('POST', '/api/pomodoro/skip');
+          fetchPomodoroState();
+          showToast('Pomodoro phase skipped', 'ok', 2000);
+        } catch (_) {}
+      })();
+      break;
+    case 'Escape':
+      if (returnBtn.style.display !== 'none') returnBtn.click();
+      break;
+    case 'ArrowRight':
+    case 'n': {
+      e.preventDefault();
+      api('POST', '/api/mode/next').then(() => fetchStatus()).catch(() => {});
+      break;
+    }
+    case 'ArrowLeft':
+    case 'p': {
+      e.preventDefault();
+      api('POST', '/api/mode/prev').then(() => fetchStatus()).catch(() => {});
+      break;
+    }
+    default:
+      if (e.key >= '1' && e.key <= '9') {
+        const idx = parseInt(e.key, 10) - 1;
+        if (modeList[idx]) {
+          api('POST', '/api/mode', { mode: modeList[idx] }).then(() => {
+            updateActiveModeButton(modeList[idx]);
+          }).catch(() => {});
+        }
+      }
+  }
+});
+
+// ─── Settings export / import ─────────────────────────────────────────────────
+(function injectSettingsIO() {
+  if ($('settings-import-btn')) return;
+  const section = document.createElement('section');
+  section.className = 'card';
+  section.innerHTML = `
+    <h2>Settings Backup</h2>
+    <p class="card-hint">Export or import all daemon settings: presets, profiles, thresholds, dim schedule, notes, and metrics.</p>
+    <div class="form-actions">
+      <a id="settings-export-btn" href="/api/settings/export" download="ttlcd-settings.json"
+         class="btn-link" style="text-decoration:none;display:inline-block">⬇ Export All Settings</a>
+      <label class="btn-link" style="cursor:pointer;display:inline-block">
+        ⬆ Import Settings
+        <input type="file" id="settings-import-input" accept=".json" hidden>
+      </label>
+      <span id="settings-io-status"></span>
+    </div>
+  `;
+  // Insert before the log section
+  document.querySelector('.log-card')?.insertAdjacentElement('beforebegin', section);
+
+  document.getElementById('settings-import-input')?.addEventListener('change', async function() {
+    const file = this.files?.[0];
+    if (!file) return;
+    const statusEl = $('settings-io-status');
+    try {
+      const text = await file.text();
+      const json = JSON.parse(text);
+      const r    = await api('POST', '/api/settings/import', json);
+      if (!r.ok) throw new Error(await r.text());
+      const d = await r.json();
+      setStatusMsg(statusEl, `✓ Imported: ${(d.applied||[]).join(', ')}`, true);
+      log(`Settings imported from ${file.name}: ${d.count} section(s)`);
+      // Refresh UI state
+      setQuality.dataset.synced    = '';
+      setOrient.dataset.synced     = '';
+      setBrightness.dataset.synced = '';
+      await fetchPresets();
+      await fetchProfiles();
+      await fetchThresholds();
+      await fetchDimSchedule();
+      await fetchCachedNotes();
+      await fetchMetrics();
+    } catch (e) {
+      setStatusMsg($('settings-io-status'), `Error: ${e.message}`, false);
+      log(`Settings import error: ${e.message}`, 'err');
+    }
+    this.value = '';
+  });
+})();
+
+// ─── Polling intervals ────────────────────────────────────────────────────────
+function startPolling() {
+  fetchStatus();
+  fetchPanelInfo();
+  fetchHistory();
+  fetchPresets();
+  fetchStopwatch();
+  fetchThresholds();
+  fetchDimSchedule();
+  fetchMetrics();
+  fetchProfiles();
+  fetchSnapshot();
+  fetchCachedWeather();
+  fetchCachedNotes();
+  fetchWebhookConfig();
+  fetchFpsHistory();
+  updateNetSparkline();
+  fetchQrState();
+  fetchModeSchedule();
+  fetchPomodoroState();
+  fetchWorldClock();
+  fetchHttpStatus();
+  fetchShellCmd();
+  fetchPing();
+
+  statusPollTimer  = setInterval(fetchStatus,    3000);
+  snapshotTimer    = setInterval(fetchSnapshot,  5000);
+  setInterval(fetchHistory,       30000);
+  setInterval(fetchStopwatch,     2000);
+  setInterval(fetchPomodoroState, 3000);
+  setInterval(fetchFpsHistory,    5000);
+  setInterval(updateNetSparkline, 10000);
+  setInterval(fetchShellCmd,      8000);
+  setInterval(fetchHttpStatus,    35000);
+  setInterval(fetchPing,          15000);
+}
+
+// ─── Boot ─────────────────────────────────────────────────────────────────────
+initSSE();
+startPolling();
+log('ttlcd web UI connected');

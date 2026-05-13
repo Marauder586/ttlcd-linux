@@ -8,10 +8,11 @@ use std::path::Path;
 use std::time::Duration;
 
 use ab_glyph::{Font as AbFont, FontRef, PxScale, ScaleFont};
-use chrono::Local;
+use chrono::{Datelike, Local, Timelike};
 use image::{DynamicImage, Rgb, RgbImage};
 use imageproc::drawing::{draw_filled_rect_mut, draw_hollow_rect_mut, draw_text_mut};
 use imageproc::rect::Rect;
+use qrcode::QrCode;
 use sysinfo::System;
 
 // ─── Embedded font data ──────────────────────────────────────────────────────
@@ -41,6 +42,8 @@ const RED:      Rgb<u8> = Rgb([243, 139, 168]);  // red
 const MAUVE:    Rgb<u8> = Rgb([203, 166, 247]);  // mauve
 const TEAL:     Rgb<u8> = Rgb([148, 226, 213]);  // teal
 const PEACH:    Rgb<u8> = Rgb([250, 179, 135]);  // peach
+const CRUST:    Rgb<u8> = Rgb([17,  17,  27]);   // crust (near-black, for QR modules)
+const WHITE:    Rgb<u8> = Rgb([255, 255, 255]);  // pure white (for QR quiet zone)
 
 // ─── Font helpers ─────────────────────────────────────────────────────────────
 
@@ -739,6 +742,23 @@ impl NamedColor {
             NamedColor::White  => TEXT,
         }
     }
+
+    /// Public alias for `to_rgb`, usable from other crates/modules.
+    pub fn to_rgb_pub(&self) -> Rgb<u8> { self.to_rgb() }
+
+    /// Parse a colour name case-insensitively; falls back to Blue.
+    pub fn from_str_loose(s: &str) -> Self {
+        match s.to_lowercase().as_str() {
+            "green"  => NamedColor::Green,
+            "yellow" => NamedColor::Yellow,
+            "red"    => NamedColor::Red,
+            "teal"   => NamedColor::Teal,
+            "mauve"  => NamedColor::Mauve,
+            "peach"  => NamedColor::Peach,
+            "white"  => NamedColor::White,
+            _        => NamedColor::Blue,
+        }
+    }
 }
 
 /// Content pushed via `POST /api/text`.
@@ -1062,6 +1082,313 @@ mod tests {
     fn test_recent_alerts_empty_size() {
         assert_panel_size(&render_recent_alerts(&[]));
     }
+
+    #[test]
+    fn test_process_memory_size() {
+        assert_panel_size(&render_process_memory());
+    }
+
+    #[test]
+    fn test_cpu_history_accessor() {
+        push_cpu_history(42.0);
+        let h = get_cpu_history();
+        assert!(!h.is_empty(), "history should have at least one sample");
+        assert!(h.iter().all(|&v| (0.0..=100.0).contains(&v)));
+    }
+
+    #[test]
+    fn test_net_history_accessor() {
+        push_net_history(1024, 512);
+        let (rx, tx) = get_net_history();
+        assert!(!rx.is_empty());
+        assert!(!tx.is_empty());
+        assert_eq!(rx.len(), tx.len());
+    }
+
+    #[test]
+    fn test_calendar_size() {
+        assert_panel_size(&render_calendar());
+    }
+
+    #[test]
+    fn test_boot_splash_size() {
+        assert_panel_size(&render_boot_splash("0.7.0"));
+    }
+
+    #[test]
+    fn test_big_text_banner_single_line() {
+        use image::Rgb;
+        assert_panel_size(&render_big_text_banner(&["99.8%"], "SLA", Rgb([137u8, 180, 250]), true));
+    }
+
+    #[test]
+    fn test_big_text_banner_three_lines() {
+        use image::Rgb;
+        assert_panel_size(&render_big_text_banner(
+            &["99.8%", "Uptime", "Last 30 days"],
+            "SLA",
+            Rgb([166u8, 227, 161]),
+            false,
+        ));
+    }
+
+    #[test]
+    fn test_stopwatch_ready_size() {
+        // fresh state: no elapsed time, not running, no laps
+        assert_panel_size(&render_stopwatch(0, &[], false));
+    }
+
+    #[test]
+    fn test_stopwatch_running_size() {
+        assert_panel_size(&render_stopwatch(75_123, &[], true));
+    }
+
+    #[test]
+    fn test_stopwatch_paused_with_laps() {
+        let laps = vec![15_000u64, 32_500, 61_200, 95_000, 130_800];
+        assert_panel_size(&render_stopwatch(130_800, &laps, false));
+    }
+
+    #[test]
+    fn test_stopwatch_over_one_hour() {
+        assert_panel_size(&render_stopwatch(3_661_500, &[], true));
+    }
+
+    #[test]
+    fn test_format_sw_time_under_minute() {
+        assert_eq!(format_sw_time(0),       "00:00.00");
+        assert_eq!(format_sw_time(1_000),   "00:01.00");
+        assert_eq!(format_sw_time(10),      "00:00.01");
+        assert_eq!(format_sw_time(59_999),  "00:59.99");
+    }
+
+    #[test]
+    fn test_format_sw_time_minutes() {
+        assert_eq!(format_sw_time(60_000),  "01:00.00");
+        assert_eq!(format_sw_time(90_500),  "01:30.50");
+    }
+
+    #[test]
+    fn test_format_sw_time_hours() {
+        assert_eq!(format_sw_time(3_600_000), "1:00:00.00");
+        assert_eq!(format_sw_time(3_661_000), "1:01:01.00");
+    }
+
+    #[test]
+    fn test_metrics_empty_size() {
+        assert_panel_size(&render_metrics("", &[]));
+    }
+
+    #[test]
+    fn test_metrics_with_data_size() {
+        let metrics = vec![
+            Metric::new("CPU", "72.4%"),
+            Metric::new("RAM", "6.1 GB"),
+            Metric::new("Uptime", "3d 4h"),
+            Metric::new("Requests", "1234/s"),
+            Metric::new("Errors", "0.12%"),
+            Metric::new("Latency", "42ms"),
+        ];
+        assert_panel_size(&render_metrics("Dashboard", &metrics));
+    }
+
+    #[test]
+    fn test_metrics_eight_items() {
+        let metrics: Vec<Metric> = (1..=8)
+            .map(|i| Metric { label: format!("Key {i}"), value: format!("{i}"), color: "green".into() })
+            .collect();
+        assert_panel_size(&render_metrics("Full Grid", &metrics));
+    }
+
+    #[test]
+    fn test_weather_empty_size() {
+        assert_panel_size(&render_weather(&WeatherData::default()));
+    }
+
+    #[test]
+    fn test_weather_full_size() {
+        let data = WeatherData {
+            city:          "London".to_string(),
+            temp_c:        Some(14.5),
+            feels_like_c:  Some(12.0),
+            condition:     "Partly cloudy".to_string(),
+            humidity_pct:  Some(72),
+            wind_kmh:      Some(18.0),
+            wind_dir:      "SW".to_string(),
+            high_c:        Some(16.0),
+            low_c:         Some(9.0),
+            visibility_km: Some(10.0),
+            updated_at:    Some(1_700_000_000),
+        };
+        assert_panel_size(&render_weather(&data));
+    }
+
+    #[test]
+    fn test_weather_hot_size() {
+        let data = WeatherData { city: "Dubai".to_string(), temp_c: Some(42.0),
+            condition: "Sunny".to_string(), ..Default::default() };
+        assert_panel_size(&render_weather(&data));
+    }
+
+    #[test]
+    fn test_weather_freezing_size() {
+        let data = WeatherData { city: "Reykjavik".to_string(), temp_c: Some(-12.0),
+            condition: "Snow".to_string(), wind_kmh: Some(35.0), ..Default::default() };
+        assert_panel_size(&render_weather(&data));
+    }
+
+    #[test]
+    fn test_weather_thunder_icon_size() {
+        let data = WeatherData { condition: "Thunderstorm".to_string(), temp_c: Some(20.0), ..Default::default() };
+        assert_panel_size(&render_weather(&data));
+    }
+
+    #[test]
+    fn test_notes_empty_size() {
+        assert_panel_size(&render_notes("", &[]));
+    }
+
+    #[test]
+    fn test_notes_with_items_size() {
+        let items: Vec<String> = (1..=6).map(|i| format!("Note item number {i}")).collect();
+        assert_panel_size(&render_notes("Sprint 42", &items));
+    }
+
+    #[test]
+    fn test_notes_overflow_size() {
+        let items: Vec<String> = (1..=15).map(|i| format!("Task {i}: something to do")).collect();
+        assert_panel_size(&render_notes("Many Notes", &items));
+    }
+
+    #[test]
+    fn test_big_clock_size() {
+        assert_panel_size(&render_big_clock());
+    }
+
+    #[test]
+    fn test_qr_code_url_size() {
+        assert_panel_size(&render_qr_code("https://example.com/test", "Example"));
+    }
+
+    #[test]
+    fn test_qr_code_empty_payload() {
+        // Empty payload → error frame, should still be panel-sized
+        assert_panel_size(&render_qr_code("", "Empty"));
+    }
+
+    #[test]
+    fn test_pomodoro_work_running_size() {
+        assert_panel_size(&render_pomodoro("work", 1440, 1500, 0, true));
+    }
+
+    #[test]
+    fn test_pomodoro_short_break_paused_size() {
+        assert_panel_size(&render_pomodoro("short_break", 120, 300, 1, false));
+    }
+
+    #[test]
+    fn test_pomodoro_long_break_expired_size() {
+        // remaining_secs ≤ 0 should still render (shows 00:00)
+        assert_panel_size(&render_pomodoro("long_break", 0, 900, 0, false));
+    }
+
+    #[test]
+    fn test_battery_size() {
+        // render_battery reads from /sys; on CI it returns "No battery detected" — still 480×480
+        assert_panel_size(&render_battery());
+    }
+
+    #[test]
+    fn test_world_clock_defaults_size() {
+        assert_panel_size(&render_world_clock(&[]));
+    }
+
+    #[test]
+    fn test_world_clock_custom_size() {
+        let cities = vec![
+            ("Tokyo".into(),   540),
+            ("UTC".into(),       0),
+            ("NYC".into(),    -300),
+        ];
+        assert_panel_size(&render_world_clock(&cities));
+    }
+
+    #[test]
+    fn test_ticker_short_text_size() {
+        // Short text fits in frame and is centred
+        assert_panel_size(&render_ticker("Hello!", 0, "blue"));
+    }
+
+    #[test]
+    fn test_ticker_long_text_scrolling() {
+        // Long text scrolls; different positions should still produce panel-sized frames
+        let text = "This is a very long scrolling ticker message that does not fit in one screen width!";
+        assert_panel_size(&render_ticker(text, 0, "green"));
+        assert_panel_size(&render_ticker(text, 400, "red"));
+    }
+
+    #[test]
+    fn test_http_status_empty_size() {
+        assert_panel_size(&render_http_status(&[]));
+    }
+
+    #[test]
+    fn test_http_status_with_results_size() {
+        let results = vec![
+            HttpMonitorResult { label: "Google".into(), url: "https://google.com".into(),
+                status_code: Some(200), latency_ms: Some(45), ok: true },
+            HttpMonitorResult { label: "Down".into(), url: "https://example-down.local".into(),
+                status_code: None, latency_ms: None, ok: false },
+        ];
+        assert_panel_size(&render_http_status(&results));
+    }
+
+    #[test]
+    fn test_shell_cmd_ok_size() {
+        assert_panel_size(&render_shell_cmd("uptime", "14:22:01 up 3 days, load average: 0.12", true, 0));
+    }
+
+    #[test]
+    fn test_shell_cmd_err_size() {
+        assert_panel_size(&render_shell_cmd("bad_cmd", "bash: bad_cmd: not found", false, 1715000000));
+    }
+
+    #[test]
+    fn test_shell_cmd_multiline_size() {
+        let output = "line 1
+line 2
+line 3
+line 4
+line 5
+line 6
+line 7
+line 8";
+        assert_panel_size(&render_shell_cmd("echo lines", output, true, 1715000000));
+    }
+
+    #[test]
+    fn test_ping_monitor_empty_size() {
+        assert_panel_size(&render_ping_monitor(&[]));
+    }
+
+    #[test]
+    fn test_ping_monitor_with_results_size() {
+        let results = vec![
+            PingResult { host: "8.8.8.8".into(), label: "Google DNS".into(),
+                latency_ms: Some(12.3), loss_pct: 0.0 },
+            PingResult { host: "1.1.1.1".into(), label: "Cloudflare".into(),
+                latency_ms: Some(5.8), loss_pct: 0.0 },
+            PingResult { host: "192.168.1.1".into(), label: "Router".into(),
+                latency_ms: None, loss_pct: 100.0 },
+        ];
+        assert_panel_size(&render_ping_monitor(&results));
+    }
+
+    #[test]
+    fn test_dashboard_size() {
+        assert_panel_size(&render_dashboard());
+    }
+
 }
 
 /// Thermal sensor detail — all available temperature components with color-coded bars.
@@ -1596,4 +1923,1904 @@ pub fn render_recent_alerts(entries: &[(u64, bool, &str)]) -> DynamicImage {
     }
 
     DynamicImage::ImageRgb8(img)
+}
+
+
+
+// ─── Top processes by memory ──────────────────────────────────────────────────
+
+/// Top processes ranked by memory usage.
+///
+/// Similar to `render_process_top` but sorted by RAM instead of CPU.
+pub fn render_process_memory() -> DynamicImage {
+    use sysinfo::{ProcessesToUpdate, System};
+    let mut sys = System::new();
+    sys.refresh_processes(ProcessesToUpdate::All, true);
+    sys.refresh_memory();
+
+    let total_mem = sys.total_memory();
+    let used_mem  = sys.used_memory();
+
+    let mut procs: Vec<(String, u64, f32)> = sys.processes().values()
+        .map(|p| (
+            p.name().to_string_lossy().to_string(),
+            p.memory(),
+            p.cpu_usage(),
+        ))
+        .collect();
+    procs.sort_by(|a, b| b.1.cmp(&a.1));
+    procs.truncate(8);
+
+    let mut img  = blank();
+    let bold = font_bold();
+    let mono = font_mono();
+
+    let mut y: i32 = 14;
+
+    // ── Header ─────────────────────────────────────────────────────────────
+    draw_text_mut(&mut img, MAUVE, 20, y, PxScale::from(28.0), &bold, "TOP PROCESSES");
+    let now = Local::now();
+    let tw = text_width(&mono, PxScale::from(20.0), &now.format("%H:%M:%S").to_string());
+    draw_text_mut(&mut img, OVERLAY0, 480 - 20 - tw, y + 4,
+        PxScale::from(20.0), &mono, &now.format("%H:%M:%S").to_string());
+    y += 36;
+
+    // ── Total RAM bar ───────────────────────────────────────────────────────
+    let sm = PxScale::from(18.0);
+    let used_gb  = used_mem  as f32 / 1_073_741_824.0;
+    let total_gb = total_mem as f32 / 1_073_741_824.0;
+    let ram_frac = if total_mem > 0 { used_mem as f32 / total_mem as f32 } else { 0.0 };
+    draw_kv(&mut img, &bold, &mono, sm, y, GREEN, TEXT, "RAM",
+        &format!("{:.1}/{:.1} GB ({:.0}%)", used_gb, total_gb, ram_frac * 100.0));
+    y += 24;
+    draw_bar(&mut img, 20, y, 440, 10, ram_frac, GREEN);
+    y += 18;
+
+    draw_divider(&mut img, y); y += 10;
+
+    // ── Column headers ──────────────────────────────────────────────────────
+    draw_text_mut(&mut img, SUBTEXT, 20,  y, sm, &bold, "PROCESS");
+    draw_text_mut(&mut img, SUBTEXT, 280, y, sm, &bold, "MEM");
+    draw_text_mut(&mut img, SUBTEXT, 370, y, sm, &bold, "CPU%");
+    y += 22;
+    draw_divider(&mut img, y); y += 6;
+
+    // ── Process rows ────────────────────────────────────────────────────────
+    for (name, mem, cpu) in &procs {
+        if y > 455 { break; }
+        let mem_pct = if total_mem > 0 { *mem as f32 / total_mem as f32 } else { 0.0 };
+        let color   = if mem_pct > 0.20 { RED } else if mem_pct > 0.10 { YELLOW } else { TEXT };
+        let n = if name.len() > 20 { format!("{}…", &name[..19]) } else { name.clone() };
+        let mem_s = if *mem >= 1_073_741_824 {
+            format!("{:.1}G", *mem as f32 / 1_073_741_824.0)
+        } else if *mem >= 1_048_576 {
+            format!("{:.0}M", *mem as f32 / 1_048_576.0)
+        } else {
+            format!("{:.0}K", *mem as f32 / 1024.0)
+        };
+        let cpu_s = format!("{:.1}%", cpu);
+        draw_text_mut(&mut img, color, 20,  y, sm, &bold, &n);
+        draw_text_mut(&mut img, color, 280, y, sm, &mono, &mem_s);
+        draw_text_mut(&mut img, OVERLAY0, 370, y, sm, &mono, &cpu_s);
+        y += 22;
+    }
+
+    DynamicImage::ImageRgb8(img)
+}
+
+// ─── Disk I/O rates ───────────────────────────────────────────────────────────
+
+/// Current disk read/write throughput for each block device.
+///
+/// Refreshes disk stats twice with a ~500 ms gap and uses sysinfo's
+/// `DiskUsage::read_bytes` / `written_bytes` (delta since last refresh)
+/// to compute per-second rates.
+pub fn render_disk_io() -> DynamicImage {
+    use sysinfo::{DiskRefreshKind, Disks};
+
+    // First refresh to get I/O counters
+    let mut disks = Disks::new_with_refreshed_list();
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    // Second refresh — read_bytes / written_bytes are deltas since the previous refresh
+    disks.refresh_specifics(false, DiskRefreshKind::everything());
+
+    struct DiskRate {
+        name:      String,
+        read_bps:  u64,
+        write_bps: u64,
+        used_pct:  f32,
+    }
+    let rates: Vec<DiskRate> = disks.iter()
+        .filter_map(|d| {
+            let total = d.total_space();
+            if total == 0 { return None; }
+            let free  = d.available_space();
+            let used  = total - free;
+            let used_pct = used as f32 / total as f32;
+            let io = d.usage();
+            // io.read_bytes / written_bytes are deltas over the ~500 ms window;
+            // multiply by 2 to get approximate bytes/sec.
+            let read_bps  = io.read_bytes * 2;
+            let write_bps = io.written_bytes * 2;
+            Some(DiskRate {
+                name: d.name().to_string_lossy().to_string(),
+                read_bps,
+                write_bps,
+                used_pct,
+            })
+        })
+        .take(6)
+        .collect();
+
+    let mut img  = blank();
+    let bold = font_bold();
+    let mono = font_mono();
+    let sm   = PxScale::from(18.0);
+    let med  = PxScale::from(20.0);
+
+    let mut y: i32 = 14;
+
+    // Header
+    draw_text_mut(&mut img, PEACH, 20, y, PxScale::from(28.0), &bold, "DISK I/O");
+    let now = Local::now();
+    let ts  = now.format("%H:%M:%S").to_string();
+    let tw = text_width(&mono, PxScale::from(20.0), &ts);
+    draw_text_mut(&mut img, OVERLAY0, 480 - 20 - tw, y + 4, PxScale::from(20.0), &mono, &ts);
+    y += 36;
+
+    draw_divider(&mut img, y); y += 10;
+
+    if rates.is_empty() {
+        draw_centered(&mut img, &bold, PxScale::from(22.0), 200, SUBTEXT, "No disks detected");
+        return DynamicImage::ImageRgb8(img);
+    }
+
+    // Column headers
+    draw_text_mut(&mut img, SUBTEXT,  20, y, sm, &bold, "DEVICE");
+    draw_text_mut(&mut img, SUBTEXT, 160, y, sm, &bold, "READ/s");
+    draw_text_mut(&mut img, SUBTEXT, 270, y, sm, &bold, "WRITE/s");
+    draw_text_mut(&mut img, SUBTEXT, 370, y, sm, &bold, "USE%");
+    y += 22;
+    draw_divider(&mut img, y); y += 8;
+
+    for d in &rates {
+        if y > 455 { break; }
+        let n = if d.name.len() > 10 { format!("{}…", &d.name[..9]) } else { d.name.clone() };
+        let r_s = format_bps(d.read_bps);
+        let w_s = format_bps(d.write_bps);
+        let use_s = format!("{:.0}%", d.used_pct * 100.0);
+        let color = if d.used_pct > 0.90 { RED } else if d.used_pct > 0.75 { YELLOW } else { TEXT };
+        draw_text_mut(&mut img, TEAL,  20,  y, med, &bold, &n);
+        draw_text_mut(&mut img, GREEN, 160, y, med, &mono, &r_s);
+        draw_text_mut(&mut img, PEACH, 270, y, med, &mono, &w_s);
+        draw_text_mut(&mut img, color, 370, y, med, &mono, &use_s);
+        // Usage bar
+        draw_bar(&mut img, 20, y + 22, 440, 8, d.used_pct, color);
+        y += 38;
+        draw_divider(&mut img, y); y += 8;
+    }
+
+    DynamicImage::ImageRgb8(img)
+}
+
+// ─── History accessors ────────────────────────────────────────────────────────
+
+/// Return a snapshot of the CPU usage history ring-buffer (oldest first).
+/// Returns an empty Vec if no samples have been pushed yet.
+pub fn get_cpu_history() -> Vec<f32> {
+    cpu_graph_data().iter().cloned().collect()
+}
+
+/// Return a snapshot of the network I/O history ring-buffers (oldest first).
+/// Returns `(rx_bps, tx_bps)` vectors.
+pub fn get_net_history() -> (Vec<u64>, Vec<u64>) {
+    let rx: Vec<u64> = net_rx_history().iter().cloned().collect();
+    let tx: Vec<u64> = net_tx_history().iter().cloned().collect();
+    (rx, tx)
+}
+
+// ─── Calendar renderer ────────────────────────────────────────────────────────
+
+/// Render a full-month calendar with today highlighted.
+///
+/// Layout (480×480):
+/// - Row 1 (y=14):  "MONTH YEAR" centered in BLUE, large
+/// - Row 2 (y=60):  current time right-aligned
+/// - Row 3 (y=72):  day-of-week abbreviations (Mo–Su)
+/// - Row 4 (y=92):  horizontal divider
+/// - Rows 5-10:     6-week day grid (cells 68×58 px)
+pub fn render_calendar() -> DynamicImage {
+    use chrono::NaiveDate;
+
+    let now   = Local::now();
+    let today = now.date_naive();
+    let year  = today.year();
+    let month = today.month();
+
+    // ── Date maths ──────────────────────────────────────────────────────────
+    let first = NaiveDate::from_ymd_opt(year, month, 1).unwrap();
+    // weekday offset: Monday=0 … Sunday=6
+    let start_offset = first.weekday().num_days_from_monday() as i32;
+    let days_in_month: i32 = {
+        let next = if month == 12 {
+            NaiveDate::from_ymd_opt(year + 1, 1, 1)
+        } else {
+            NaiveDate::from_ymd_opt(year, month + 1, 1)
+        }
+        .unwrap();
+        next.signed_duration_since(first).num_days() as i32
+    };
+
+    // ── Layout constants ─────────────────────────────────────────────────────
+    const CELL_W: i32 = 68;
+    const CELL_H: i32 = 58;
+    const LEFT:   i32 = 4;   // left margin so 7×68=476 fits with 4+476+0=480
+    const DOW_Y:  i32 = 72;
+    const GRID_Y: i32 = 96;
+
+    let mut img  = blank();
+    let bold = font_bold();
+    let mono = font_mono();
+
+    // ── Header: Month + Year ─────────────────────────────────────────────────
+    let month_name = match month {
+        1  => "JANUARY",   2  => "FEBRUARY", 3  => "MARCH",
+        4  => "APRIL",     5  => "MAY",       6  => "JUNE",
+        7  => "JULY",      8  => "AUGUST",    9  => "SEPTEMBER",
+        10 => "OCTOBER",   11 => "NOVEMBER",  12 => "DECEMBER",
+        _  => "?",
+    };
+    let header = format!("{} {}", month_name, year);
+    draw_centered(&mut img, &bold, PxScale::from(36.0), 14, BLUE, &header);
+
+    // Time top-right
+    let ts = now.format("%H:%M").to_string();
+    let tw = text_width(&mono, PxScale::from(22.0), &ts);
+    draw_text_mut(&mut img, OVERLAY0, 480 - 20 - tw, 18, PxScale::from(22.0), &mono, &ts);
+
+    // ── Day-of-week row ───────────────────────────────────────────────────────
+    let dow_labels = ["Mo", "Tu", "We", "Th", "Fr", "Sa", "Su"];
+    for (col, &label) in dow_labels.iter().enumerate() {
+        let cx = LEFT + col as i32 * CELL_W + CELL_W / 2;
+        let lw = text_width(&bold, PxScale::from(20.0), label);
+        let col_color = if col >= 5 { PEACH } else { SUBTEXT };
+        draw_text_mut(&mut img, col_color, cx - lw / 2, DOW_Y, PxScale::from(20.0), &bold, label);
+    }
+
+    draw_divider(&mut img, GRID_Y - 2);
+
+    // ── Day grid ──────────────────────────────────────────────────────────────
+    for day in 1..=days_in_month {
+        let slot  = start_offset + day - 1;
+        let col   = slot % 7;
+        let row   = slot / 7;
+        let cx    = LEFT + col * CELL_W;
+        let cy    = GRID_Y + row * CELL_H;
+
+        let is_today   = day == today.day() as i32;
+        let is_weekend = col >= 5;
+
+        // Highlight today
+        if is_today {
+            draw_filled_rect_mut(
+                &mut img,
+                Rect::at(cx + 4, cy + 2).of_size((CELL_W - 8) as u32, (CELL_H - 6) as u32),
+                BLUE,
+            );
+        }
+
+        let label = format!("{:2}", day);
+        let font_scale = PxScale::from(if is_today { 28.0 } else { 24.0 });
+        let lw    = text_width(&bold, font_scale, label.trim());
+        let text_x = cx + (CELL_W - lw) / 2;
+        let text_y = cy + (CELL_H - 24) / 2;
+
+        let color = if is_today {
+            Rgb([30u8, 30, 46]) // dark bg text on blue highlight
+        } else if is_weekend {
+            PEACH
+        } else {
+            TEXT
+        };
+
+        draw_text_mut(&mut img, color, text_x, text_y, font_scale, &bold, label.trim());
+    }
+
+    DynamicImage::ImageRgb8(img)
+}
+
+
+// ─── Big-text banner renderer ─────────────────────────────────────────────────
+
+/// Render 1–3 lines of large, centred text — useful for dashboard headlines.
+///
+/// `lines`: slice of up to 3 strings.  Empty strings are skipped.
+/// `label`: small subtitle printed at the bottom centre (pass `""` to omit).
+/// `color`: accent `Rgb` used for the first/largest line.
+/// `show_time`: if true, print the current time in the top-right corner.
+pub fn render_big_text_banner(
+    lines:     &[&str],
+    label:     &str,
+    color:     Rgb<u8>,
+    show_time: bool,
+) -> DynamicImage {
+    let mut img = blank();
+    let bold = font_bold();
+    let mono = font_mono();
+
+    if show_time {
+        let ts = Local::now().format("%H:%M:%S").to_string();
+        let tw = text_width(&mono, PxScale::from(20.0), &ts);
+        draw_text_mut(&mut img, OVERLAY0, 480 - 20 - tw, 14, PxScale::from(20.0), &mono, &ts);
+    }
+
+    let non_empty: Vec<&str> = lines.iter().copied().filter(|s| !s.is_empty()).take(3).collect();
+    let count = non_empty.len();
+
+    // Assign font sizes based on line count
+    let sizes: [f32; 3] = match count {
+        1 => [80.0, 0.0, 0.0],
+        2 => [64.0, 48.0, 0.0],
+        _ => [56.0, 44.0, 36.0],
+    };
+
+    let total_h: f32 = sizes.iter().take(count).sum::<f32>() + (count as f32 - 1.0) * 12.0;
+    let start_y = ((480.0 - total_h) / 2.0) as i32;
+    let mut cy = start_y;
+
+    for (i, &line) in non_empty.iter().enumerate() {
+        let scale = PxScale::from(sizes[i]);
+        let lw    = text_width(&bold, scale, line);
+        let x     = ((480 - lw) / 2).max(10);
+        let col   = if i == 0 { color } else { TEXT };
+        draw_text_mut(&mut img, col, x, cy, scale, &bold, line);
+        cy += sizes[i] as i32 + 12;
+    }
+
+    if !label.is_empty() {
+        draw_centered(&mut img, &bold, PxScale::from(22.0), 448, SUBTEXT, label);
+    }
+
+    DynamicImage::ImageRgb8(img)
+}
+
+
+// ─── Boot splash renderer ─────────────────────────────────────────────────────
+
+/// Render a startup splash frame shown while the daemon is initializing.
+///
+/// Displays "ttlcd" in large text, the version string, and a subtle "Starting…"
+/// status line at the bottom.
+pub fn render_boot_splash(version: &str) -> DynamicImage {
+    let mut img = blank();
+    let bold = font_bold();
+    let mono = font_mono();
+
+    // Large brand name
+    draw_centered(&mut img, &bold, PxScale::from(96.0), 120, MAUVE, "ttlcd");
+
+    // Subtitle
+    draw_centered(&mut img, &bold, PxScale::from(28.0), 228, BLUE, "USB LCD Panel Daemon");
+
+    // Version
+    let ver_str = format!("v{version}");
+    draw_centered(&mut img, &mono, PxScale::from(22.0), 270, OVERLAY0, &ver_str);
+
+    // Divider
+    draw_divider(&mut img, 310);
+
+    // Animated dots placeholder — just static "Starting…" for now
+    draw_centered(&mut img, &mono, PxScale::from(20.0), 326, SUBTEXT, "Starting…");
+
+    // Date/time
+    let ts = Local::now().format("%Y-%m-%d  %H:%M:%S").to_string();
+    draw_centered(&mut img, &mono, PxScale::from(20.0), 440, OVERLAY0, &ts);
+
+    DynamicImage::ImageRgb8(img)
+}
+
+
+// ─── Stopwatch renderer ───────────────────────────────────────────────────────
+
+/// Format milliseconds as a stopwatch string: "MM:SS.cc" (or "H:MM:SS.cc" for ≥1 h).
+pub fn format_sw_time(ms: u64) -> String {
+    let h  = ms / 3_600_000;
+    let m  = (ms % 3_600_000) / 60_000;
+    let s  = (ms % 60_000) / 1_000;
+    let cs = (ms % 1_000) / 10;
+    if h > 0 {
+        format!("{:01}:{:02}:{:02}.{:02}", h, m, s, cs)
+    } else {
+        format!("{:02}:{:02}.{:02}", m, s, cs)
+    }
+}
+
+/// Stopwatch display.
+///
+/// # Arguments
+/// * `elapsed_ms` — total elapsed milliseconds to display.
+/// * `laps`       — slice of accumulated-ms values at each recorded lap.
+/// * `running`    — `true` if the stopwatch is currently ticking.
+///
+/// Layout:
+/// - Header row "STOPWATCH" with current time top-right.
+/// - Large centred elapsed time ("MM:SS" big + ".cc" smaller).
+/// - Status badge: "● RUNNING" (green) / "■ PAUSED" (yellow) / "■ READY" (dim).
+/// - Up to 4 most-recent laps with lap number, cumulative time, and Δ split.
+pub fn render_stopwatch(elapsed_ms: u64, laps: &[u64], running: bool) -> DynamicImage {
+    let mut img  = blank();
+    let bold = font_bold();
+    let mono = font_mono();
+
+    // ── Header ────────────────────────────────────────────────────────────────
+    draw_centered(&mut img, &bold, PxScale::from(20.0), 8, OVERLAY0, "STOPWATCH");
+    // Current wall-clock time top-right
+    let ts = Local::now().format("%H:%M:%S").to_string();
+    let tw = text_width(&mono, PxScale::from(18.0), &ts);
+    draw_text_mut(&mut img, OVERLAY0, 480 - 12 - tw, 12, PxScale::from(18.0), &mono, &ts);
+    draw_divider(&mut img, 36);
+
+    // ── Main time display ────────────────────────────────────────────────────
+    let time_str = format_sw_time(elapsed_ms);
+    // Split at last '.' so the fractional part can be styled differently
+    let dot_pos  = time_str.rfind('.');
+    let main_part: &str = if let Some(p) = dot_pos { &time_str[..p] } else { &time_str };
+    let frac_part: &str = if let Some(p) = dot_pos { &time_str[p..] } else { "" };
+
+    // Use a smaller scale for hour+ times so they still fit in 480px
+    let main_scale: f32 = if elapsed_ms >= 3_600_000 { 72.0 } else { 90.0 };
+    let frac_scale: f32 = main_scale * 0.55;
+
+    let mw = text_width(&mono, PxScale::from(main_scale), main_part);
+    let fw = text_width(&mono, PxScale::from(frac_scale), frac_part);
+    let total_w = mw + fw;
+    let start_x = ((480 - total_w) / 2).max(8);
+    let main_y  = 58_i32;
+    // Align fraction baseline with main
+    let frac_y  = main_y + (main_scale - frac_scale) as i32;
+
+    let time_color = if running { TEAL } else if elapsed_ms == 0 { OVERLAY0 } else { SUBTEXT };
+    draw_text_mut(&mut img, time_color, start_x, main_y, PxScale::from(main_scale), &mono, main_part);
+    if !frac_part.is_empty() {
+        draw_text_mut(&mut img, OVERLAY0, start_x + mw, frac_y, PxScale::from(frac_scale), &mono, frac_part);
+    }
+
+    // ── Status badge ──────────────────────────────────────────────────────────
+    let status_y = main_y + main_scale as i32 + 12;
+    let (status_str, status_color) = if running {
+        ("  RUNNING", GREEN)
+    } else if elapsed_ms == 0 {
+        ("  READY", OVERLAY0)
+    } else {
+        ("  PAUSED", YELLOW)
+    };
+    // Draw a filled indicator dot before the label
+    let lw_status = text_width(&bold, PxScale::from(22.0), status_str);
+    let sx = (480 - lw_status) / 2;
+    draw_filled_rect_mut(&mut img, Rect::at(sx - 14, status_y + 7).of_size(10, 10), status_color);
+    draw_text_mut(&mut img, status_color, sx, status_y, PxScale::from(22.0), &bold, status_str);
+
+    // ── Lap list ─────────────────────────────────────────────────────────────
+    let lap_section_y = status_y + 42;
+    draw_divider(&mut img, lap_section_y);
+
+    if laps.is_empty() {
+        if !running && elapsed_ms == 0 {
+            draw_centered(&mut img, &bold, PxScale::from(18.0), lap_section_y + 28, OVERLAY0, "Use Stopwatch controls");
+            draw_centered(&mut img, &bold, PxScale::from(16.0), lap_section_y + 56, OVERLAY0, "to start, lap, and reset.");
+        } else {
+            draw_centered(&mut img, &mono, PxScale::from(18.0), lap_section_y + 28, OVERLAY0, "no laps recorded");
+        }
+    } else {
+        draw_centered(&mut img, &bold, PxScale::from(15.0), lap_section_y + 6, OVERLAY0, "LAPS");
+
+        // Show up to 4 most-recent laps (most recent first)
+        let show_laps: Vec<(usize, u64)> = laps.iter().enumerate()
+            .rev()
+            .take(4)
+            .map(|(i, &ms)| (i, ms))
+            .collect();
+
+        let row_h  = 52_i32;
+        let base_y = lap_section_y + 26;
+
+        for (idx_in_list, (lap_idx, lap_ms)) in show_laps.into_iter().enumerate() {
+            let lap_num = lap_idx + 1; // 1-based
+            let row_y   = base_y + idx_in_list as i32 * row_h;
+
+            // Subtle background for the most-recent lap
+            if idx_in_list == 0 {
+                draw_filled_rect_mut(&mut img, Rect::at(8, row_y - 2).of_size(464, (row_h - 4) as u32), SURFACE0);
+            }
+
+            // Lap number (left)
+            let num_str = format!("#{}", lap_num);
+            draw_text_mut(&mut img, OVERLAY0, 16, row_y + 8, PxScale::from(20.0), &bold, &num_str);
+
+            // Cumulative lap time (centre)
+            let cum_str = format_sw_time(lap_ms);
+            let cw = text_width(&mono, PxScale::from(22.0), &cum_str);
+            draw_text_mut(&mut img, TEXT, (480 - cw) / 2, row_y + 7, PxScale::from(22.0), &mono, &cum_str);
+
+            // Split delta (right)
+            let prev_ms = if lap_idx > 0 { laps[lap_idx - 1] } else { 0 };
+            let delta_ms = lap_ms.saturating_sub(prev_ms);
+            let delta_str = format!("+{}", format_sw_time(delta_ms));
+            let dw = text_width(&mono, PxScale::from(18.0), &delta_str);
+            let delta_color = if idx_in_list == 0 { PEACH } else { SUBTEXT };
+            draw_text_mut(&mut img, delta_color, 480 - dw - 12, row_y + 11, PxScale::from(18.0), &mono, &delta_str);
+        }
+    }
+
+    DynamicImage::ImageRgb8(img)
+}
+
+// ─── Custom metrics grid renderer ────────────────────────────────────────────
+
+/// A single metric shown on the panel.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct Metric {
+    pub label: String,
+    pub value: String,
+    /// Optional colour name (uses NamedColor::from_str_loose); defaults to Blue.
+    #[serde(default = "default_metric_color")]
+    pub color: String,
+}
+
+fn default_metric_color() -> String { "blue".into() }
+
+impl Metric {
+    pub fn new(label: impl Into<String>, value: impl Into<String>) -> Self {
+        Self { label: label.into(), value: value.into(), color: default_metric_color() }
+    }
+}
+
+/// Render up to 8 key/value metrics in a 2-column grid.
+///
+/// # Arguments
+/// * `title`   — optional panel heading (shown at top, truncated to ~28 chars).
+/// * `metrics` — key/value pairs; first 8 are shown.
+pub fn render_metrics(title: &str, metrics: &[Metric]) -> DynamicImage {
+    let mut img  = blank();
+    let bold = font_bold();
+    let mono = font_mono();
+
+    // ── Header ────────────────────────────────────────────────────────────────
+    let header = if title.is_empty() { "METRICS".to_string() } else { title.to_uppercase() };
+    draw_centered(&mut img, &bold, PxScale::from(22.0), 8, BLUE, &header);
+
+    // Current time top-right
+    let ts = Local::now().format("%H:%M").to_string();
+    let tw = text_width(&mono, PxScale::from(18.0), &ts);
+    draw_text_mut(&mut img, OVERLAY0, 480 - 10 - tw, 12, PxScale::from(18.0), &mono, &ts);
+
+    draw_divider(&mut img, 38);
+
+    if metrics.is_empty() {
+        draw_centered(&mut img, &bold, PxScale::from(22.0), 200, OVERLAY0, "No metrics set");
+        draw_centered(&mut img, &bold, PxScale::from(16.0), 236, OVERLAY0, "POST /api/metrics to push data");
+        return DynamicImage::ImageRgb8(img);
+    }
+
+    // ── 2-column grid ─────────────────────────────────────────────────────────
+    // Each cell: 240px wide, 110px tall.  Up to 4 rows = 8 metrics.
+    const COLS:   i32 = 2;
+    const CELL_W: i32 = 240;
+    const CELL_H: i32 = 108;
+    const START_Y: i32 = 46;
+
+    for (i, m) in metrics.iter().take(8).enumerate() {
+        let col = (i as i32) % COLS;
+        let row = (i as i32) / COLS;
+        let x0  = col * CELL_W;
+        let y0  = START_Y + row * CELL_H;
+
+        // Cell border
+        draw_hollow_rect_mut(&mut img, Rect::at(x0 + 4, y0 + 2).of_size((CELL_W - 8) as u32, (CELL_H - 6) as u32), SURFACE0);
+
+        // Label (small, dim)
+        let label_str: String = m.label.chars().take(20).collect();
+        draw_text_mut(&mut img, OVERLAY0, x0 + 10, y0 + 8, PxScale::from(15.0), &bold, &label_str);
+
+        // Value (large, coloured)
+        let color = NamedColor::from_str_loose(&m.color).to_rgb_pub();
+        // Choose scale based on value length
+        let val_str: String = m.value.chars().take(14).collect();
+        let val_scale: f32 = if val_str.len() <= 4 {
+            52.0
+        } else if val_str.len() <= 7 {
+            42.0
+        } else if val_str.len() <= 10 {
+            34.0
+        } else {
+            26.0
+        };
+        let vw = text_width(&mono, PxScale::from(val_scale), &val_str);
+        // Centre value in cell horizontally, top-align in value area
+        let val_x = x0 + (CELL_W - vw) / 2;
+        let val_y = y0 + 24;
+        draw_text_mut(&mut img, color, val_x, val_y, PxScale::from(val_scale), &mono, &val_str);
+    }
+
+    DynamicImage::ImageRgb8(img)
+}
+
+// ─── Weather display ──────────────────────────────────────────────────────────
+
+/// External weather snapshot pushed from the browser / CLI.
+///
+/// All fields are optional; missing values render as "—".
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
+pub struct WeatherData {
+    /// City or location name shown on panel.
+    #[serde(default)]
+    pub city: String,
+    /// Current temperature in °C.
+    pub temp_c: Option<f32>,
+    /// "Feels like" temperature in °C.
+    pub feels_like_c: Option<f32>,
+    /// Short description e.g. "Partly cloudy".
+    #[serde(default)]
+    pub condition: String,
+    /// Humidity percentage 0–100.
+    pub humidity_pct: Option<u8>,
+    /// Wind speed in km/h.
+    pub wind_kmh: Option<f32>,
+    /// Wind direction abbreviation e.g. "NW".
+    #[serde(default)]
+    pub wind_dir: String,
+    /// Today's high temperature in °C.
+    pub high_c: Option<f32>,
+    /// Today's low temperature in °C.
+    pub low_c: Option<f32>,
+    /// Visibility in km.
+    pub visibility_km: Option<f32>,
+    /// Unix timestamp of when data was last updated (seconds).
+    pub updated_at: Option<u64>,
+}
+
+/// ASCII-art weather condition icon (5 rows × 10 columns).
+fn weather_icon(condition: &str) -> &'static [&'static str] {
+    let c = condition.to_lowercase();
+    if c.contains("thunder") || c.contains("storm") {
+        &["  .-.  ", " (   ). ", "(___(__)","   /_  ","  /(__) "]
+    } else if c.contains("snow") || c.contains("blizzard") || c.contains("ice") {
+        &["  .-.  ", " (   ). ","(___(__)","  * * * ","  * * * "]
+    } else if c.contains("sleet") || c.contains("drizzle") || c.contains("shower") {
+        &["  .-.  ", " (   ). ","(___(__)","  ' ' ' ","  ' ' ' "]
+    } else if c.contains("rain") {
+        &["  .-.  ", " (   ). ","(___(__)","  / / / ","  / / / "]
+    } else if c.contains("fog") || c.contains("mist") || c.contains("haze") {
+        &["_______","_______","_______","_______","_______"]
+    } else if c.contains("overcast") || c.contains("cloud") {
+        &["       "," .---. ","( .--. )","'------'","       "]
+    } else if c.contains("partly") || c.contains("broken") || c.contains("scatter") {
+        &[" \\  /  ","  \\/   "," .---.  ","( sun  )","'-----' "]
+    } else if c.contains("clear") || c.contains("sun") || c.contains("fair") || c.contains("bright") {
+        &["  \\  / ","  .--. ","- |  | -","  `--' ","  /  \\ "]
+    } else {
+        &[" ????  "," ????  "," ????  "," ????  "," ????  "]
+    }
+}
+
+/// Pick a colour for a temperature value.
+fn temp_color(c: f32) -> Rgb<u8> {
+    if c >= 38.0      { RED    }
+    else if c >= 28.0 { PEACH  }
+    else if c >= 18.0 { YELLOW }
+    else if c >= 8.0  { GREEN  }
+    else if c >= -2.0 { TEAL   }
+    else              { BLUE   }
+}
+
+/// Render a 480×480 weather snapshot panel.
+pub fn render_weather(data: &WeatherData) -> DynamicImage {
+    let mut img  = blank();
+    let bold = font_bold();
+    let mono = font_mono();
+
+    // ── Header bar ────────────────────────────────────────────────────────────
+    // "WEATHER" label + city name
+    let city_disp = if data.city.is_empty() { "WEATHER".to_string() }
+                    else { data.city.to_uppercase() };
+    draw_centered(&mut img, &bold, PxScale::from(26.0), 8, BLUE, &city_disp);
+
+    // Current time top-right
+    let ts = Local::now().format("%H:%M").to_string();
+    let tw = text_width(&mono, PxScale::from(18.0), &ts);
+    draw_text_mut(&mut img, OVERLAY0, 480 - 10 - tw, 12, PxScale::from(18.0), &mono, &ts);
+
+    draw_divider(&mut img, 42);
+
+    // ── Main temperature ──────────────────────────────────────────────────────
+    let temp_str = data.temp_c.map(|t| format!("{:.0}°C", t)).unwrap_or_else(|| "—".to_string());
+    let t_color  = data.temp_c.map(temp_color).unwrap_or(SUBTEXT);
+    let t_scale  = if temp_str.len() <= 5 { 86.0 } else { 64.0 };
+    let tw_main  = text_width(&mono, PxScale::from(t_scale), &temp_str);
+    // Offset left to make room for the icon
+    let temp_x   = (240 - tw_main / 2).max(0);
+    draw_text_mut(&mut img, t_color, temp_x, 50, PxScale::from(t_scale), &mono, &temp_str);
+
+    // ── ASCII icon (right side) ───────────────────────────────────────────────
+    let icon_lines = weather_icon(&data.condition);
+    for (row, line) in icon_lines.iter().enumerate() {
+        draw_text_mut(&mut img, TEAL,
+            320, 56 + (row as i32 * 18),
+            PxScale::from(17.0), &mono, line);
+    }
+
+    // ── Condition text ────────────────────────────────────────────────────────
+    let cond_str: String = if data.condition.is_empty() { "—".to_string() }
+                           else { data.condition.chars().take(28).collect() };
+    draw_centered(&mut img, &bold, PxScale::from(20.0), 150, SUBTEXT, &cond_str);
+
+    draw_divider(&mut img, 180);
+
+    // ── Detail grid: 2 columns ────────────────────────────────────────────────
+    // Left col: feels-like, humidity; Right col: wind, visibility
+    let fields: &[(&str, String)] = &[
+        ("Feels like", data.feels_like_c.map(|t| format!("{:.0}°C",t)).unwrap_or_else(||"—".to_string())),
+        ("Humidity",   data.humidity_pct.map(|h| format!("{}%", h)).unwrap_or_else(||"—".to_string())),
+        ("Wind",       {
+            let spd = data.wind_kmh.map(|w| format!("{:.0}km/h",w)).unwrap_or_else(||"—".to_string());
+            if data.wind_dir.is_empty() { spd } else { format!("{} {}", spd, data.wind_dir) }
+        }),
+        ("Visibility", data.visibility_km.map(|v| format!("{:.0}km",v)).unwrap_or_else(||"—".to_string())),
+        ("High",       data.high_c.map(|t| format!("{:.0}°C",t)).unwrap_or_else(||"—".to_string())),
+        ("Low",        data.low_c.map(|t| format!("{:.0}°C",t)).unwrap_or_else(||"—".to_string())),
+    ];
+
+    let start_y = 192;
+    let row_h   = 42;
+    let col_w   = 240;
+
+    for (i, (label, value)) in fields.iter().enumerate() {
+        let col = (i % 2) as i32;
+        let row = (i / 2) as i32;
+        let bx  = col * col_w;
+        let by  = start_y + row * row_h;
+
+        // Cell background
+        if row % 2 == 0 {
+            draw_filled_rect_mut(&mut img,
+                Rect::at(bx, by).of_size(col_w as u32, row_h as u32),
+                Rgb([38, 38, 58]));
+        }
+
+        // Label
+        draw_text_mut(&mut img, OVERLAY0, bx + 8, by + 5, PxScale::from(14.0), &bold, label);
+        // Value
+        let vw = text_width(&mono, PxScale::from(20.0), value);
+        let vx = bx + col_w - vw - 8;
+        draw_text_mut(&mut img, TEXT, vx, by + 17, PxScale::from(20.0), &mono, value);
+    }
+
+    draw_divider(&mut img, start_y + 3 * row_h + 2);
+
+    // ── Updated timestamp ─────────────────────────────────────────────────────
+    let upd_str = if let Some(ts) = data.updated_at {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs()).unwrap_or(0);
+        let age = now.saturating_sub(ts);
+        if age < 120       { "Updated just now".to_string() }
+        else if age < 3600 { format!("Updated {}m ago", age / 60) }
+        else               { format!("Updated {}h ago", age / 3600) }
+    } else {
+        "Push weather data via API".to_string()
+    };
+    draw_centered(&mut img, &bold, PxScale::from(14.0), 452, OVERLAY0, &upd_str);
+
+    DynamicImage::ImageRgb8(img)
+}
+
+// ─── Notes / bulletin board ───────────────────────────────────────────────────
+
+/// Render up to 10 text notes as a bulletin board.
+///
+/// Each note is a short string (truncated to ~40 chars).  Notes are shown
+/// top-to-bottom with a subtle alternating row background.
+///
+/// # Arguments
+/// * `title` — panel heading (shown at top).
+/// * `notes` — list of note strings; first 10 are shown.
+pub fn render_notes(title: &str, notes: &[String]) -> DynamicImage {
+    let mut img  = blank();
+    let bold = font_bold();
+    let mono = font_mono();
+
+    // ── Header ────────────────────────────────────────────────────────────────
+    let header = if title.is_empty() { "NOTES".to_string() } else { title.to_uppercase() };
+    draw_centered(&mut img, &bold, PxScale::from(24.0), 8, YELLOW, &header);
+
+    // Current time
+    let ts = Local::now().format("%H:%M").to_string();
+    let tw = text_width(&mono, PxScale::from(18.0), &ts);
+    draw_text_mut(&mut img, OVERLAY0, 480 - 10 - tw, 12, PxScale::from(18.0), &mono, &ts);
+
+    draw_divider(&mut img, 40);
+
+    if notes.is_empty() {
+        draw_centered(&mut img, &bold, PxScale::from(20.0), 200, OVERLAY0, "No notes");
+        draw_centered(&mut img, &bold, PxScale::from(15.0), 232, OVERLAY0, "POST /api/notes to add items");
+        return DynamicImage::ImageRgb8(img);
+    }
+
+    const ROW_H: i32 = 40;
+    const START_Y: i32 = 50;
+    const PADDING_X: i32 = 12;
+    const MAX_NOTES: usize = 10;
+
+    for (i, note) in notes.iter().take(MAX_NOTES).enumerate() {
+        let y = START_Y + (i as i32) * ROW_H;
+
+        // Alternating row background
+        if i % 2 == 0 {
+            draw_filled_rect_mut(&mut img,
+                Rect::at(0, y).of_size(480, ROW_H as u32),
+                Rgb([38, 38, 56]));
+        }
+
+        // Bullet point
+        let bullet_x = PADDING_X;
+        let col = if i % 4 == 0 { MAUVE } else if i % 4 == 1 { BLUE } else if i % 4 == 2 { TEAL } else { PEACH };
+        draw_text_mut(&mut img, col, bullet_x, y + 9, PxScale::from(20.0), &bold, "•");
+
+        // Note text
+        let text: String = note.chars().take(38).collect();
+        draw_text_mut(&mut img, TEXT, bullet_x + 22, y + 10, PxScale::from(18.0), &bold, &text);
+    }
+
+    // Count indicator if there are more than MAX_NOTES
+    if notes.len() > MAX_NOTES {
+        let more = format!("+{} more…", notes.len() - MAX_NOTES);
+        draw_centered(&mut img, &bold, PxScale::from(14.0), 458, OVERLAY0, &more);
+    }
+
+    DynamicImage::ImageRgb8(img)
+}
+
+// ─── Big clock (fullscreen, maximum-size time) ────────────────────────────────
+
+/// Full-screen big clock — maximum-size HH:MM with prominent seconds.
+///
+/// Layout (480×480):
+///   • Weekday + date header   (y ≈ 12–66)
+///   • Divider                 (y ≈ 72)
+///   • Giant HH:MM (144px)     (y ≈ 78 … 228)
+///   • Divider                 (y ≈ 234)
+///   • Large SS (90px)         (y ≈ 242 … 336)
+///   • Seconds progress bar    (y ≈ 348)
+///   • Footer: uptime + load   (y ≈ 368 … 408)
+///   • Corner accent bars
+pub fn render_big_clock() -> DynamicImage {
+    let mut img = blank();
+    let bold = font_bold();
+    let mono = font_mono();
+
+    let now     = Local::now();
+    let h       = now.hour();
+    let m       = now.minute();
+    let s       = now.second();
+
+    let hm_str   = format!("{:02}:{:02}", h, m);
+    let ss_str   = format!("{:02}", s);
+    let wday_str = now.format("%A").to_string().to_uppercase();
+    let date_str = now.format("%B %-e,  %Y").to_string();
+
+    // ── Header ────────────────────────────────────────────────────────────────
+    draw_centered(&mut img, &bold, PxScale::from(26.0), 12, MAUVE, &wday_str);
+    draw_centered(&mut img, &bold, PxScale::from(20.0), 44, SUBTEXT, &date_str);
+    draw_divider(&mut img, 72);
+
+    // ── Giant HH:MM ───────────────────────────────────────────────────────────
+    let hm_scale = PxScale::from(144.0);
+    let hm_w     = text_width(&mono, hm_scale, &hm_str);
+    let hm_x     = (480 - hm_w).max(0) / 2;
+    draw_text_mut(&mut img, TEAL, hm_x, 78, hm_scale, &mono, &hm_str);
+
+    // ── Large seconds ─────────────────────────────────────────────────────────
+    draw_divider(&mut img, 234);
+
+    // Seconds colour cycles through the palette every 10 seconds
+    let sec_color = match s / 10 {
+        0 => PEACH,
+        1 => YELLOW,
+        2 => GREEN,
+        3 => TEAL,
+        4 => BLUE,
+        _ => MAUVE,
+    };
+    let ss_scale = PxScale::from(90.0);
+    let ss_w     = text_width(&mono, ss_scale, &ss_str);
+    let ss_x     = (480 - ss_w).max(0) / 2;
+    draw_text_mut(&mut img, sec_color, ss_x, 242, ss_scale, &mono, &ss_str);
+
+    // Tiny "s" unit label to the right of the seconds digits
+    draw_text_mut(&mut img, OVERLAY0, ss_x + ss_w + 6, 300,
+                  PxScale::from(20.0), &bold, "s");
+
+    // ── Seconds progress bar ──────────────────────────────────────────────────
+    let sec_frac = s as f32 / 59.0;
+    draw_bar(&mut img, 20, 350, 440, 10, sec_frac, sec_color);
+
+    // ── Footer ────────────────────────────────────────────────────────────────
+    draw_divider(&mut img, 372);
+    let up_str   = format!("up {}", format_uptime(System::uptime()));
+    let load     = System::load_average();
+    let load_str = format!("load  {:.2}  {:.2}  {:.2}", load.one, load.five, load.fifteen);
+    draw_centered(&mut img, &bold, PxScale::from(18.0), 382, SUBTEXT, &up_str);
+    draw_centered(&mut img, &bold, PxScale::from(16.0), 408, OVERLAY0, &load_str);
+
+    // ── Corner accent bars ────────────────────────────────────────────────────
+    // Teal bars flanking the header for visual polish
+    draw_filled_rect_mut(&mut img, Rect::at(0,   0).of_size(6, 72), TEAL);
+    draw_filled_rect_mut(&mut img, Rect::at(474, 0).of_size(6, 72), TEAL);
+
+    DynamicImage::ImageRgb8(img)
+}
+
+// ─── QR Code display ─────────────────────────────────────────────────────────
+
+/// Render a QR code for the given text/URL on the panel.
+///
+/// Layout:
+///   • Thin BLUE header bar with title text (truncated at 32 chars)
+///   • QR code centred on a light Catppuccin Base background
+///   • Bottom bar shows the payload text in small OVERLAY0 mono
+///
+/// On error (e.g. data too long for QR), shows an error message instead.
+pub fn render_qr_code(payload: &str, title: &str) -> DynamicImage {
+        let mut img = blank();
+    let bold = font_bold();
+    let mono = font_mono();
+
+    // ── Header ────────────────────────────────────────────────────────────────
+    let header_h: i32 = 64;
+    draw_filled_rect_mut(&mut img, Rect::at(0, 0).of_size(480, header_h as u32), BLUE);
+    let title_str = if title.is_empty() { "QR Code" } else { title };
+    let title_disp: String = title_str.chars().take(32).collect();
+    draw_centered(&mut img, &bold, PxScale::from(28.0), 16, BG, &title_disp);
+
+    // ── QR code ───────────────────────────────────────────────────────────────
+    let qr_result = QrCode::new(payload.as_bytes());
+    match qr_result {
+        Err(e) => {
+            let err_str = format!("QR Error: {e}");
+            draw_centered(&mut img, &bold, PxScale::from(22.0), 200, RED, &err_str);
+            draw_centered(&mut img, &mono, PxScale::from(16.0), 230, OVERLAY0, "Payload too large or invalid");
+        }
+        Ok(code) => {
+            // Draw QR modules onto the image
+            let modules = code.width();
+            // Target QR area: 360px square, centred horizontally between header and footer
+            let footer_h: i32 = 60;
+            let qr_area_top  = header_h + 12;
+            let qr_area_bot  = 480 - footer_h - 12;
+            let qr_area_h    = qr_area_bot - qr_area_top;
+            let qr_area_w    = 380_i32;
+            let cell = ((qr_area_w.min(qr_area_h)) / (modules as i32 + 4)).max(1) as u32;
+            let qr_px = cell * (modules as u32 + 4);
+            let qr_x  = (480 - qr_px as i32) / 2;
+            let qr_y  = qr_area_top + (qr_area_h - qr_px as i32) / 2;
+
+            // White background for QR code (quiet zone)
+            draw_filled_rect_mut(&mut img, Rect::at(qr_x, qr_y).of_size(qr_px, qr_px), WHITE);
+
+            // Draw each module
+            let quiet = 2; // quiet zone in cells
+            for row in 0..modules {
+                for col in 0..modules {
+                    if code[(row, col)] == qrcode::Color::Dark {
+                        let px = qr_x + ((col as i32 + quiet) * cell as i32);
+                        let py = qr_y + ((row as i32 + quiet) * cell as i32);
+                        draw_filled_rect_mut(&mut img, Rect::at(px, py).of_size(cell, cell), CRUST);
+                    }
+                }
+            }
+        }
+    }
+
+    // ── Footer ────────────────────────────────────────────────────────────────
+    draw_divider(&mut img, 420);
+    let payload_preview: String = payload.chars().take(52).collect();
+    let suffix = if payload.len() > 52 { "…" } else { "" };
+    let display_payload = format!("{payload_preview}{suffix}");
+    draw_centered(&mut img, &mono, PxScale::from(15.0), 428, OVERLAY0, &display_payload);
+
+    DynamicImage::ImageRgb8(img)
+}
+
+// ─── Pomodoro timer display ───────────────────────────────────────────────────
+
+/// Render a Pomodoro timer frame.
+///
+/// - `phase`              — "work", "short_break", or "long_break"
+/// - `remaining_secs`     — seconds left in the current phase (≤ 0 = expired)
+/// - `total_secs`         — total seconds for the current phase
+/// - `completed_sessions` — completed work sessions within the current set of 4
+/// - `running`            — true if the timer is actively counting down
+pub fn render_pomodoro(
+    phase: &str,
+    remaining_secs: i64,
+    total_secs: u64,
+    completed_sessions: u8,
+    running: bool,
+) -> DynamicImage {
+    use std::f64::consts::PI;
+
+    let mut img = blank();
+    let bold = font_bold();
+    let mono = font_mono();
+
+    let (phase_color, phase_emoji, phase_label) = match phase {
+        "short_break" => (GREEN, "☕", "Short Break"),
+        "long_break"  => (TEAL,  "🌿", "Long Break"),
+        _             => (RED,   "🍅", "Focus"),
+    };
+
+    // ── Header bar ────────────────────────────────────────────────────────────
+    draw_filled_rect_mut(&mut img, Rect::at(0, 0).of_size(480, 56), phase_color);
+    let sessions_in_set = completed_sessions % 4;
+    let header_text = if phase == "work" {
+        format!("{} Focus  Round {}", phase_emoji, sessions_in_set + 1)
+    } else {
+        format!("{} {}", phase_emoji, phase_label)
+    };
+    draw_centered(&mut img, &bold, PxScale::from(22.0), 16, BG, &header_text);
+
+    // ── Progress ring (pixel-by-pixel arc) ───────────────────────────────────
+    let cx = 240i32;
+    let cy = 238i32;
+    let outer_r = 148i32;
+    let inner_r = 130i32;
+
+    let progress = if total_secs > 0 {
+        (remaining_secs.max(0) as f64) / (total_secs as f64)
+    } else {
+        0.0
+    };
+
+    let y_min = (cy - outer_r - 1).max(57) as u32;
+    let y_max = (cy + outer_r + 1).min(478) as u32;
+    let x_min = (cx - outer_r - 1).max(1) as u32;
+    let x_max = (cx + outer_r + 1).min(478) as u32;
+
+    for row in y_min..=y_max {
+        for col in x_min..=x_max {
+            let dx = col as i32 - cx;
+            let dy = row as i32 - cy;
+            let dist = ((dx * dx + dy * dy) as f64).sqrt();
+            if dist < inner_r as f64 || dist > outer_r as f64 {
+                continue;
+            }
+            // Clockwise angle from top: atan2(dx, -dy) → 0 at top, π/2 at right
+            let angle_cw = (dx as f64).atan2(-dy as f64).rem_euclid(2.0 * PI);
+            let color = if angle_cw <= progress * 2.0 * PI {
+                phase_color
+            } else {
+                SURFACE0
+            };
+            img.put_pixel(col, row, color);
+        }
+    }
+
+    // ── Centre time text ──────────────────────────────────────────────────────
+    let rem = remaining_secs.max(0);
+    let time_str = format!("{:02}:{:02}", rem / 60, rem % 60);
+    draw_centered(&mut img, &bold, PxScale::from(72.0), 192, TEXT, &time_str);
+
+    // Status badge
+    let (status_color, status_text) = if running {
+        (GREEN, "  RUNNING")
+    } else {
+        (OVERLAY0, "  PAUSED")
+    };
+    draw_centered(&mut img, &mono, PxScale::from(18.0), 276, status_color, status_text);
+
+    // ── Cycle dots (4 tomatoes = one set) ────────────────────────────────────
+    draw_divider(&mut img, 415);
+    let n_dots = 4i32;
+    let dot_r  = 8i32;
+    let dot_spacing = 30i32;
+    let total_dot_w = (n_dots - 1) * dot_spacing + dot_r * 2;
+    let dot_x0 = (480 - total_dot_w) / 2 + dot_r;
+    let dot_y  = 440i32;
+
+    for i in 0..n_dots {
+        let dot_x = dot_x0 + i * dot_spacing;
+        let is_complete = i < sessions_in_set as i32;
+        let is_active   = phase == "work" && i == sessions_in_set as i32;
+        let col = if is_complete       { phase_color }
+                  else if is_active    { SUBTEXT }
+                  else                 { SURFACE0 };
+        for dr in -dot_r..=dot_r {
+            for dc in -dot_r..=dot_r {
+                if dr * dr + dc * dc <= dot_r * dot_r {
+                    let px = (dot_x + dc) as u32;
+                    let py = (dot_y + dr) as u32;
+                    if px < 480 && py < 480 {
+                        img.put_pixel(px, py, col);
+                    }
+                }
+            }
+        }
+    }
+
+    DynamicImage::ImageRgb8(img)
+}
+
+// ─── Battery status display ───────────────────────────────────────────────────
+
+struct BatteryInfo {
+    capacity:        u8,
+    status:          String,
+    voltage_uv:      Option<u64>,   // microvolts
+    current_ua:      Option<u64>,   // microamps
+    energy_now_uwh:  Option<u64>,   // micro-watt-hours
+    energy_full_uwh: Option<u64>,   // micro-watt-hours
+}
+
+/// Read battery info from the Linux sysfs power-supply interface.
+/// Returns `None` on desktops or if no battery is found.
+fn read_battery_info() -> Option<BatteryInfo> {
+    for name in &["BAT0", "BAT1", "BAT2", "BAT"] {
+        let base = format!("/sys/class/power_supply/{name}");
+        if !std::path::Path::new(&base).exists() {
+            continue;
+        }
+        let read_str = |f: &str| -> Option<String> {
+            std::fs::read_to_string(format!("{base}/{f}")).ok()
+                .map(|s| s.trim().to_string())
+        };
+        let read_u64 = |f: &str| -> Option<u64> {
+            read_str(f)?.parse::<u64>().ok()
+        };
+
+        let capacity = read_u64("capacity").map(|v| v.min(100) as u8).unwrap_or(0);
+        let status   = read_str("status").unwrap_or_default();
+
+        let voltage_uv = read_u64("voltage_now");
+        let current_ua = read_u64("current_now");
+
+        // energy_now may be in µWh (energy_now) or µAh (charge_now)
+        let energy_now_uwh = read_u64("energy_now").or_else(|| {
+            let uah = read_u64("charge_now")?;
+            let uv  = voltage_uv?;
+            Some(uah * uv / 1_000_000)
+        });
+        let energy_full_uwh = read_u64("energy_full").or_else(|| {
+            let uah = read_u64("charge_full")?;
+            let uv  = voltage_uv?;
+            Some(uah * uv / 1_000_000)
+        });
+
+        return Some(BatteryInfo { capacity, status, voltage_uv, current_ua,
+                                  energy_now_uwh, energy_full_uwh });
+    }
+    None
+}
+
+/// Render a battery status display.
+///
+/// Reads live data from `/sys/class/power_supply/BAT*`.  
+/// Shows a large battery icon, percentage, status, voltage, and estimated
+/// time remaining on discharge.
+pub fn render_battery() -> DynamicImage {
+    let mut img = blank();
+    let bold = font_bold();
+    let mono = font_mono();
+
+    let now = Local::now();
+    let time_str = now.format("%H:%M:%S").to_string();
+
+    draw_text_mut(&mut img, MAUVE, 20, 14, PxScale::from(28.0), &bold, "Battery");
+    let tw = text_width(&mono, PxScale::from(24.0), &time_str);
+    draw_text_mut(&mut img, TEAL, 480 - 20 - tw, 18, PxScale::from(24.0), &mono, &time_str);
+    draw_divider(&mut img, 52);
+
+    match read_battery_info() {
+        None => {
+            draw_centered(&mut img, &bold, PxScale::from(22.0), 200, OVERLAY0,
+                "No battery detected");
+            draw_centered(&mut img, &mono, PxScale::from(16.0), 232, SURFACE0,
+                "Desktop or unsupported platform");
+        }
+        Some(info) => {
+            let pct   = info.capacity.clamp(0, 100);
+            let frac  = pct as f32 / 100.0;
+            let color = if pct > 50 { GREEN } else if pct > 20 { YELLOW } else { RED };
+
+            // ── Battery icon ─────────────────────────────────────────────────
+            // Body at (90, 105), 285×125 px
+            let bx = 90i32;
+            let by = 105i32;
+            let bw = 285i32;
+            let bh = 125i32;
+            let term_w = 14i32;
+            let term_h = 46i32;
+
+            // Outline
+            draw_hollow_rect_mut(&mut img,
+                Rect::at(bx, by).of_size(bw as u32, bh as u32), OVERLAY0);
+            // Terminal nub
+            draw_filled_rect_mut(&mut img,
+                Rect::at(bx + bw, by + (bh - term_h) / 2)
+                    .of_size(term_w as u32, term_h as u32),
+                OVERLAY0);
+            // Fill bar
+            let fill_w = ((bw - 4) as f32 * frac) as i32;
+            if fill_w > 0 {
+                draw_filled_rect_mut(&mut img,
+                    Rect::at(bx + 2, by + 2)
+                        .of_size(fill_w as u32, (bh - 4) as u32),
+                    color);
+            }
+
+            // ── Percentage centred inside the battery body ───────────────────
+            let pct_str = format!("{}%", pct);
+            let text_col = if frac > 0.35 { BG } else { TEXT };
+            draw_centered(&mut img, &bold, PxScale::from(60.0), 120, text_col, &pct_str);
+
+            // ── Status line ───────────────────────────────────────────────────
+            let status_lower = info.status.to_lowercase();
+            let status_str: &str = match status_lower.trim() {
+                "charging"     => "⚡ Charging",
+                "discharging"  => "Discharging",
+                "full"         => "Full",
+                "not charging" => "Not Charging",
+                other          => other,
+            };
+            draw_centered(&mut img, &bold, PxScale::from(24.0), 250, color, status_str);
+
+            // ── Detail rows ───────────────────────────────────────────────────
+            draw_divider(&mut img, 286);
+            let mut y = 298i32;
+            let scale = PxScale::from(18.0);
+
+            if let Some(v) = info.voltage_uv {
+                draw_kv(&mut img, &bold, &mono, scale, y, SUBTEXT, TEXT,
+                    "Voltage", &format!("{:.3} V", v as f64 / 1_000_000.0));
+                y += 26;
+            }
+            if let (Some(en), Some(ef)) = (info.energy_now_uwh, info.energy_full_uwh) {
+                draw_kv(&mut img, &bold, &mono, scale, y, SUBTEXT, TEXT,
+                    "Capacity",
+                    &format!("{:.1}/{:.1} Wh", en as f64 / 1_000_000.0,
+                                               ef as f64 / 1_000_000.0));
+                y += 26;
+            }
+            // Estimated time remaining for discharging
+            if info.status.to_lowercase() == "discharging" {
+                if let (Some(en), Some(cur), Some(v)) =
+                    (info.energy_now_uwh, info.current_ua, info.voltage_uv)
+                {
+                    let power_uw = cur as f64 * v as f64 / 1_000_000.0;
+                    if power_uw > 0.0 {
+                        let hours_left = en as f64 / power_uw;
+                        let h  = hours_left as u64;
+                        let m  = ((hours_left - h as f64) * 60.0) as u64;
+                        let est = format!("{}h {:02}m", h, m);
+                        draw_kv(&mut img, &bold, &mono, scale, y,
+                            SUBTEXT, TEAL, "Est. left", &est);
+                    }
+                }
+            }
+        }
+    }
+
+    DynamicImage::ImageRgb8(img)
+}
+
+// ─── Public battery data accessor ────────────────────────────────────────────
+
+/// Return battery information as a `serde_json::Value` for the API.
+///
+/// On systems without a battery, returns `{"present": false}`.
+pub fn read_battery_json() -> serde_json::Value {
+    use serde_json::json;
+    match read_battery_info() {
+        None => json!({ "present": false }),
+        Some(info) => {
+            let power_uw = info.current_ua.and_then(|c| info.voltage_uv.map(|v| c * v / 1_000_000));
+            let hours_remaining = if info.status.to_lowercase() == "discharging" {
+                power_uw.and_then(|p| {
+                    if p == 0 { return None; }
+                    info.energy_now_uwh.map(|e| e as f64 / p as f64)
+                })
+            } else { None };
+
+            json!({
+                "present":          true,
+                "capacity_pct":     info.capacity,
+                "status":           info.status,
+                "voltage_v":        info.voltage_uv.map(|v| v as f64 / 1_000_000.0),
+                "current_a":        info.current_ua.map(|c| c as f64 / 1_000_000.0),
+                "power_w":          power_uw.map(|p| p as f64 / 1_000_000.0),
+                "energy_now_wh":    info.energy_now_uwh.map(|e|  e as f64 / 1_000_000.0),
+                "energy_full_wh":   info.energy_full_uwh.map(|e| e as f64 / 1_000_000.0),
+                "hours_remaining":  hours_remaining,
+            })
+        }
+    }
+}
+
+// ─── World clock display ──────────────────────────────────────────────────────
+
+/// Render a world clock showing up to 4 cities simultaneously.
+///
+/// Each entry is `(city_name, utc_offset_minutes)`. Handles DST-unaware
+/// fixed UTC offsets for simplicity; offset is clamped to ±14 h.
+///
+/// If `cities` is empty, shows UTC + 3 common defaults.
+pub fn render_world_clock(cities: &[(String, i32)]) -> DynamicImage {
+    let mut img = blank();
+    let bold = font_bold();
+    let mono = font_mono();
+
+    let now_utc = Local::now().naive_utc();
+
+    let defaults: Vec<(String, i32)> = vec![
+        ("UTC".into(),      0),
+        ("New York".into(), -300),  // EST (UTC-5); does not track DST
+        ("London".into(),   0),
+        ("Tokyo".into(),    540),   // JST (UTC+9)
+    ];
+
+    let entries: &[(String, i32)] = if cities.is_empty() { &defaults } else { cities };
+    let entries: Vec<&(String, i32)> = entries.iter().take(4).collect();
+
+    // ── Header ────────────────────────────────────────────────────────────────
+    draw_filled_rect_mut(&mut img, Rect::at(0, 0).of_size(480, 56), BLUE);
+    draw_centered(&mut img, &bold, PxScale::from(24.0), 16, BG, "World Clock");
+
+    let n = entries.len();
+    let row_h = (480 - 56) / n.max(1) as i32;
+
+    for (i, (city, offset_mins)) in entries.iter().enumerate() {
+        let offset_mins = (*offset_mins).clamp(-14 * 60, 14 * 60);
+        let local_dt = now_utc + chrono::Duration::minutes(offset_mins as i64);
+        let h = local_dt.hour();
+        let m = local_dt.minute();
+        let s = local_dt.second();
+        let ampm = if h < 12 { "AM" } else { "PM" };
+        let h12  = if h % 12 == 0 { 12 } else { h % 12 };
+
+        let time_24 = format!("{:02}:{:02}:{:02}", h, m, s);
+        let time_12 = format!("{:02}:{:02} {}", h12, m, ampm);
+        let date_str = local_dt.format("%b %-d").to_string();
+
+        let y_base = 56 + i as i32 * row_h;
+
+        // Background stripe for even rows
+        if i % 2 == 1 {
+            draw_filled_rect_mut(&mut img,
+                Rect::at(0, y_base).of_size(480, row_h as u32),
+                SURFACE0);
+        }
+
+        // City name
+        let city_disp: String = city.chars().take(18).collect();
+        draw_text_mut(&mut img, TEXT, 20, y_base + 10, PxScale::from(20.0), &bold, &city_disp);
+
+        // UTC offset label
+        let offset_h   = offset_mins / 60;
+        let offset_m   = (offset_mins % 60).abs();
+        let offset_str = if offset_m == 0 {
+            format!("UTC{:+}", offset_h)
+        } else {
+            format!("UTC{:+}:{:02}", offset_h, offset_m)
+        };
+        let ow = text_width(&mono, PxScale::from(14.0), &offset_str);
+        draw_text_mut(&mut img, OVERLAY0, 480 - 20 - ow, y_base + 10,
+            PxScale::from(14.0), &mono, &offset_str);
+
+        // Day/night color: golden for day (6–18), blue for evening (18–22), dim for night
+        let time_color = if h >= 6 && h < 18  { YELLOW }
+                         else if h < 22        { BLUE }
+                         else                  { OVERLAY0 };
+        // Day/night dot indicator
+        let dot_color = if h >= 6 && h < 18 { YELLOW } else { SURFACE0 };
+        let dot_x = (480 - 20 - 8) as u32;
+        let dot_y_px = (y_base + 44) as u32;
+        for dr in -5i32..=5 {
+            for dc in -5i32..=5 {
+                if dr * dr + dc * dc <= 25 {
+                    let px = (dot_x as i32 + dc).max(0) as u32;
+                    let py = (dot_y_px as i32 + dr).max(0) as u32;
+                    if px < 480 && py < 480 { img.put_pixel(px, py, dot_color); }
+                }
+            }
+        }
+
+        // Large time
+        draw_text_mut(&mut img, time_color, 20, y_base + 32, PxScale::from(36.0), &mono, &time_24);
+        // 12-hour + date right-aligned
+        let tw12 = text_width(&mono, PxScale::from(18.0), &time_12);
+        draw_text_mut(&mut img, SUBTEXT, 480 - 20 - tw12, y_base + 36,
+            PxScale::from(18.0), &mono, &time_12);
+        let dw = text_width(&mono, PxScale::from(16.0), &date_str);
+        draw_text_mut(&mut img, OVERLAY0, 480 - 20 - dw, y_base + 58,
+            PxScale::from(16.0), &mono, &date_str);
+
+        // Divider between entries
+        if i + 1 < n {
+            draw_divider(&mut img, y_base + row_h - 1);
+        }
+    }
+
+    DynamicImage::ImageRgb8(img)
+}
+
+// ─── Scrolling ticker display ─────────────────────────────────────────────────
+
+/// Render a scrolling text ticker.
+///
+/// - `text`    — the text to scroll (long strings scroll, short ones are centred)
+/// - `scroll_x`— current pixel offset from the right (0 = starts just off-screen)
+/// - `color`   — one of the named CSS-like colour strings ("blue", "green", etc.)
+///
+/// Returns the rendered frame. The caller should increment `scroll_x` by ~2
+/// pixels per render tick to produce smooth scrolling.
+pub fn render_ticker(text: &str, scroll_x: i32, color_name: &str) -> DynamicImage {
+    let mut img = blank();
+    let bold = font_bold();
+    let mono = font_mono();
+
+    let col = match color_name {
+        "blue"   => BLUE,
+        "green"  => GREEN,
+        "yellow" => YELLOW,
+        "red"    => RED,
+        "mauve"  => MAUVE,
+        "teal"   => TEAL,
+        "peach"  => PEACH,
+        _        => TEXT,
+    };
+
+    // Header bar
+    draw_filled_rect_mut(&mut img, Rect::at(0, 0).of_size(480, 48), SURFACE0);
+    let ts = Local::now().format("%H:%M:%S").to_string();
+    let tw = text_width(&mono, PxScale::from(18.0), &ts);
+    draw_text_mut(&mut img, OVERLAY0, 480 - 12 - tw, 16, PxScale::from(18.0), &mono, &ts);
+    draw_text_mut(&mut img, OVERLAY0, 12, 16, PxScale::from(18.0), &bold, "TICKER");
+    draw_divider(&mut img, 48);
+
+    let scale = PxScale::from(48.0);
+    let text_w = text_width(&bold, scale, text);
+
+    // If text fits, just centre it
+    if text_w <= 440 {
+        draw_centered(&mut img, &bold, scale, 195, col, text);
+    } else {
+        // Scroll: x starts at 480 (off right), moves left
+        let x = 480 - scroll_x;
+        // Clip draw to panel bounds  
+        if x > -text_w {
+            // Use draw_text_mut directly at the computed x position
+            draw_text_mut(&mut img, col, x, 195, scale, &bold, text);
+        }
+    }
+
+    // Progress indicator bar at bottom — shows position in scroll cycle
+    let cycle_w = text_w + 480;
+    if cycle_w > 0 {
+        let frac = (scroll_x as f32 / cycle_w as f32).clamp(0.0, 1.0);
+        draw_bar(&mut img, 20, 440, 440, 8, frac, col);
+    }
+
+    DynamicImage::ImageRgb8(img)
+}
+
+// ─── HTTP Status Monitor display ──────────────────────────────────────────────
+
+/// One HTTP monitor result. `status_code` = None means unreachable / timed out.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct HttpMonitorResult {
+    pub label:       String,
+    pub url:         String,
+    pub status_code: Option<u16>,
+    pub latency_ms:  Option<u64>,
+    pub ok:          bool,
+}
+
+/// Render an HTTP health-monitor dashboard.
+///
+/// Shows up to 6 configured endpoints with status code, latency, and a
+/// green (ok) / red (error) indicator badge.
+pub fn render_http_status(results: &[HttpMonitorResult]) -> DynamicImage {
+    let mut img = blank();
+    let bold = font_bold();
+    let mono = font_mono();
+
+    // Header
+    draw_filled_rect_mut(&mut img, Rect::at(0, 0).of_size(480, 52), SURFACE0);
+    draw_text_mut(&mut img, TEAL, 20, 14, PxScale::from(22.0), &bold, "HTTP MONITOR");
+    let ts = Local::now().format("%H:%M:%S").to_string();
+    let tw = text_width(&mono, PxScale::from(16.0), &ts);
+    draw_text_mut(&mut img, OVERLAY0, 480 - 16 - tw, 18, PxScale::from(16.0), &mono, &ts);
+    draw_divider(&mut img, 52);
+
+    let show: Vec<&HttpMonitorResult> = results.iter().take(6).collect();
+    let n = show.len();
+
+    if n == 0 {
+        draw_centered(&mut img, &bold, PxScale::from(22.0), 200, OVERLAY0,
+            "No monitors configured.");
+        draw_centered(&mut img, &bold, PxScale::from(18.0), 234, SURFACE0,
+            "POST /api/http_status to add one");
+        return DynamicImage::ImageRgb8(img);
+    }
+
+    let row_h = (480 - 60) / n.max(1) as i32;
+
+    for (i, r) in show.iter().enumerate() {
+        let y = 60 + i as i32 * row_h;
+
+        // Alternate row background
+        if i % 2 == 1 {
+            draw_filled_rect_mut(&mut img, Rect::at(0, y).of_size(480, row_h as u32), SURFACE0);
+        }
+
+        // Status badge (coloured rectangle on left)
+        let badge_col = if r.ok { GREEN } else { RED };
+        draw_filled_rect_mut(&mut img, Rect::at(12, y + 10).of_size(6, (row_h - 20).max(6) as u32), badge_col);
+
+        // Label
+        let label_disp: String = r.label.chars().take(20).collect();
+        draw_text_mut(&mut img, TEXT, 28, y + 8, PxScale::from(20.0), &bold, &label_disp);
+
+        // Status code / timeout
+        let code_str = match r.status_code {
+            Some(c) => format!("{}", c),
+            None    => "TIMEOUT".into(),
+        };
+        let code_col = if r.ok { GREEN }
+                       else if r.status_code.map(|c| c < 500).unwrap_or(false) { YELLOW }
+                       else { RED };
+        let cw = text_width(&mono, PxScale::from(18.0), &code_str);
+        draw_text_mut(&mut img, code_col, 480 - 16 - cw, y + 10, PxScale::from(18.0), &mono, &code_str);
+
+        // Latency
+        let lat_str = match r.latency_ms {
+            Some(ms) if ms < 1000 => format!("{}ms", ms),
+            Some(ms)              => format!("{:.1}s", ms as f64 / 1000.0),
+            None                  => String::new(),
+        };
+        if !lat_str.is_empty() {
+            let lw = text_width(&mono, PxScale::from(15.0), &lat_str);
+            draw_text_mut(&mut img, OVERLAY0, 480 - 16 - lw, y + 32, PxScale::from(15.0), &mono, &lat_str);
+        }
+
+        // URL (truncated, small)
+        let url_disp: String = r.url.chars().take(36).collect();
+        draw_text_mut(&mut img, OVERLAY0, 28, y + 32, PxScale::from(15.0), &mono, &url_disp);
+
+        // Divider
+        if i + 1 < n {
+            draw_divider(&mut img, y + row_h - 1);
+        }
+    }
+
+    DynamicImage::ImageRgb8(img)
+}
+
+// ─── Shell command output display ─────────────────────────────────────────────
+
+/// Render a shell-command output viewer.
+///
+/// - `cmd`      — display-only short description of the command
+/// - `output`   — captured stdout (newline-delimited); up to 12 lines rendered
+/// - `exit_ok`  — whether the last run exited with code 0
+/// - `run_secs` — Unix seconds of the last successful run (0 = never)
+pub fn render_shell_cmd(cmd: &str, output: &str, exit_ok: bool, run_secs: u64) -> DynamicImage {
+    let mut img = blank();
+    let bold = font_bold();
+    let mono = font_mono();
+
+    // Header
+    let hdr_col = if exit_ok { TEAL } else { RED };
+    draw_filled_rect_mut(&mut img, Rect::at(0, 0).of_size(480, 52), SURFACE0);
+    draw_text_mut(&mut img, hdr_col, 20, 14, PxScale::from(20.0), &bold, "SHELL CMD");
+    let status_str = if exit_ok { "OK" } else { "ERR" };
+    let sw = text_width(&bold, PxScale::from(18.0), status_str);
+    draw_text_mut(&mut img, hdr_col, 480 - 16 - sw, 16, PxScale::from(18.0), &bold, status_str);
+    draw_divider(&mut img, 52);
+
+    // Command label
+    let cmd_disp: String = cmd.chars().take(44).collect();
+    draw_text_mut(&mut img, OVERLAY0, 12, 58, PxScale::from(16.0), &mono, &cmd_disp);
+
+    // Last-run timestamp
+    if run_secs > 0 {
+        let dt = chrono::DateTime::<chrono::Utc>::from_timestamp(run_secs as i64, 0)
+            .map(|d| d.with_timezone(&Local).format("%H:%M:%S").to_string())
+            .unwrap_or_default();
+        let rw = text_width(&mono, PxScale::from(14.0), &dt);
+        draw_text_mut(&mut img, OVERLAY0, 480 - 14 - rw, 60,
+            PxScale::from(14.0), &mono, &dt);
+    }
+
+    draw_divider(&mut img, 78);
+
+    // Output lines (monospaced, up to 12 lines)
+    let line_h: i32 = 32;
+    let max_lines: usize = 12;
+    let start_y: i32 = 84;
+
+    let lines: Vec<&str> = if output.is_empty() {
+        vec!["(no output)"]
+    } else {
+        output.lines().take(max_lines).collect()
+    };
+
+    for (i, line) in lines.iter().enumerate() {
+        let y = start_y + i as i32 * line_h;
+        if y + line_h > 480 { break; }
+        // Truncate to fit panel width
+        let disp: String = line.chars().take(42).collect();
+        let text_col = if i == 0 { TEXT } else { SUBTEXT };
+        draw_text_mut(&mut img, text_col, 12, y, PxScale::from(18.0), &mono, &disp);
+    }
+
+    DynamicImage::ImageRgb8(img)
+}
+
+// ─── Ping latency monitor display ────────────────────────────────────────────
+
+/// One ping result for a configured host.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct PingResult {
+    pub host:       String,
+    pub label:      String,
+    pub latency_ms: Option<f64>,   // None = unreachable / timeout
+    pub loss_pct:   f32,           // packet-loss percentage 0–100
+}
+
+/// Render a ping-latency monitor dashboard.
+///
+/// Shows up to 8 configured hosts with round-trip latency and a
+/// colour-coded quality indicator.
+pub fn render_ping_monitor(results: &[PingResult]) -> DynamicImage {
+    let mut img = blank();
+    let bold = font_bold();
+    let mono = font_mono();
+
+    // Header
+    draw_filled_rect_mut(&mut img, Rect::at(0, 0).of_size(480, 52), SURFACE0);
+    draw_text_mut(&mut img, MAUVE, 20, 14, PxScale::from(22.0), &bold, "PING MONITOR");
+    let ts = Local::now().format("%H:%M:%S").to_string();
+    let tw = text_width(&mono, PxScale::from(16.0), &ts);
+    draw_text_mut(&mut img, OVERLAY0, 480 - 16 - tw, 18, PxScale::from(16.0), &mono, &ts);
+    draw_divider(&mut img, 52);
+
+    let show: Vec<&PingResult> = results.iter().take(8).collect();
+    let n = show.len();
+
+    if n == 0 {
+        draw_centered(&mut img, &bold, PxScale::from(22.0), 200, OVERLAY0,
+            "No hosts configured.");
+        draw_centered(&mut img, &bold, PxScale::from(18.0), 234, SURFACE0,
+            "POST /api/ping to add one");
+        return DynamicImage::ImageRgb8(img);
+    }
+
+    let row_h = (480 - 60) / n.max(1) as i32;
+
+    for (i, r) in show.iter().enumerate() {
+        let y = 60 + i as i32 * row_h;
+
+        // Alternate row background
+        if i % 2 == 1 {
+            draw_filled_rect_mut(&mut img, Rect::at(0, y).of_size(480, row_h as u32), SURFACE0);
+        }
+
+        // Latency quality color
+        let (qual_col, bar_frac) = match r.latency_ms {
+            None       => (RED,    0.0f32),
+            Some(ms) if ms < 20.0  => (GREEN,  (ms / 200.0) as f32),
+            Some(ms) if ms < 80.0  => (TEAL,   (ms / 200.0) as f32),
+            Some(ms) if ms < 200.0 => (YELLOW, (ms / 200.0) as f32),
+            Some(ms)               => (RED,    1.0f32.min(ms as f32 / 500.0)),
+        };
+
+        // Left bar accent
+        draw_filled_rect_mut(&mut img,
+            Rect::at(12, y + 8).of_size(4, (row_h - 16).max(4) as u32),
+            qual_col);
+
+        // Label
+        let label_disp: String = r.label.chars().take(18).collect();
+        draw_text_mut(&mut img, TEXT, 26, y + 8, PxScale::from(20.0), &bold, &label_disp);
+
+        // Host (small, right-aligned)
+        let host_disp: String = r.host.chars().take(24).collect();
+        let hdisp_w = text_width(&mono, PxScale::from(14.0), &host_disp);
+        draw_text_mut(&mut img, OVERLAY0, 480 - 14 - hdisp_w, y + 10, PxScale::from(14.0), &mono, &host_disp);
+
+        // Latency value
+        let lat_str = match r.latency_ms {
+            Some(ms) => format!("{:.1} ms", ms),
+            None     => "TIMEOUT".into(),
+        };
+        draw_text_mut(&mut img, qual_col, 26, y + 30, PxScale::from(22.0), &mono, &lat_str);
+
+        // Loss indicator
+        if r.loss_pct > 0.0 {
+            let loss_str = format!("{:.0}% loss", r.loss_pct);
+            let lw = text_width(&mono, PxScale::from(14.0), &loss_str);
+            draw_text_mut(&mut img, YELLOW, 480 - 14 - lw, y + 30, PxScale::from(14.0), &mono, &loss_str);
+        }
+
+        // Latency mini-bar
+        if row_h > 56 {
+            draw_bar(&mut img, 26, y + row_h - 14, 200, 6, bar_frac, qual_col);
+        }
+
+        // Divider
+        if i + 1 < n {
+            draw_divider(&mut img, y + row_h - 1);
+        }
+    }
+
+    DynamicImage::ImageRgb8(img)
+}
+
+// ─── Dashboard (4-quadrant overview) ─────────────────────────────────────────
+
+/// Render a four-quadrant overview dashboard:
+///
+/// ```
+/// ┌─────────────────┬─────────────────┐
+/// │  CLOCK + DATE   │  CPU / MEM      │
+/// │                 │                 │
+/// ├─────────────────┼─────────────────┤
+/// │  NETWORK I/O    │  TEMPERATURE    │
+/// │                 │                 │
+/// └─────────────────┴─────────────────┘
+/// ```
+///
+/// All stats are collected fresh on each call. Useful as a "glance" mode.
+pub fn render_dashboard() -> DynamicImage {
+    let mut img = blank();
+    let bold = font_bold();
+    let mono = font_mono();
+
+    // ── Collect all stats ─────────────────────────────────────────────────
+    let mut sys = System::new_all();
+    sys.refresh_all();
+
+    let now       = Local::now();
+    let time_str  = now.format("%H:%M:%S").to_string();
+    let date_str  = now.format("%a %b %-d").to_string();
+
+    let cpu_pct   = sys.global_cpu_usage();
+    let used_mem  = sys.used_memory();
+    let total_mem = sys.total_memory();
+    let mem_pct   = if total_mem > 0 { used_mem as f64 / total_mem as f64 * 100.0 } else { 0.0 };
+    let used_gb   = used_mem as f64 / 1_073_741_824.0;
+    let total_gb  = total_mem as f64 / 1_073_741_824.0;
+
+    // Temperature
+    let mut comps = sysinfo::Components::new_with_refreshed_list();
+    comps.refresh(false);
+    let temp_c: Option<f32> = comps.iter()
+        .filter(|c| {
+            let l = c.label().to_lowercase();
+            l.contains("cpu") || l.contains("core") || l.contains("package")
+        })
+        .filter_map(|c| c.temperature())
+        .filter(|t| *t > 0.0 && !t.is_nan())
+        .reduce(f32::max);
+
+    // Network
+    use sysinfo::Networks;
+    let networks = Networks::new_with_refreshed_list();
+    let (rx_b, tx_b): (u64, u64) = networks.iter()
+        .filter(|(name, _)| !name.starts_with("lo"))
+        .fold((0, 0), |(r, t), (_, d)| {
+            (r + d.received(), t + d.transmitted())
+        });
+
+    let load = System::load_average();
+    let uptime_secs = System::uptime();
+    let hostname = System::host_name().unwrap_or_else(|| "ttlcd".into());
+
+    // ── Layout constants ──────────────────────────────────────────────────
+    let mid_x: i32 = 240;
+    let mid_y: i32 = 240;
+    let pad:   i32 = 10;
+
+    // ── Quadrant dividers ─────────────────────────────────────────────────
+    // Vertical centre line
+    draw_filled_rect_mut(&mut img, Rect::at(mid_x - 1, 0).of_size(2, 480), SURFACE0);
+    // Horizontal centre line
+    draw_filled_rect_mut(&mut img, Rect::at(0, mid_y - 1).of_size(480, 2), SURFACE0);
+
+    // ── Top-left: Clock ───────────────────────────────────────────────────
+    let tl_col = MAUVE;
+    draw_text_mut(&mut img, tl_col, pad, pad + 2, PxScale::from(18.0), &mono, &hostname);
+    draw_text_mut(&mut img, TEXT, pad, pad + 26, PxScale::from(48.0), &mono, &time_str);
+    draw_text_mut(&mut img, SUBTEXT, pad, pad + 80, PxScale::from(20.0), &bold, &date_str);
+
+    let uptime = format_uptime(uptime_secs);
+    draw_text_mut(&mut img, OVERLAY0, pad, pad + 106, PxScale::from(16.0), &mono, &format!("up {}", uptime));
+
+    let load_str = format!("{:.2}  {:.2}  {:.2}", load.one, load.five, load.fifteen);
+    draw_text_mut(&mut img, OVERLAY0, pad, pad + 126, PxScale::from(14.0), &mono, &load_str);
+
+    // ── Top-right: CPU + Memory ───────────────────────────────────────────
+    let tr_x = mid_x + pad;
+    let cpu_col = if cpu_pct > 80.0 { RED } else if cpu_pct > 50.0 { YELLOW } else { GREEN };
+
+    draw_text_mut(&mut img, BLUE, tr_x, pad + 2, PxScale::from(18.0), &bold, "CPU");
+    draw_text_mut(&mut img, cpu_col, tr_x, pad + 24, PxScale::from(38.0), &mono,
+        &format!("{:4.1}%", cpu_pct));
+    draw_bar(&mut img, tr_x, pad + 70, 220, 14, cpu_pct / 100.0, cpu_col);
+
+    draw_divider(&mut img, pad + 92);
+
+    let mem_col = if mem_pct > 85.0 { RED } else if mem_pct > 65.0 { YELLOW } else { GREEN };
+    draw_text_mut(&mut img, BLUE, tr_x, pad + 98, PxScale::from(18.0), &bold, "MEM");
+    draw_text_mut(&mut img, mem_col, tr_x, pad + 120, PxScale::from(30.0), &mono,
+        &format!("{:.1}/{:.1}G", used_gb, total_gb));
+    draw_bar(&mut img, tr_x, pad + 158, 220, 14, (mem_pct / 100.0) as f32, mem_col);
+
+    draw_text_mut(&mut img, OVERLAY0, tr_x, pad + 178, PxScale::from(16.0), &mono,
+        &format!("{:.0}%", mem_pct));
+
+    // ── Bottom-left: Network ──────────────────────────────────────────────
+    let bl_y = mid_y + pad;
+    draw_text_mut(&mut img, TEAL, pad, bl_y, PxScale::from(18.0), &bold, "NETWORK");
+    let rx_str = format!("↓ {}", format_bytes_compact(rx_b));
+    let tx_str = format!("↑ {}", format_bytes_compact(tx_b));
+    draw_text_mut(&mut img, GREEN, pad, bl_y + 26, PxScale::from(28.0), &mono, &rx_str);
+    draw_text_mut(&mut img, YELLOW, pad, bl_y + 60, PxScale::from(28.0), &mono, &tx_str);
+
+    // Active interfaces count
+    let if_count = networks.iter().filter(|(n, _)| !n.starts_with("lo")).count();
+    draw_text_mut(&mut img, OVERLAY0, pad, bl_y + 96,
+        PxScale::from(16.0), &mono, &format!("{} interface{}", if_count, if if_count == 1 { "" } else { "s" }));
+
+    // ── Bottom-right: Temperature ─────────────────────────────────────────
+    let br_x = mid_x + pad;
+    let br_y = mid_y + pad;
+    draw_text_mut(&mut img, PEACH, br_x, br_y, PxScale::from(18.0), &bold, "TEMP");
+
+    match temp_c {
+        None => {
+            draw_text_mut(&mut img, OVERLAY0, br_x, br_y + 28, PxScale::from(22.0), &bold, "N/A");
+        }
+        Some(t) => {
+            let t_col = if t > 85.0 { RED } else if t > 70.0 { YELLOW } else { GREEN };
+            draw_text_mut(&mut img, t_col, br_x, br_y + 24, PxScale::from(44.0), &mono,
+                &format!("{:.0}°C", t));
+            let bar_frac = ((t - 20.0) / 80.0).clamp(0.0, 1.0);
+            draw_bar(&mut img, br_x, br_y + 76, 220, 14, bar_frac, t_col);
+
+            // Show a few sensor labels
+            let mut sensor_y = br_y + 98;
+            for c in comps.iter().take(3) {
+                if let Some(st) = c.temperature() {
+                    if st > 0.0 && !st.is_nan() {
+                        let label: String = c.label().chars().take(14).collect();
+                        let sc = if st > 80.0 { RED } else if st > 65.0 { YELLOW } else { OVERLAY0 };
+                        draw_text_mut(&mut img, sc, br_x, sensor_y,
+                            PxScale::from(14.0), &mono, &format!("{:<14} {:.0}°", label, st));
+                        sensor_y += 18;
+                        if sensor_y > 470 { break; }
+                    }
+                }
+            }
+        }
+    }
+
+    DynamicImage::ImageRgb8(img)
+}
+
+fn format_bytes_compact(b: u64) -> String {
+    if b >= 1_000_000_000 { format!("{:.1}GB", b as f64 / 1_000_000_000.0) }
+    else if b >= 1_000_000 { format!("{:.1}MB", b as f64 / 1_000_000.0) }
+    else if b >= 1_000     { format!("{:.0}KB", b as f64 / 1_000.0) }
+    else                   { format!("{}B", b) }
 }

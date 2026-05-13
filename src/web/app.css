@@ -1,7 +1,8 @@
-/* ttlcd web UI ─ Catppuccin Mocha */
+/* ttlcd web UI ─ Catppuccin Mocha / Latte */
 
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
+/* ── Default theme: Catppuccin Mocha (dark) ──────────────────────────── */
 :root {
   --base:    #1e1e2e;
   --mantle:  #181825;
@@ -22,6 +23,39 @@
   --font: 'Segoe UI', system-ui, sans-serif;
   --mono: 'Cascadia Code', 'Fira Code', 'JetBrains Mono', monospace;
 }
+
+/* ── Catppuccin Latte (light) theme ──────────────────────────────────── */
+[data-theme="latte"] {
+  --base:    #eff1f5;
+  --mantle:  #e6e9ef;
+  --crust:   #dce0e8;
+  --surface0:#ccd0da;
+  --surface1:#bcc0cc;
+  --overlay0:#9ca0b0;
+  --text:    #4c4f69;
+  --subtext: #5c5f77;
+  --blue:    #1e66f5;
+  --green:   #40a02b;
+  --mauve:   #8839ef;
+  --teal:    #179299;
+  --yellow:  #df8e1d;
+  --red:     #d20f39;
+  --peach:   #fe640b;
+}
+
+/* ── Theme toggle button ─────────────────────────────────────────────── */
+.theme-toggle {
+  background: transparent;
+  border: 1px solid var(--overlay0);
+  border-radius: 6px;
+  color: var(--subtext);
+  padding: 0.25rem 0.6rem;
+  font-size: 1rem;
+  cursor: pointer;
+  transition: border-color 0.15s, color 0.15s;
+  line-height: 1;
+}
+.theme-toggle:hover { border-color: var(--blue); color: var(--blue); }
 
 body {
   background: var(--crust);
@@ -875,4 +909,393 @@ kbd {
 .import-label {
   display: inline-flex;
   align-items: center;
+}
+
+/* ── Network interface table ──────────────────────────────────────────────── */
+.iface-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.82rem;
+  margin-top: 0.4rem;
+}
+.iface-table th {
+  text-align: left;
+  color: var(--subtext0);
+  font-weight: 600;
+  padding: 0.3rem 0.6rem;
+  border-bottom: 1px solid var(--surface0);
+}
+.iface-table td {
+  padding: 0.25rem 0.6rem;
+  color: var(--text);
+  border-bottom: 1px solid var(--surface0);
+}
+.iface-table tr:last-child td { border-bottom: none; }
+.iface-name { color: var(--blue); font-family: var(--mono); }
+.iface-rate { color: var(--green); font-family: var(--mono); }
+.iface-total { color: var(--subtext0); font-family: var(--mono); }
+
+/* ── Sub-label for sections within cards ────────────────────────────────── */
+.sub-label {
+  font-size: 0.8rem;
+  color: var(--subtext0);
+  margin-bottom: 0.35rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+/* ── CPU sparkline canvas ──────────────────────────────────────────────────── */
+.cpu-sparkline {
+  display: block;
+  width: 100%;
+  max-width: 440px;
+  height: 60px;
+  border-radius: 6px;
+  border: 1px solid var(--surface1);
+  background: var(--surface0);
+}
+.sparkline-wrap { margin-top: 0.75rem; }
+
+/* ── Prefer light theme by default if OS is in light mode and no saved pref ── */
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme]) {
+    --base:    #eff1f5;
+    --mantle:  #e6e9ef;
+    --crust:   #dce0e8;
+    --surface0:#ccd0da;
+    --surface1:#bcc0cc;
+    --overlay0:#9ca0b0;
+    --text:    #4c4f69;
+    --subtext: #5c5f77;
+    --blue:    #1e66f5;
+    --green:   #40a02b;
+    --mauve:   #8839ef;
+    --teal:    #179299;
+    --yellow:  #df8e1d;
+    --red:     #d20f39;
+    --peach:   #fe640b;
+  }
+}
+
+/* ── Countdown h/m/s time-picker row ───────────────────────────────────────── */
+.time-picker-row {
+  display: flex;
+  gap: 0.5rem;
+  align-items: flex-end;
+  flex-wrap: wrap;
+}
+.time-picker-group {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+.time-picker-group label {
+  font-size: 0.72rem;
+  color: var(--overlay0);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+.time-picker-group input[type="number"] {
+  width: 64px;
+  text-align: center;
+}
+
+/* ── Stopwatch ──────────────────────────────────────────────────────────────── */
+.stopwatch-display {
+  font-family: var(--font-mono, 'DejaVu Sans Mono', monospace);
+  font-size: 3.2rem;
+  font-weight: bold;
+  text-align: center;
+  color: var(--teal);
+  letter-spacing: 0.04em;
+  padding: 0.5rem 0 0.1rem;
+  line-height: 1;
+}
+
+.stopwatch-status {
+  text-align: center;
+  font-size: 0.8rem;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  margin: 0.15rem 0 0.75rem;
+}
+.stopwatch-status.sw-running { color: var(--green); }
+.stopwatch-status.sw-paused  { color: var(--yellow); }
+.stopwatch-status.sw-ready   { color: var(--overlay0); }
+
+.stopwatch-actions {
+  justify-content: center;
+  gap: 0.5rem;
+  margin-bottom: 0.75rem;
+}
+
+.sw-latest-lap { background: var(--surface0); }
+.sw-delta { color: var(--peach); }
+
+/* ── Freeze button active state ─────────────────────────────────────────────── */
+button.btn-link {
+  background: none;
+  border: 1px solid var(--surface1, #45475a);
+  color: var(--subtext1, var(--text));
+  cursor: pointer;
+  border-radius: 6px;
+  padding: 0.35rem 0.75rem;
+  font-size: 0.85rem;
+  transition: background 0.15s, border-color 0.15s;
+}
+button.btn-link:hover { background: var(--surface0); }
+button.btn-link.active {
+  background: var(--surface1);
+  border-color: var(--blue);
+  color: var(--blue);
+}
+
+/* ── Metrics dashboard ──────────────────────────────────────────────────────── */
+.metric-row {
+  display: flex;
+  gap: 0.4rem;
+  align-items: center;
+  margin-bottom: 0.4rem;
+}
+.metric-row input, .metric-row select {
+  padding: 0.3rem 0.5rem;
+  font-size: 0.85rem;
+}
+
+/* ── Countdown presets ──────────────────────────────────────────────────────── */
+.cd-preset-bar {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  flex-wrap: wrap;
+  margin-bottom: 0.75rem;
+}
+.cd-preset-btn {
+  font-size: 0.78rem;
+  padding: 0.2rem 0.55rem;
+}
+
+/* ── Stopwatch injected section ──────────────────────────────────────────── */
+.sw-main {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 0.5rem 0 0;
+}
+
+.sw-laps-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.82rem;
+  margin-top: 0.5rem;
+}
+.sw-laps-table th {
+  text-align: left;
+  color: var(--subtext);
+  font-weight: 600;
+  padding: 0.25rem 0.6rem;
+  border-bottom: 1px solid var(--surface0);
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+.sw-laps-table td {
+  padding: 0.2rem 0.6rem;
+  border-bottom: 1px solid var(--surface0);
+  font-family: var(--mono);
+}
+.sw-laps-table tr:last-child td { border-bottom: none; }
+
+/* ── Profile section ─────────────────────────────────────────────────────── */
+#prof-select { width: 100%; }
+
+/* ── Dim schedule info badge ─────────────────────────────────────────────── */
+#dim-active-info {
+  background: var(--surface0);
+  border-radius: 6px;
+  padding: 0.35rem 0.7rem;
+  font-size: 0.82rem;
+  color: var(--teal);
+  display: inline-block;
+}
+
+/* ── Connection status dot ───────────────────────────────────────────────── */
+.conn-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--green);
+  margin-right: 4px;
+  transition: background 0.3s;
+}
+.conn-dot.offline { background: var(--red); }
+.conn-dot.stale   { background: var(--yellow); animation: pulse 1s infinite; }
+
+@keyframes pulse {
+  0%,100% { opacity: 1; }
+  50%      { opacity: 0.35; }
+}
+
+/* ── History kind badges ─────────────────────────────────────────────────── */
+.hist-text   { color: var(--blue);   background: rgba(137,180,250,0.15); padding: 0.05rem 0.3rem; border-radius: 3px; }
+.hist-alert  { color: var(--red);    background: rgba(243,139,168,0.15); padding: 0.05rem 0.3rem; border-radius: 3px; }
+.hist-image  { color: var(--mauve);  background: rgba(203,166,247,0.15); padding: 0.05rem 0.3rem; border-radius: 3px; }
+.hist-system { color: var(--peach);  background: rgba(250,179,135,0.15); padding: 0.05rem 0.3rem; border-radius: 3px; }
+
+/* ── Threshold section ───────────────────────────────────────────────────── */
+.form-row.three-col {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 0.75rem;
+}
+@media (max-width: 560px) {
+  .form-row.three-col { grid-template-columns: 1fr; }
+}
+
+/* ── Weather section ─────────────────────────────────────────────────────── */
+.weather-display {
+  background: var(--surface0);
+  border-radius: 8px;
+  padding: 0.75rem 1rem;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.3rem;
+}
+
+.weather-temp {
+  font-size: 3rem;
+  font-weight: 700;
+  font-family: var(--mono);
+  color: var(--teal);
+  line-height: 1;
+}
+
+.weather-cond {
+  font-size: 1rem;
+  color: var(--subtext);
+  text-align: center;
+}
+
+.weather-details {
+  display: flex;
+  gap: 1.2rem;
+  flex-wrap: wrap;
+  justify-content: center;
+  font-size: 0.82rem;
+  color: var(--text);
+  font-family: var(--mono);
+  margin-top: 0.25rem;
+}
+
+/* ── History filter bar ─────────────────────────────────────── */
+.hist-filter-bar {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  margin-bottom: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.hist-filter-label {
+  font-size: 0.75rem;
+  color: var(--overlay0);
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  margin-right: 0.2rem;
+}
+
+.hist-filter-btn {
+  font-size: 0.75rem;
+  padding: 0.2rem 0.55rem;
+  opacity: 0.65;
+  transition: opacity 0.15s, background 0.15s;
+}
+
+.hist-filter-btn.active,
+.hist-filter-btn:hover {
+  opacity: 1;
+  background: var(--surface1);
+}
+
+/* ── History list item ──────────────────────────────────────── */
+.history-list { list-style: none; padding: 0; margin: 0; }
+.history-list li {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+  font-size: 0.82rem;
+  padding: 0.25rem 0;
+  border-bottom: 1px solid var(--surface0);
+}
+.hist-ts   { color: var(--overlay0); font-family: var(--mono); flex-shrink: 0; }
+.hist-kind { border-radius: 3px; padding: 0.05rem 0.4rem; font-size: 0.7rem; font-weight: 700; flex-shrink: 0; }
+.hist-text   { background: rgba(137,180,250,0.15); color: var(--blue); }
+.hist-alert  { background: rgba(243,139,168,0.15); color: var(--red); }
+.hist-image  { background: rgba(203,166,247,0.15); color: var(--mauve); }
+.hist-system { background: rgba(148,226,213,0.15); color: var(--teal); }
+.hist-msg  { color: var(--subtext); font-family: var(--mono); flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* ── Mode Schedule ─────────────────────────────────────────────────── */
+.sched-list { display: flex; flex-direction: column; gap: 0.35rem; }
+.sched-entry {
+  display: flex; align-items: center; gap: 0.5rem;
+  background: var(--surface0); border-radius: 6px; padding: 0.4rem 0.7rem;
+  font-size: 0.85rem;
+}
+.sched-time  { font-family: var(--mono-font); color: var(--teal); min-width: 3rem; font-weight: 700; }
+.sched-mode  { color: var(--blue); flex: 1; font-family: var(--mono-font); font-size: 0.8rem; }
+.sched-label { color: var(--overlay0); font-size: 0.78rem; font-style: italic; }
+.sched-remove {
+  margin-left: auto; padding: 0.15rem 0.5rem; font-size: 0.75rem;
+  background: transparent; border: 1px solid var(--red); color: var(--red);
+  border-radius: 4px; cursor: pointer; transition: background 0.15s;
+}
+.sched-remove:hover { background: var(--red); color: var(--base); }
+
+/* ── Pomodoro ────────────────────────────────────────────────────── */
+#pomo-status-row { background: var(--mantle); border-radius: 8px; padding: 0.75rem 1rem; }
+#pomo-time       { font-size: 2.5rem; font-weight: 700; line-height: 1; }
+#pomo-phase-badge {
+  border-radius: 20px; padding: 0.35rem 0.9rem;
+  font-size: 0.9rem; font-weight: 700; letter-spacing: 0.03em;
+}
+
+/* ── Toast notifications ─────────────────────────────────────────── */
+#toast-container {
+  position: fixed; bottom: 1.5rem; right: 1.5rem;
+  display: flex; flex-direction: column; gap: 0.5rem;
+  z-index: 9999; pointer-events: none;
+}
+.toast {
+  padding: 0.6rem 1.1rem; border-radius: 8px;
+  font-size: 0.85rem; max-width: 320px;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.4);
+  opacity: 0; transform: translateX(20px);
+  transition: opacity 0.25s ease, transform 0.25s ease;
+  background: var(--surface1); color: var(--text);
+  border-left: 3px solid var(--blue);
+}
+.toast.toast-visible { opacity: 1; transform: translateX(0); }
+.toast.toast-alert   { border-left-color: var(--red);   background: color-mix(in srgb, var(--surface1) 80%, var(--red)); }
+.toast.toast-ok      { border-left-color: var(--green);  }
+.toast.toast-warn    { border-left-color: var(--yellow); }
+
+/* ── HTTP Status Monitor & Shell Command ─────────────────────────── */
+#hs-results      { color: var(--overlay0); font-size: 0.82rem; min-height: 1rem; }
+#sc-output       {
+  font-family: var(--mono-font, monospace);
+  font-size: 0.8rem;
+  background: var(--crust);
+  border-radius: 6px;
+  padding: 0.6rem;
+  margin-top: 0.5rem;
+  white-space: pre-wrap;
+  max-height: 150px;
+  overflow-y: auto;
+  color: var(--text);
+  border: 1px solid var(--surface0);
 }

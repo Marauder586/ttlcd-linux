@@ -14,9 +14,11 @@
       ttlcd <span class="version" id="hdr-version"></span>
     </h1>
     <div id="status-bar">
+      <a href="/api/docs" target="_blank" class="btn-link" style="font-size:0.78rem;padding:0.2rem 0.55rem;text-decoration:none;display:inline-block" title="Open API reference">📋 API</a>
       <span class="label">mode:</span>
       <span id="current-mode" class="badge">—</span>
       <button id="return-btn" class="return-btn" style="display:none" title="Return to previous live mode">← Return</button>
+      <button id="theme-toggle-btn" class="theme-toggle" title="Toggle light / dark mode">🌙</button>
     </div>
   </header>
 
@@ -26,6 +28,7 @@
       <h2>Display Mode</h2>
       <div class="mode-grid">
         <button class="mode-btn" data-mode="clock"         title="Large digital clock">🕐<span>Clock</span></button>
+        <button class="mode-btn" data-mode="big_clock"     title="Full-screen giant clock with large seconds">🕰<span>Big Clock</span></button>
         <button class="mode-btn" data-mode="clock_sysinfo" title="Clock + quick stats">🕐📊<span>Clock+Stats</span></button>
         <button class="mode-btn" data-mode="sysinfo"       title="CPU · RAM · temp · uptime">📊<span>Sysinfo</span></button>
         <button class="mode-btn" data-mode="cpu_detail"    title="Per-core CPU usage">🔢<span>CPU Cores</span></button>
@@ -38,6 +41,22 @@
         <button class="mode-btn" data-mode="net_graph"      title="Network Rx/Tx I/O history">📉<span>Net Graph</span></button>
         <button class="mode-btn" data-mode="countdown"       title="Live countdown timer">⏳<span>Countdown</span></button>
         <button class="mode-btn" data-mode="recent_alerts"  title="Last 5 notifications as panel log">📋<span>Alerts Log</span></button>
+        <button class="mode-btn" data-mode="process_memory" title="Top processes by RAM usage">🧠<span>Mem Top</span></button>
+        <button class="mode-btn" data-mode="disk_io"        title="Disk read/write throughput">💽<span>Disk I/O</span></button>
+        <button class="mode-btn" data-mode="calendar"       title="Full-month calendar with today highlighted">📅<span>Calendar</span></button>
+        <button class="mode-btn" data-mode="stopwatch"     title="Running stopwatch with lap times">⏱<span>Stopwatch</span></button>
+        <button class="mode-btn" data-mode="metrics"       title="Custom key/value dashboard">📊<span>Metrics</span></button>
+        <button class="mode-btn" data-mode="weather"       title="Weather snapshot (push via API or web UI)">🌤<span>Weather</span></button>
+        <button class="mode-btn" data-mode="notes"         title="Bulletin board — push a list of text notes">📝<span>Notes</span></button>
+        <button class="mode-btn" data-mode="qr_code"       title="Display a QR code — set via web UI or POST /api/qr">🔲<span>QR Code</span></button>
+        <button class="mode-btn" data-mode="pomodoro"      title="🍅 Pomodoro focus timer — 25m work / 5m break cycles">🍅<span>Pomodoro</span></button>
+        <button class="mode-btn" data-mode="battery"       title="Battery level and charging status (Linux laptops)">🔋<span>Battery</span></button>
+        <button class="mode-btn" data-mode="world_clock"   title="World clock — up to 4 cities with configurable UTC offsets">🌍<span>World Clock</span></button>
+        <button class="mode-btn" data-mode="ticker"        title="Scrolling text ticker — push text via POST /api/ticker or web UI">📡<span>Ticker</span></button>
+        <button class="mode-btn" data-mode="http_status"   title="HTTP health monitor — track URL status and latency">🌐<span>HTTP Monitor</span></button>
+        <button class="mode-btn" data-mode="shell_cmd"     title="Shell command output viewer — run any shell command on panel">💻<span>Shell Cmd</span></button>
+        <button class="mode-btn" data-mode="ping_monitor"  title="ICMP ping latency monitor — track host reachability and round-trip time">📶<span>Ping</span></button>
+        <button class="mode-btn" data-mode="dashboard"    title="Four-quadrant overview: clock, CPU/RAM, network, temperature">📊<span>Dashboard</span></button>
         <button class="mode-btn" data-mode="idle"          title="Keepalive — no display update">💤<span>Idle</span></button>
       </div>
     </section>
@@ -186,6 +205,29 @@
       <div id="upload-status"></div>
     </section>
 
+    <!-- ── Image from URL ───────────────────────────────────────── -->
+    <section class="card">
+      <h2>Image from URL</h2>
+      <p class="card-hint">Fetch any public image from the web and display it on the panel. Useful for live charts, webcam snapshots, or generated images.</p>
+      <div class="form-row two-col">
+        <div class="form-group" style="flex:2">
+          <label for="img-url-input">Image URL (http/https)</label>
+          <input type="text" id="img-url-input" placeholder="https://example.com/chart.png" maxlength="500">
+        </div>
+        <div class="form-group">
+          <label for="img-url-letterbox">Fit mode</label>
+          <select id="img-url-letterbox">
+            <option value="true" selected>Letterbox (fit)</option>
+            <option value="false">Fill (crop)</option>
+          </select>
+        </div>
+      </div>
+      <div class="form-actions">
+        <button id="img-url-send-btn" class="primary">🌐 Fetch &amp; Display</button>
+        <span id="img-url-status"></span>
+      </div>
+    </section>
+
     <!-- ── Slideshow ─────────────────────────────────────────────── -->
     <section class="card">
       <h2>Slideshow</h2>
@@ -222,11 +264,15 @@
       </div>
       <div class="preview-actions">
         <a id="screenshot-btn" href="/api/screenshot" download="panel.jpg" class="btn-link">
-          📷 Screenshot
+          📷 Screenshot (JPEG)
+        </a>
+        <a href="/api/screenshot.png" download="panel.png" class="btn-link" title="Download lossless PNG screenshot">
+          📷 Screenshot (PNG)
         </a>
         <a href="/api/stream" target="_blank" class="btn-link" title="Open live MJPEG stream in new tab">
           📺 Live stream
         </a>
+        <button id="freeze-btn" class="btn-link" title="Freeze / unfreeze display updates">❄ Freeze</button>
       </div>
     </section>
 
@@ -236,20 +282,75 @@
       <h2>Countdown Timer</h2>
       <p class="card-hint">Display a live countdown on the panel. Expires to "TIME'S UP" when done.</p>
       <div class="countdown-form">
-        <div class="form-row two-col">
-          <div class="form-group">
-            <label for="cd-seconds">Duration (seconds)</label>
-            <input type="number" id="cd-seconds" placeholder="e.g. 300" min="1" max="86400" value="60">
+        <div class="time-picker-row">
+          <div class="time-picker-group">
+            <label for="cd-hours">Hours</label>
+            <input type="number" id="cd-hours" min="0" max="23" value="0">
           </div>
-          <div class="form-group">
-            <label for="cd-label">Label <span class="hint-inline">(optional)</span></label>
-            <input type="text" id="cd-label" placeholder="e.g. Coffee break" maxlength="30">
+          <div class="time-picker-group">
+            <label for="cd-minutes">Min</label>
+            <input type="number" id="cd-minutes" min="0" max="59" value="5">
+          </div>
+          <div class="time-picker-group">
+            <label for="cd-secs-i">Sec</label>
+            <input type="number" id="cd-secs-i" min="0" max="59" value="0">
+          </div>
+          <div class="time-picker-group" style="flex:1; min-width:120px">
+            <label for="cd-label">Label <span class="hint-inline">(opt.)</span></label>
+            <input type="text" id="cd-label" placeholder="Coffee break" maxlength="30">
           </div>
         </div>
-        <div class="form-actions">
+        <!-- Hidden seconds total kept for JS API compat -->
+        <input type="hidden" id="cd-seconds" value="300">
+        <div class="form-actions" style="margin-top:0.75rem">
           <button id="cd-start-btn" class="primary">⏳ Start Countdown</button>
           <button id="cd-cancel-btn">✕ Cancel</button>
           <span id="cd-status"></span>
+        </div>
+      </div>
+    </section>
+
+    <!-- ── Big text banner ──────────────────────────────────────── -->
+    <section class="card">
+      <h2>Big Text Banner</h2>
+      <p class="card-hint">Show up to 3 lines of large centred text — useful for KPIs and announcements.</p>
+      <div class="banner-form">
+        <div class="form-group">
+          <label for="ban-line1">Line 1 <span class="hint-inline">(largest)</span></label>
+          <input type="text" id="ban-line1" placeholder="99.8%" maxlength="16">
+        </div>
+        <div class="form-row two-col">
+          <div class="form-group">
+            <label for="ban-line2">Line 2</label>
+            <input type="text" id="ban-line2" placeholder="Uptime" maxlength="20">
+          </div>
+          <div class="form-group">
+            <label for="ban-line3">Line 3</label>
+            <input type="text" id="ban-line3" placeholder="Last 30 days" maxlength="24">
+          </div>
+        </div>
+        <div class="form-row two-col">
+          <div class="form-group">
+            <label for="ban-label">Subtitle label</label>
+            <input type="text" id="ban-label" placeholder="e.g. SLA" maxlength="30">
+          </div>
+          <div class="form-group">
+            <label for="ban-color">Accent colour</label>
+            <select id="ban-color">
+              <option value="blue" selected>Blue</option>
+              <option value="green">Green</option>
+              <option value="yellow">Yellow</option>
+              <option value="red">Red</option>
+              <option value="teal">Teal</option>
+              <option value="mauve">Mauve</option>
+              <option value="peach">Peach</option>
+              <option value="white">White</option>
+            </select>
+          </div>
+        </div>
+        <div class="form-actions">
+          <button id="ban-send-btn" class="primary">📢 Show Banner</button>
+          <span id="ban-status"></span>
         </div>
       </div>
     </section>
@@ -272,6 +373,12 @@
               <option value="180">180° (upside-down)</option>
               <option value="270">270° (counter-clockwise)</option>
             </select>
+          </div>
+        </div>
+        <div class="form-row two-col">
+          <div class="form-group">
+            <label for="set-brightness">Brightness <span class="hint-inline" id="set-brightness-lbl">—</span></label>
+            <input type="range" id="set-brightness" min="0" max="100" value="100" step="1">
           </div>
         </div>
         <div class="form-actions">
@@ -308,6 +415,25 @@
           <div class="stat-val" id="stat-temp">—</div>
           <div class="mini-bar-track"><div class="mini-bar" id="bar-temp"></div></div>
         </div>
+        <div class="stat-block" id="stat-net-block" style="display:none">
+          <div class="stat-label">Net Rx/Tx</div>
+          <div class="stat-val mono" id="stat-net">—</div>
+        </div>
+      </div>
+
+      <!-- CPU sparkline -->
+      <div class="sparkline-wrap" id="sparkline-wrap" style="display:none; margin-top:0.75rem">
+        <div class="sub-label">CPU history <span class="hint-inline">(last 2 min)</span></div>
+        <canvas id="cpu-sparkline" class="cpu-sparkline" width="440" height="60"></canvas>
+      </div>
+
+      <!-- Network interface mini-table -->
+      <div id="net-ifaces-wrap" style="display:none; margin-top:0.75rem">
+        <div class="sub-label">Network interfaces <span class="hint-inline">(1-second rate)</span></div>
+        <table id="net-ifaces-table" class="iface-table">
+          <thead><tr><th>Interface</th><th>Rx/s</th><th>Tx/s</th><th>Total Rx</th><th>Total Tx</th></tr></thead>
+          <tbody></tbody>
+        </table>
       </div>
     </section>
 
@@ -321,7 +447,15 @@
         <tr><td class="info-label">Quality</td><td id="info-quality">—</td></tr>
         <tr><td class="info-label">Headless</td><td id="info-headless">—</td></tr>
         <tr><td class="info-label">Host</td><td id="info-host">—</td></tr>
+        <tr><td class="info-label">Panel serial</td><td id="info-serial">—</td></tr>
+        <tr><td class="info-label">Panel firmware</td><td id="info-firmware">—</td></tr>
         <tr><td class="info-label">Pending</td><td id="info-pending">—</td></tr>
+        <tr><td class="info-label">Brightness</td><td id="info-brightness">—</td></tr>
+        <tr><td class="info-label">Render FPS</td><td id="info-fps">—</td></tr>
+        <tr><td class="info-label">Daemon uptime</td><td id="info-daemon-uptime">—</td></tr>
+        <tr><td class="info-label">Frame #</td><td id="info-frame-seq">—</td></tr>
+        <tr><td class="info-label">Frozen</td><td id="info-frozen">—</td></tr>
+        <tr><td class="info-label">Stopwatch</td><td id="info-sw">—</td></tr>
       </table>
     </section>
 
@@ -354,6 +488,7 @@
       <div class="hist-actions">
         <button id="hist-refresh-btn" class="small-btn">↺ Refresh</button>
         <button id="hist-clear-btn" class="small-btn danger-btn">🗑 Clear</button>
+        <a href="/api/history?format=csv&limit=50" download="ttlcd-history.csv" class="small-btn btn-link" style="text-decoration:none">⬇ CSV</a>
       </div>
       <ul id="history-list" class="history-list"></ul>
     </section>
@@ -363,7 +498,13 @@
       <summary>Keyboard Shortcuts</summary>
       <table class="shortcuts-table">
         <tr><td><kbd>1</kbd>–<kbd>9</kbd></td><td>Switch to mode 1–9 (order in grid)</td></tr>
+        <tr><td><kbd>←</kbd> / <kbd>→</kbd></td><td>Previous / next display mode</td></tr>
+        <tr><td><kbd>n</kbd> / <kbd>p</kbd></td><td>Next / previous mode (alias)</td></tr>
         <tr><td><kbd>Esc</kbd></td><td>Return to previous live mode (← Return)</td></tr>
+        <tr><td><kbd>Space</kbd></td><td>Start / pause stopwatch (when not in text input)</td></tr>
+        <tr><td><kbd>l</kbd></td><td>Record stopwatch lap</td></tr>
+        <tr><td><kbd>f</kbd></td><td>Toggle display freeze</td></tr>
+        <tr><td><kbd>w</kbd></td><td>Fetch &amp; push weather (when weather section visible)</td></tr>
       </table>
       <p class="card-hint" style="margin-top:0.5rem">Shortcuts are disabled while a text input is focused.</p>
     </details>

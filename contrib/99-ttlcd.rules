@@ -1,12 +1,19 @@
 # udev rules for XinWeiYe / Thermaltake USB LCD panels.
 #
+# Grants read/write access to the USB device for the current login session
+# (TAG+="uaccess") and to the "users" group.  This avoids running ttlcd as
+# root while still allowing direct HID-level access via rusb.
+#
 # Installation (manual, non-NixOS):
 #   sudo cp contrib/99-ttlcd.rules /etc/udev/rules.d/
 #   sudo udevadm control --reload-rules
 #   sudo udevadm trigger
+#   # Re-plug the USB cable once to apply the new rules.
 #
-# On NixOS add to services.udev.extraRules (already done in
-# hosts/mochi-guest/default.nix).
+# On NixOS add to services.udev.extraRules (already done in flake.nix).
+#
+# Verify with:
+#   udevadm info --query=all --name=/dev/bus/usb/<bus>/<dev>
 
 # 3.95" square TFT, 480×480  (0x264a:0x2343)
 SUBSYSTEM=="usb", ATTRS{idVendor}=="264a", ATTRS{idProduct}=="2343", \
@@ -15,3 +22,10 @@ SUBSYSTEM=="usb", ATTRS{idVendor}=="264a", ATTRS{idProduct}=="2343", \
 # Sibling SKU — 128-height panel  (0x264a:0x233d)
 SUBSYSTEM=="usb", ATTRS{idVendor}=="264a", ATTRS{idProduct}=="233d", \
   MODE="0660", GROUP="users", TAG+="uaccess"
+
+# Alternative OEAM SKU seen in some Thermaltake Toughfan kits (0x264a:0x2428)
+SUBSYSTEM=="usb", ATTRS{idVendor}=="264a", ATTRS{idProduct}=="2428", \
+  MODE="0660", GROUP="users", TAG+="uaccess"
+
+# Catch-all for other XinWeiYe VID products (comment out if too broad)
+# SUBSYSTEM=="usb", ATTRS{idVendor}=="264a", MODE="0660", GROUP="users", TAG+="uaccess"

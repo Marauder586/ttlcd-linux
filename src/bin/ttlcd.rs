@@ -11,6 +11,8 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
+use reqwest;
+use chrono::{Local, Timelike};
 use clap::{Parser, Subcommand};
 use image::{DynamicImage, imageops};
 use ttlcd::{
@@ -23,10 +25,34 @@ use ttlcd::{
         render_cpu_graph, push_cpu_history,
         render_net_graph,
         render_recent_alerts,
+        render_process_memory,
+        render_disk_io,
+        render_calendar,
+        render_big_text_banner,
+        render_boot_splash,
+        render_stopwatch,
+        render_metrics,
+        render_weather,
+        render_notes,
+        render_big_clock,
+        render_qr_code,
+        render_pomodoro,
+        render_battery,
+        render_world_clock,
+        render_ticker,
+        render_http_status,
+        render_shell_cmd,
+        render_ping_monitor,
+        render_dashboard,
+        HttpMonitorResult,
+        PingResult,
+        Metric,
+        WeatherData,
         CustomTextPayload,
     },
     encode_for_panel, letterbox_for_panel, Panel, DEFAULT_JPEG_QUALITY, PANEL_HEIGHT, PANEL_WIDTH,
 };
+use ttlcd::display::{get_cpu_history, get_net_history};
 
 // ─── CLI definition ───────────────────────────────────────────────────────────
 
@@ -136,6 +162,9 @@ enum Cmd {
     Daemon {
         #[arg(long, default_value_t = 7070)]
         port: u16,
+        /// Bind address. Use 127.0.0.1 to restrict to localhost only.
+        #[arg(long, default_value = "0.0.0.0")]
+        bind: String,
         #[arg(long, default_value = "clock_sysinfo", value_parser = parse_mode)]
         mode: String,
         #[arg(long, default_value_t = DEFAULT_JPEG_QUALITY)]
@@ -205,6 +234,9 @@ enum Cmd {
     /// Loop forever sending keepalive packets (prevents screen blank).
     Keepalive,
 
+    /// List all available display modes and their descriptions.
+    Modes,
+
     /// Protocol debug sweep.
     Debug {
         #[arg(long, default_value_t = DEFAULT_JPEG_QUALITY)]
@@ -270,6 +302,20 @@ fn apply_rotation(img: DynamicImage, deg: u16) -> DynamicImage {
     }
 }
 
+/// Darken all pixels by `factor` (1.0 = full brightness, 0.0 = black).
+/// Returns the image unchanged when factor ≥ 0.99 to avoid a costly scan.
+fn apply_brightness(img: DynamicImage, factor: f32) -> DynamicImage {
+    if factor >= 0.99 { return img; }
+    let factor = factor.clamp(0.0, 1.0);
+    let mut rgb = img.into_rgb8();
+    for px in rgb.pixels_mut() {
+        px[0] = (px[0] as f32 * factor) as u8;
+        px[1] = (px[1] as f32 * factor) as u8;
+        px[2] = (px[2] as f32 * factor) as u8;
+    }
+    DynamicImage::ImageRgb8(rgb)
+}
+
 // ─── Misc helpers ─────────────────────────────────────────────────────────────
 
 fn open_panel(vid: u16, pid: u16, reset: bool) -> anyhow::Result<Panel> {
@@ -312,6 +358,7 @@ struct ConfigDevice {
 #[serde(default)]
 struct ConfigDaemon {
     port:              Option<u16>,
+    bind:              Option<String>,
     mode:              Option<String>,
     quality:           Option<u8>,
     rotate:            Option<u16>,
@@ -378,6 +425,60 @@ fn save_presets_to_disk(presets: &HashMap<String, CustomTextPayload>) {
     }
 }
 
+// ─── Persistent daemon state ────────────────────────────────────────────────
+
+/// Path to ~/.config/ttlcd/daemon_state.json
+fn daemon_state_path() -> Option<PathBuf> {
+    let p = dirs_config_path()?;
+    Some(p.parent()?.join("daemon_state.json"))
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Default)]
+struct PersistedState {
+    /// Last active non-transient display mode.
+    mode:       Option<String>,
+    /// JPEG quality.
+    quality:    Option<u8>,
+    /// Rotation degrees (0 / 90 / 180 / 270).
+    rotate_deg: Option<u16>,
+    /// Brightness factor 0.0–1.0.
+    brightness: Option<f32>,
+}
+
+fn load_persisted_state() -> PersistedState {
+    (|| -> Option<PersistedState> {
+        let path = daemon_state_path()?;
+        let text = std::fs::read_to_string(&path).ok()?;
+        serde_json::from_str(&text).ok()
+    })()
+    .unwrap_or_default()
+}
+
+fn save_persisted_state(ps: &PersistedState) {
+    let path = match daemon_state_path() {
+        Some(p) => p,
+        None    => return,
+    };
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    match serde_json::to_string_pretty(ps) {
+        Ok(text) => { let _ = std::fs::write(&path, &text); }
+        Err(_)   => {}
+    }
+}
+
+/// Snapshot the current daemon settings to disk (called on any settings change).
+fn persist_state(state: &DaemonState) {
+    let ps = PersistedState {
+        mode:       Some(state.mode.lock().unwrap().as_str().to_string()),
+        quality:    Some(*state.quality.lock().unwrap()),
+        rotate_deg: Some(*state.rotate_deg.lock().unwrap()),
+        brightness: Some(*state.dim_factor.lock().unwrap()),
+    };
+    save_persisted_state(&ps);
+}
+
 // ─── Entry point ──────────────────────────────────────────────────────────────
 
 fn main() -> Result<()> {
@@ -386,6 +487,33 @@ fn main() -> Result<()> {
     let cfg = load_config();
 
     match cli.cmd {
+        Cmd::Modes => {
+            println!("{:<18}  {}", "NAME", "DESCRIPTION");
+            println!("{}", "-".repeat(70));
+            for info in &[
+                ("clock",          "Large digital clock with date and uptime"),
+                ("big_clock",      "Full-screen giant HH:MM with seconds and progress bar"),
+                ("clock_sysinfo",  "Split: clock + quick stats"),
+                ("sysinfo",        "CPU, RAM, temperature, load, uptime"),
+                ("cpu_detail",     "Per-core CPU usage grid (up to 32 cores)"),
+                ("network",        "Per-interface Rx/Tx rates and totals"),
+                ("disk_usage",     "Disk partition usage bars"),
+                ("process_top",    "Top processes by CPU usage"),
+                ("temperature",    "Thermal sensor readings"),
+                ("memory_detail",  "Detailed RAM/swap breakdown"),
+                ("countdown",      "Countdown timer with colour transitions"),
+                ("cpu_graph",      "CPU usage history bar chart (2 min)"),
+                ("net_graph",      "Network I/O history chart (60 s)"),
+                ("recent_alerts",  "Last 5 notifications as on-panel log"),
+                ("process_memory", "Top processes ranked by RAM usage"),
+                ("disk_io",        "Disk read/write throughput per device"),
+                ("calendar",       "Full-month calendar with today highlighted"),
+                ("idle",           "Keepalive — no display update"),
+            ] {
+                println!("{:<18}  {}", info.0, info.1);
+            }
+        }
+
         Cmd::Init => {
             let mut panel = open_panel(cli.vid, cli.pid, cli.reset)?;
             panel.init()?;
@@ -494,9 +622,10 @@ fn main() -> Result<()> {
             }
         }
 
-        Cmd::Daemon { port, mode, quality, headless, rotate,
+        Cmd::Daemon { port, bind, mode, quality, headless, rotate,
                       rotation_modes, rotation_interval } => {
             let eff_port     = cfg.daemon.port.unwrap_or(port);
+            let eff_bind     = cfg.daemon.bind.clone().unwrap_or(bind);
             let eff_mode     = cfg.daemon.mode.clone().unwrap_or(mode);
             let eff_quality  = cfg.daemon.quality.unwrap_or(quality);
             let eff_headless = cfg.daemon.headless.unwrap_or(headless);
@@ -519,7 +648,7 @@ fn main() -> Result<()> {
                 cfg.daemon.rotation_interval.unwrap_or(0)
             };
             run_daemon(
-                eff_vid, eff_pid, eff_port, eff_mode, eff_quality,
+                eff_vid, eff_pid, eff_port, eff_bind, eff_mode, eff_quality,
                 eff_headless, eff_rotate, eff_rot_modes, eff_rot_interval,
             )?;
         }
@@ -566,6 +695,7 @@ fn main() -> Result<()> {
 #[derive(Debug, Clone, PartialEq)]
 enum DisplayMode {
     Clock,
+    BigClock,
     ClockSysinfo,
     Sysinfo,
     CpuDetail,
@@ -578,6 +708,22 @@ enum DisplayMode {
     CpuGraph,
     NetGraph,
     RecentAlerts,
+    ProcessMemory,
+    DiskIo,
+    Calendar,
+    Stopwatch,
+    Metrics,
+    Weather,
+    Notes,
+    QrCode,
+    Pomodoro,
+    Battery,
+    WorldClock,
+    Ticker,
+    HttpStatus,
+    ShellCmd,
+    PingMonitor,
+    Dashboard,
     Idle,
     CustomImage,
     CustomText,
@@ -586,13 +732,14 @@ enum DisplayMode {
 
 impl DisplayMode {
     const ALL_NAMES: &'static [&'static str] = &[
-        "clock", "clock_sysinfo", "sysinfo", "cpu_detail",
-        "network", "disk_usage", "process_top", "temperature", "memory_detail", "countdown", "cpu_graph", "net_graph", "recent_alerts", "idle",
+        "clock", "big_clock", "clock_sysinfo", "sysinfo", "cpu_detail",
+        "network", "disk_usage", "process_top", "temperature", "memory_detail", "countdown", "cpu_graph", "net_graph", "recent_alerts", "process_memory", "disk_io", "calendar", "stopwatch", "metrics", "weather", "notes", "qr_code", "pomodoro", "battery", "world_clock", "ticker", "http_status", "shell_cmd", "ping_monitor", "dashboard", "idle",
     ];
 
     fn from_str_name(s: &str) -> Option<Self> {
         match s {
             "clock"         => Some(DisplayMode::Clock),
+            "big_clock"     => Some(DisplayMode::BigClock),
             "clock_sysinfo" => Some(DisplayMode::ClockSysinfo),
             "sysinfo"       => Some(DisplayMode::Sysinfo),
             "cpu_detail"    => Some(DisplayMode::CpuDetail),
@@ -604,8 +751,24 @@ impl DisplayMode {
             "countdown"    => Some(DisplayMode::Countdown),
             "cpu_graph"    => Some(DisplayMode::CpuGraph),
             "net_graph"    => Some(DisplayMode::NetGraph),
-            "recent_alerts" => Some(DisplayMode::RecentAlerts),
-            "idle"          => Some(DisplayMode::Idle),
+            "recent_alerts"   => Some(DisplayMode::RecentAlerts),
+            "process_memory"  => Some(DisplayMode::ProcessMemory),
+            "disk_io"         => Some(DisplayMode::DiskIo),
+            "calendar"        => Some(DisplayMode::Calendar),
+            "stopwatch"       => Some(DisplayMode::Stopwatch),
+            "metrics"         => Some(DisplayMode::Metrics),
+            "weather"         => Some(DisplayMode::Weather),
+            "notes"           => Some(DisplayMode::Notes),
+            "qr_code"         => Some(DisplayMode::QrCode),
+            "pomodoro"        => Some(DisplayMode::Pomodoro),
+            "battery"         => Some(DisplayMode::Battery),
+            "world_clock"     => Some(DisplayMode::WorldClock),
+            "ticker"          => Some(DisplayMode::Ticker),
+            "http_status"     => Some(DisplayMode::HttpStatus),
+            "shell_cmd"       => Some(DisplayMode::ShellCmd),
+            "ping_monitor"    => Some(DisplayMode::PingMonitor),
+            "dashboard"       => Some(DisplayMode::Dashboard),
+            "idle"            => Some(DisplayMode::Idle),
             "custom_text"   => Some(DisplayMode::CustomText),
             "slideshow"     => Some(DisplayMode::Slideshow),
             _               => None,
@@ -615,6 +778,7 @@ impl DisplayMode {
     fn as_str(&self) -> &'static str {
         match self {
             DisplayMode::Clock        => "clock",
+            DisplayMode::BigClock     => "big_clock",
             DisplayMode::ClockSysinfo => "clock_sysinfo",
             DisplayMode::Sysinfo      => "sysinfo",
             DisplayMode::CpuDetail    => "cpu_detail",
@@ -626,8 +790,24 @@ impl DisplayMode {
             DisplayMode::Countdown   => "countdown",
             DisplayMode::CpuGraph    => "cpu_graph",
             DisplayMode::NetGraph    => "net_graph",
-            DisplayMode::RecentAlerts => "recent_alerts",
-            DisplayMode::Idle         => "idle",
+            DisplayMode::RecentAlerts  => "recent_alerts",
+            DisplayMode::ProcessMemory => "process_memory",
+            DisplayMode::DiskIo        => "disk_io",
+            DisplayMode::Calendar      => "calendar",
+            DisplayMode::Stopwatch     => "stopwatch",
+            DisplayMode::Metrics      => "metrics",
+            DisplayMode::Weather       => "weather",
+            DisplayMode::Notes         => "notes",
+            DisplayMode::QrCode        => "qr_code",
+            DisplayMode::Pomodoro      => "pomodoro",
+            DisplayMode::Battery       => "battery",
+            DisplayMode::WorldClock    => "world_clock",
+            DisplayMode::Ticker        => "ticker",
+            DisplayMode::HttpStatus    => "http_status",
+            DisplayMode::ShellCmd      => "shell_cmd",
+            DisplayMode::PingMonitor   => "ping_monitor",
+            DisplayMode::Dashboard     => "dashboard",
+            DisplayMode::Idle          => "idle",
             DisplayMode::CustomImage  => "image",
             DisplayMode::CustomText   => "custom_text",
             DisplayMode::Slideshow    => "slideshow",
@@ -646,6 +826,74 @@ impl std::str::FromStr for DisplayMode {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         Self::from_str_name(s).ok_or_else(|| format!("unknown mode '{}'", s))
     }
+}
+
+// ─── Stopwatch state ─────────────────────────────────────────────────────────
+
+/// Stopwatch state kept in DaemonState.
+#[derive(Clone, Debug, serde::Serialize)]
+struct StopwatchState {
+    /// Whether the stopwatch is currently counting up.
+    running: bool,
+    /// Accumulated milliseconds that were counted before the last pause.
+    elapsed_ms: u64,
+    /// Unix millisecond timestamp when the stopwatch was last started
+    /// (0 when stopped / never started).
+    started_at_unix_ms: u64,
+    /// Recorded lap times (accumulated ms at the moment each lap was tapped).
+    laps: Vec<u64>,
+}
+
+impl StopwatchState {
+    fn new() -> Self {
+        Self { running: false, elapsed_ms: 0, started_at_unix_ms: 0, laps: Vec::new() }
+    }
+
+    /// Current total elapsed milliseconds (may be running).
+    fn current_elapsed_ms(&self) -> u64 {
+        if self.running && self.started_at_unix_ms > 0 {
+            let now_ms = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis() as u64)
+                .unwrap_or(0);
+            self.elapsed_ms + now_ms.saturating_sub(self.started_at_unix_ms)
+        } else {
+            self.elapsed_ms
+        }
+    }
+}
+
+// ─── Alert threshold state ────────────────────────────────────────────────────
+
+/// Configurable thresholds for automatic panel alerts.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+struct AlertThresholds {
+    /// Fire an alert when global CPU usage exceeds this percentage (0 = disabled).
+    cpu_pct:  f32,
+    /// Fire an alert when any temperature component exceeds this Celsius (0 = disabled).
+    temp_c:   f32,
+    /// Minimum seconds between consecutive threshold alerts (rate-limit).
+    cooldown_secs: u64,
+}
+
+impl Default for AlertThresholds {
+    fn default() -> Self {
+        Self { cpu_pct: 95.0, temp_c: 85.0, cooldown_secs: 120 }
+    }
+}
+
+// ─── Night-dim schedule ───────────────────────────────────────────────────────
+
+/// Auto-dim the panel between `start_hour` and `end_hour` (24-h, local time).
+/// Outside the window, restores the user's configured brightness.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+struct DimSchedule {
+    /// Hour of day (0–23) when dimming begins.
+    start_hour: u8,
+    /// Hour of day (0–23) when normal brightness is restored.
+    end_hour:   u8,
+    /// Brightness level to apply during the dim window (0.0–1.0).
+    dim_level:  f32,
 }
 
 // ─── Daemon ───────────────────────────────────────────────────────────────────
@@ -682,12 +930,277 @@ struct DaemonState {
     auto_clear_at: Arc<Mutex<Option<u64>>>,
     /// Count of pending scheduled tasks (for status display).
     pending_scheduled: Arc<Mutex<u32>>,
+    /// Brightness multiplier 0.0–1.0 applied to every rendered frame (1.0 = full).
+    dim_factor: Arc<Mutex<f32>>,
+    /// Exponential-moving-average of frames rendered per second.
+    render_fps: Arc<Mutex<f32>>,
+    /// Timestamp of the last rendered frame (for FPS calc); None before first frame.
+    render_fps_last: Arc<Mutex<Option<std::time::Instant>>>,
+    /// Hardware panel info (serial, firmware) — None in headless mode.
+    panel_info: Arc<Mutex<Option<ttlcd::DeviceInfo>>>,
+    /// Unix timestamp (seconds) when this daemon instance started.
+    daemon_start_secs: u64,
+    /// Stopwatch state (start/stop/lap/reset).
+    stopwatch: Arc<Mutex<StopwatchState>>,
+    /// If true, the display thread skips rendering (panel shows the last frame).
+    frozen: Arc<Mutex<bool>>,
+    /// Thresholds for automatic CPU/temperature alerts.
+    alert_thresholds: Arc<Mutex<AlertThresholds>>,
+    /// Optional night-dim schedule.
+    dim_schedule: Arc<Mutex<Option<DimSchedule>>>,
+    /// Last Unix-second timestamp when a threshold alert fired (for rate-limiting).
+    last_threshold_alert_at: Arc<Mutex<u64>>,
+    /// Custom metrics for the Metrics display mode.
+    metrics_title: Arc<Mutex<String>>,
+    metrics_data:  Arc<Mutex<Vec<Metric>>>,
+    /// Cached weather snapshot for the Weather display mode.
+    weather_data:  Arc<Mutex<WeatherData>>,
+    /// Notes/bulletin board title and list for the Notes display mode.
+    notes_title: Arc<Mutex<String>>,
+    notes_items: Arc<Mutex<Vec<String>>>,
+    /// Ring-buffer of recent render FPS values (last 60 samples) for the FPS sparkline.
+    fps_history: Arc<Mutex<VecDeque<f32>>>,
+    /// Webhook URL override — if set, outbound webhook notifications are forwarded here.
+    webhook_forward_url: Arc<Mutex<Option<String>>>,
+    /// QR code mode: payload (text/URL) and optional title.
+    qr_payload: Arc<Mutex<String>>,
+    qr_title:   Arc<Mutex<String>>,
+    /// Mode schedule: sorted list of (hour, minute, mode_name) entries.
+    /// The scheduler thread checks every 30 s and switches mode when a time slot matches.
+    mode_schedule: Arc<Mutex<Vec<ModeScheduleEntry>>>,
+    /// Pomodoro timer state.
+    pomodoro: Arc<Mutex<PomodoroState>>,
+    /// Scrolling ticker text and color.
+    ticker_text:  Arc<Mutex<String>>,
+    ticker_color: Arc<Mutex<String>>,
+    /// Current scroll offset in pixels (advances each render tick).
+    ticker_pos:   Arc<Mutex<i32>>,
+    /// World clock: list of (city_name, utc_offset_minutes) pairs.
+    world_clock_cities: Arc<Mutex<Vec<(String, i32)>>>,
+    /// Monotonically-increasing counter; incremented on every push_history(Alert) call.
+    /// Used by the SSE stream to detect and push alert events to clients.
+    alert_seq: Arc<Mutex<u64>>,
+    /// Summary of the latest alert (seq, summary). None before first alert.
+    last_alert_event: Arc<Mutex<Option<(u64, String)>>>,
+    /// HTTP status monitor: list of configured monitors (label + URL).
+    http_monitors: Arc<Mutex<Vec<HttpMonitorEntry>>>,
+    /// Latest HTTP check results.
+    http_results: Arc<Mutex<Vec<HttpMonitorResult>>>,
+    /// Interval between HTTP health checks (seconds).
+    http_check_interval_secs: Arc<Mutex<u64>>,
+    /// Shell command for the ShellCmd display mode.
+    shell_cmd_text: Arc<Mutex<String>>,
+    /// Captured stdout of the last shell command run.
+    shell_cmd_output: Arc<Mutex<String>>,
+    /// True if the last shell command exited with code 0.
+    shell_cmd_exit_ok: Arc<Mutex<bool>>,
+    /// Unix-second timestamp of the last shell command run (0 = never).
+    shell_cmd_run_at: Arc<Mutex<u64>>,
+    /// Refresh interval for the shell command (seconds; 0 = manual only).
+    shell_cmd_interval_secs: Arc<Mutex<u64>>,
+    /// Ping monitor: list of configured hosts (label + host).
+    ping_hosts:   Arc<Mutex<Vec<PingHostEntry>>>,
+    /// Latest ping results.
+    ping_results: Arc<Mutex<Vec<PingResult>>>,
+    /// Interval between ping checks (seconds; minimum 5).
+    ping_interval_secs: Arc<Mutex<u64>>,
 }
 
+/// A single entry in the display-mode schedule.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct ModeScheduleEntry {
+    /// Hour of day (0–23).
+    hour: u8,
+    /// Minute of hour (0–59).
+    minute: u8,
+    /// Display mode name (must be a valid DisplayMode string).
+    mode: String,
+    /// Optional human-readable label.
+    #[serde(default)]
+    label: String,
+}
+
+
+// ─── HTTP monitor state ───────────────────────────────────────────────────────
+
+/// A configured HTTP health-check endpoint.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct HttpMonitorEntry {
+    label: String,
+    url:   String,
+}
+
+/// A configured ping host.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct PingHostEntry {
+    label: String,
+    host:  String,
+}
+
+fn ping_hosts_path() -> Option<PathBuf> {
+    let p = dirs_config_path()?;
+    Some(p.parent()?.join("ping_hosts.json"))
+}
+
+fn load_ping_hosts() -> Vec<PingHostEntry> {
+    (|| -> Option<Vec<PingHostEntry>> {
+        let path = ping_hosts_path()?;
+        let text = std::fs::read_to_string(&path).ok()?;
+        serde_json::from_str(&text).ok()
+    })().unwrap_or_default()
+}
+
+fn save_ping_hosts(hosts: &[PingHostEntry]) {
+    let path = match ping_hosts_path() {
+        Some(p) => p,
+        None    => return,
+    };
+    if let Some(parent) = path.parent() { let _ = std::fs::create_dir_all(parent); }
+    if let Ok(text) = serde_json::to_string_pretty(hosts) {
+        let _ = std::fs::write(&path, text);
+    }
+}
+
+fn http_monitors_path() -> Option<PathBuf> {
+    let p = dirs_config_path()?;
+    Some(p.parent()?.join("http_monitors.json"))
+}
+
+fn load_http_monitors() -> Vec<HttpMonitorEntry> {
+    (|| -> Option<Vec<HttpMonitorEntry>> {
+        let path = http_monitors_path()?;
+        let text = std::fs::read_to_string(&path).ok()?;
+        serde_json::from_str(&text).ok()
+    })()
+    .unwrap_or_default()
+}
+
+fn save_http_monitors(monitors: &[HttpMonitorEntry]) {
+    let path = match http_monitors_path() {
+        Some(p) => p,
+        None    => return,
+    };
+    if let Some(parent) = path.parent() { let _ = std::fs::create_dir_all(parent); }
+    if let Ok(text) = serde_json::to_string_pretty(monitors) {
+        let _ = std::fs::write(&path, text);
+    }
+}
+
+// ─── Pomodoro timer state ─────────────────────────────────────────────────────
+
+fn now_unix_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+/// Which phase the Pomodoro timer is currently in.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum PomodoroPhase {
+    Work,
+    ShortBreak,
+    LongBreak,
+}
+
+impl PomodoroPhase {
+    fn as_str(&self) -> &'static str {
+        match self {
+            PomodoroPhase::Work       => "work",
+            PomodoroPhase::ShortBreak => "short_break",
+            PomodoroPhase::LongBreak  => "long_break",
+        }
+    }
+}
+
+/// Runtime state for the Pomodoro mode.
+#[derive(Clone, Debug, Serialize)]
+struct PomodoroState {
+    phase:              PomodoroPhase,
+    /// Unix-ms timestamp when the current phase run was last started (0 = paused).
+    phase_started_unix_ms: u64,
+    /// Accumulated elapsed ms for the current phase (excluding the running portion).
+    phase_elapsed_ms:   u64,
+    running:            bool,
+    /// Total completed work sessions (ever).
+    completed_sessions: u32,
+    // ── Configurable durations ────
+    work_secs:           u64,
+    short_break_secs:    u64,
+    long_break_secs:     u64,
+    /// Number of work sessions between long breaks (default 4).
+    long_break_interval: u32,
+}
+
+impl PomodoroState {
+    fn new() -> Self {
+        Self {
+            phase:                 PomodoroPhase::Work,
+            phase_started_unix_ms: 0,
+            phase_elapsed_ms:      0,
+            running:               false,
+            completed_sessions:    0,
+            work_secs:             25 * 60,
+            short_break_secs:      5 * 60,
+            long_break_secs:       15 * 60,
+            long_break_interval:   4,
+        }
+    }
+
+    fn phase_total_secs(&self) -> u64 {
+        match self.phase {
+            PomodoroPhase::Work       => self.work_secs,
+            PomodoroPhase::ShortBreak => self.short_break_secs,
+            PomodoroPhase::LongBreak  => self.long_break_secs,
+        }
+    }
+
+    fn phase_elapsed_ms_now(&self) -> u64 {
+        if self.running && self.phase_started_unix_ms > 0 {
+            let now = now_unix_ms();
+            self.phase_elapsed_ms + now.saturating_sub(self.phase_started_unix_ms)
+        } else {
+            self.phase_elapsed_ms
+        }
+    }
+
+    fn remaining_secs(&self) -> i64 {
+        let total_ms  = self.phase_total_secs() as i64 * 1000;
+        let elapsed   = self.phase_elapsed_ms_now() as i64;
+        // ceiling so we show "0:01" for the last partial second
+        (total_ms - elapsed + 999) / 1000
+    }
+
+    /// Advance to the next phase and auto-start it.
+    fn advance_phase(&mut self) {
+        self.phase_elapsed_ms      = 0;
+        self.phase_started_unix_ms = 0;
+
+        match self.phase {
+            PomodoroPhase::Work => {
+                self.completed_sessions += 1;
+                if self.completed_sessions % self.long_break_interval == 0 {
+                    self.phase = PomodoroPhase::LongBreak;
+                } else {
+                    self.phase = PomodoroPhase::ShortBreak;
+                }
+            }
+            PomodoroPhase::ShortBreak | PomodoroPhase::LongBreak => {
+                self.phase = PomodoroPhase::Work;
+            }
+        }
+
+        // Auto-start the new phase
+        self.running               = true;
+        self.phase_started_unix_ms = now_unix_ms();
+    }
+}
 #[tokio::main]
 #[allow(clippy::too_many_arguments)]
 async fn run_daemon(
     vid: u16, pid: u16, port: u16,
+    bind: String,
     mode: String, quality: u8,
     headless: bool, rotate_deg: u16,
     rotation_mode_names: Vec<String>,
@@ -716,6 +1229,29 @@ async fn run_daemon(
         log::info!("loaded {} preset(s) from disk", saved_presets.len());
     }
 
+    // Load persistent daemon state (last mode, quality, rotate, brightness).
+    // CLI / config arguments already take precedence — only apply if those
+    // fields still hold their defaults (i.e. the user did not override them).
+    let persisted = load_persisted_state();
+    let initial_mode = if let Some(ref saved_mode) = persisted.mode {
+        // Only restore if the caller passed the compiled default "clock_sysinfo"
+        // (i.e. the user did not explicitly choose a mode on the command line).
+        if mode == "clock_sysinfo" {
+            DisplayMode::from_str_name(saved_mode).unwrap_or(initial_mode)
+        } else {
+            initial_mode
+        }
+    } else {
+        initial_mode
+    };
+    let quality     = persisted.quality.unwrap_or(quality);
+    let rotate_deg  = persisted.rotate_deg.unwrap_or(rotate_deg);
+    let init_brightness = persisted.brightness.unwrap_or(1.0);
+    if persisted.mode.is_some() {
+        log::info!("restored persisted state: mode={} quality={} rotate={}°",
+            initial_mode.as_str(), quality, rotate_deg);
+    }
+
     let state = DaemonState {
         prev_mode:          Arc::new(Mutex::new(initial_mode.clone())),
         mode:               Arc::new(Mutex::new(initial_mode)),
@@ -738,6 +1274,47 @@ async fn run_daemon(
         countdown:  Arc::new(Mutex::new(None)),
         auto_clear_at:     Arc::new(Mutex::new(None)),
         pending_scheduled: Arc::new(Mutex::new(0)),
+        dim_factor:        Arc::new(Mutex::new(init_brightness)),
+        render_fps:        Arc::new(Mutex::new(0.0)),
+        render_fps_last:   Arc::new(Mutex::new(None)),
+        panel_info:        Arc::new(Mutex::new(None)),
+        daemon_start_secs: std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0),
+        stopwatch:               Arc::new(Mutex::new(StopwatchState::new())),
+        frozen:                  Arc::new(Mutex::new(false)),
+        alert_thresholds:        Arc::new(Mutex::new(AlertThresholds::default())),
+        dim_schedule:            Arc::new(Mutex::new(None)),
+        last_threshold_alert_at: Arc::new(Mutex::new(0)),
+        metrics_title: Arc::new(Mutex::new(String::new())),
+        metrics_data:  Arc::new(Mutex::new(Vec::new())),
+        weather_data:  Arc::new(Mutex::new(WeatherData::default())),
+        notes_title:  Arc::new(Mutex::new(String::new())),
+        notes_items:  Arc::new(Mutex::new(Vec::new())),
+        fps_history:  Arc::new(Mutex::new(VecDeque::with_capacity(60))),
+        webhook_forward_url: Arc::new(Mutex::new(None)),
+        qr_payload: Arc::new(Mutex::new(String::new())),
+        qr_title:   Arc::new(Mutex::new("QR Code".to_string())),
+        mode_schedule: Arc::new(Mutex::new(Vec::new())),
+        pomodoro:           Arc::new(Mutex::new(PomodoroState::new())),
+        ticker_text:        Arc::new(Mutex::new(String::new())),
+        ticker_color:       Arc::new(Mutex::new("blue".to_string())),
+        ticker_pos:         Arc::new(Mutex::new(0i32)),
+        world_clock_cities:   Arc::new(Mutex::new(Vec::new())),
+        alert_seq:            Arc::new(Mutex::new(0)),
+        last_alert_event:     Arc::new(Mutex::new(None)),
+        http_monitors:           Arc::new(Mutex::new(Vec::new())),
+        http_results:            Arc::new(Mutex::new(Vec::new())),
+        http_check_interval_secs: Arc::new(Mutex::new(30)),
+        shell_cmd_text:          Arc::new(Mutex::new(String::new())),
+        shell_cmd_output:        Arc::new(Mutex::new(String::new())),
+        shell_cmd_exit_ok:       Arc::new(Mutex::new(true)),
+        shell_cmd_run_at:        Arc::new(Mutex::new(0u64)),
+        shell_cmd_interval_secs: Arc::new(Mutex::new(10)),
+        ping_hosts:          Arc::new(Mutex::new(Vec::new())),
+        ping_results:        Arc::new(Mutex::new(Vec::new())),
+        ping_interval_secs:  Arc::new(Mutex::new(10)),
     };
 
     let panel: Arc<Mutex<Option<Panel>>> = if headless {
@@ -750,6 +1327,13 @@ async fn run_daemon(
             "daemon: panel ready (serial={}); mode={}; rotate={}°; port={}",
             p.info.serial, state.mode.lock().unwrap().as_str(), rotate_deg, port
         );
+        // Cache hardware info in state so web handlers can read it
+        *state.panel_info.lock().unwrap() = Some(p.info.clone());
+        // Send boot splash as the very first frame
+        let splash = render_boot_splash(env!("CARGO_PKG_VERSION"));
+        if let Ok(jpeg) = encode_for_panel(&splash, quality) {
+            let _ = p.send_jpeg(&jpeg);
+        }
         Arc::new(Mutex::new(Some(p)))
     };
 
@@ -773,6 +1357,68 @@ async fn run_daemon(
         thread::spawn(move || rotation_loop(state3));
     }
 
+    // ── Alert threshold monitor thread ───────────────────────────────────
+    {
+        let state4 = state.clone();
+        thread::spawn(move || threshold_monitor_loop(state4));
+    }
+
+    // ── Dim schedule thread ───────────────────────────────────────────────
+    {
+        let state5 = state.clone();
+        thread::spawn(move || dim_schedule_loop(state5));
+    }
+
+    // ── Mode schedule thread ──────────────────────────────────────────────
+    {
+        // Load persisted schedule entries from disk before starting the loop
+        *state.mode_schedule.lock().unwrap() = load_mode_schedule();
+        let state6 = state.clone();
+        thread::spawn(move || mode_schedule_loop(state6));
+    }
+
+    // ── World clock persistence ────────────────────────────────────────────
+    {
+        let loaded = load_world_clock();
+        if !loaded.is_empty() {
+            *state.world_clock_cities.lock().unwrap() = loaded;
+        }
+    }
+
+    // ── HTTP monitors persistence ──────────────────────────────────────────
+    {
+        let monitors = load_http_monitors();
+        if !monitors.is_empty() {
+            *state.http_monitors.lock().unwrap() = monitors;
+        }
+    }
+
+    // ── Ping hosts persistence ────────────────────────────────────────────
+    {
+        let hosts = load_ping_hosts();
+        if !hosts.is_empty() {
+            *state.ping_hosts.lock().unwrap() = hosts;
+        }
+    }
+
+    // ── HTTP health-check background thread ───────────────────────────────
+    {
+        let state_hc = state.clone();
+        tokio::spawn(async move { http_check_loop(state_hc).await });
+    }
+
+    // ── Shell-command background thread ───────────────────────────────────
+    {
+        let state_sc = state.clone();
+        tokio::spawn(async move { shell_cmd_loop(state_sc).await });
+    }
+
+    // ── Ping monitor background thread ────────────────────────────────────
+    {
+        let state_pm = state.clone();
+        tokio::spawn(async move { ping_monitor_loop(state_pm).await });
+    }
+
     // ── HTTP server ────────────────────────────────────────────────────────
     let web_state = web::Data::new(state.clone());
 
@@ -790,11 +1436,13 @@ async fn run_daemon(
             .route("/api/mode",           web::post().to(api_set_mode))
             .route("/api/image",          web::post().to(api_upload_image))
             .route("/api/image/path",     web::post().to(api_image_path))
+            .route("/api/image/url",      web::post().to(api_image_url))
             .route("/api/render",         web::post().to(api_render))
             .route("/api/sysinfo",        web::get().to(api_sysinfo_json))
             .route("/api/processes",      web::get().to(api_processes_json))
             .route("/api/disks",          web::get().to(api_disks_json))
             .route("/api/preview",        web::get().to(api_preview_frame))
+            .route("/api/preview.png",    web::get().to(api_preview_frame_png))
             .route("/api/text",           web::post().to(api_text))
             .route("/api/clear",          web::post().to(api_clear))
             // Presets API (full CRUD)
@@ -820,6 +1468,8 @@ async fn run_daemon(
             .route("/api/orient",         web::post().to(api_set_orient))
             // Health check, blank, countdown
             .route("/health",             web::get().to(api_health))
+            .route("/ping",               web::get().to(api_ping))
+            .route("/api/ping",           web::get().to(api_ping))
             .route("/api/blank",          web::post().to(api_blank))
             .route("/api/countdown",      web::post().to(api_countdown))
             // Prometheus metrics
@@ -846,12 +1496,129 @@ async fn run_daemon(
             // Slideshow extra controls
             .route("/api/slideshow/images",  web::get().to(api_slideshow_images))
             .route("/api/slideshow/shuffle", web::post().to(api_slideshow_shuffle))
+            // Brightness control
+            .route("/api/brightness",     web::get().to(api_get_brightness))
+            .route("/api/brightness",     web::post().to(api_set_brightness))
+            // Countdown cancel
+            .route("/api/countdown",      web::delete().to(api_cancel_countdown))
+            // Network + temperature JSON
+            .route("/api/network",        web::get().to(api_network_json))
+            .route("/api/temperatures",   web::get().to(api_temperatures_json))
+            // History ring-buffer snapshots
+            .route("/api/cpu/history",    web::get().to(api_cpu_history))
+            .route("/api/net/history",    web::get().to(api_net_history))
+            // PNG screenshot
+            .route("/api/screenshot.png", web::get().to(api_screenshot_png))
+            // Rotation GET
+            .route("/api/rotation",       web::get().to(api_rotation_get))
+            // SVG status badge
+            .route("/api/status.svg",     web::get().to(api_status_badge))
+            // Version and uptime
+            .route("/api/version",        web::get().to(api_version))
+            .route("/api/uptime",         web::get().to(api_uptime))
+            // Panel hardware info
+            .route("/api/panel/info",     web::get().to(api_panel_info))
+            // Large text banner (POST to display, GET to fetch last banner)
+            .route("/api/banner",         web::post().to(api_banner))
+            // Modes with descriptions
+            .route("/api/modes/info",     web::get().to(api_modes_info))
+            // Reload persisted daemon state from disk
+            .route("/api/state/reload",   web::post().to(api_state_reload))
+            // Stopwatch
+            .route("/api/stopwatch",       web::get().to(api_stopwatch_get))
+            .route("/api/stopwatch/start", web::post().to(api_stopwatch_start))
+            .route("/api/stopwatch/stop",  web::post().to(api_stopwatch_stop))
+            .route("/api/stopwatch/lap",   web::post().to(api_stopwatch_lap))
+            .route("/api/stopwatch/reset", web::post().to(api_stopwatch_reset))
+            // Display freeze / unfreeze
+            .route("/api/display/freeze",   web::post().to(api_display_freeze))
+            .route("/api/display/unfreeze", web::post().to(api_display_unfreeze))
+            .route("/api/display/frozen",   web::get().to(api_display_frozen))
+            // Alert thresholds
+            .route("/api/alerts/thresholds", web::get().to(api_get_thresholds))
+            .route("/api/alerts/thresholds", web::post().to(api_set_thresholds))
+            // Night-dim schedule
+            .route("/api/dim/schedule",   web::get().to(api_get_dim_schedule))
+            .route("/api/dim/schedule",   web::post().to(api_set_dim_schedule))
+            .route("/api/dim/schedule",   web::delete().to(api_clear_dim_schedule))
+            // Custom metrics dashboard
+            .route("/api/metrics",        web::get().to(api_get_metrics))
+            .route("/api/metrics",        web::post().to(api_push_metrics))
+            .route("/api/metrics",        web::delete().to(api_clear_metrics))
+            // Display profiles
+            .route("/api/profiles",             web::get().to(api_profiles_list))
+            .route("/api/profiles",             web::post().to(api_profiles_save))
+            .route("/api/profiles/{name}/apply", web::post().to(api_profiles_apply))
+            .route("/api/profiles/{name}",       web::delete().to(api_profiles_delete))
+            // Comprehensive system snapshot
+            .route("/api/sys/snapshot",          web::get().to(api_sys_snapshot))
+            // Weather display
+            .route("/api/weather",        web::get().to(api_get_weather))
+            .route("/api/weather",        web::post().to(api_update_weather))
+            .route("/api/weather",        web::delete().to(api_clear_weather))
+            // Notes / bulletin board
+            .route("/api/notes",          web::get().to(api_get_notes))
+            .route("/api/notes",          web::post().to(api_push_notes))
+            .route("/api/notes",          web::delete().to(api_clear_notes))
+            // QR Code mode
+            .route("/api/qr",             web::get().to(api_get_qr))
+            .route("/api/qr",             web::post().to(api_set_qr))
+            .route("/api/qr",             web::delete().to(api_clear_qr))
+            // Mode schedule
+            .route("/api/schedule/mode",        web::get().to(api_get_mode_schedule))
+            .route("/api/schedule/mode",        web::post().to(api_add_mode_schedule))
+            .route("/api/schedule/mode",        web::delete().to(api_clear_mode_schedule))
+            .route("/api/schedule/mode/{index}", web::delete().to(api_remove_mode_schedule_entry))
+            // Settings export/import
+            .route("/api/settings/export", web::get().to(api_settings_export))
+            .route("/api/settings/import", web::post().to(api_settings_import))
+            // FPS history sparkline
+            .route("/api/fps/history",    web::get().to(api_fps_history))
+            // Webhook config (GET current URL, POST to set, DELETE to clear)
+            .route("/api/webhook/config", web::get().to(api_get_webhook_config))
+            .route("/api/webhook/config", web::post().to(api_set_webhook_config))
+            .route("/api/webhook/config", web::delete().to(api_clear_webhook_config))
+            // Pomodoro timer
+            .route("/api/pomodoro",         web::get().to(api_get_pomodoro))
+            .route("/api/pomodoro/start",   web::post().to(api_pomodoro_start))
+            .route("/api/pomodoro/pause",   web::post().to(api_pomodoro_pause))
+            .route("/api/pomodoro/skip",    web::post().to(api_pomodoro_skip))
+            .route("/api/pomodoro/reset",   web::post().to(api_pomodoro_reset))
+            .route("/api/pomodoro/stop",    web::post().to(api_pomodoro_stop))
+            .route("/api/pomodoro/config",  web::post().to(api_pomodoro_config))
+            // Scrolling ticker
+            .route("/api/ticker",         web::get().to(api_get_ticker))
+            .route("/api/ticker",         web::post().to(api_set_ticker))
+            .route("/api/ticker",         web::delete().to(api_clear_ticker))
+            // World clock
+            .route("/api/world_clock",  web::get().to(api_get_world_clock))
+            .route("/api/world_clock",  web::post().to(api_set_world_clock))
+            .route("/api/world_clock",  web::delete().to(api_clear_world_clock))
+            // Battery info
+            .route("/api/battery",        web::get().to(api_battery_json))
+            // HTTP status monitor
+            .route("/api/http_status",              web::get().to(api_get_http_status))
+            .route("/api/http_status",              web::post().to(api_add_http_monitor))
+            .route("/api/http_status/{index}",      web::delete().to(api_delete_http_monitor))
+            .route("/api/http_status/interval",     web::put().to(api_set_http_interval))
+            // Shell command
+            .route("/api/shell_cmd",                web::get().to(api_get_shell_cmd))
+            .route("/api/shell_cmd",                web::post().to(api_set_shell_cmd))
+            .route("/api/shell_cmd",                web::delete().to(api_clear_shell_cmd))
+            .route("/api/shell_cmd/run",            web::post().to(api_run_shell_cmd_now))
+            // Ping monitor
+            .route("/api/ping_monitor",             web::get().to(api_get_ping))
+            .route("/api/ping_monitor",             web::post().to(api_add_ping_host))
+            .route("/api/ping_monitor/{index}",     web::delete().to(api_delete_ping_host))
+            .route("/api/ping_monitor/interval",    web::put().to(api_set_ping_interval))
+            // API docs
+            .route("/api/docs",           web::get().to(api_docs))
             // Web UI
             .route("/",                   web::get().to(web_ui_index))
             .route("/static/app.css",     web::get().to(web_ui_css))
             .route("/static/app.js",      web::get().to(web_ui_js))
     })
-    .bind(("0.0.0.0", port))?
+    .bind((bind.as_str(), port))?
     .run()
     .await
     .context("HTTP server error")?;
@@ -867,6 +1634,28 @@ fn store_frame(state: &DaemonState, jpeg: Vec<u8>) -> Vec<u8> {
     jpeg
 }
 
+/// Update the EMA render-FPS counter.
+/// Uses an `Arc<Mutex<Option<Instant>>>` stored in `DaemonState` so there are
+/// no thread-local initialization quirks.
+fn update_fps(state: &DaemonState) {
+    let now = std::time::Instant::now();
+    let mut last_opt = state.render_fps_last.lock().unwrap();
+    if let Some(last) = *last_opt {
+        let elapsed = now.duration_since(last).as_secs_f32();
+        // Sanity bounds: only accept 0.01 s – 60 s intervals
+        if elapsed >= 0.01 && elapsed <= 60.0 {
+            let new_fps = 1.0 / elapsed;
+            let mut fps = state.render_fps.lock().unwrap();
+            *fps = if *fps == 0.0 { new_fps } else { 0.2 * new_fps + 0.8 * (*fps) };
+            // Append to FPS history ring-buffer (capped at 60 samples)
+            let mut fh = state.fps_history.lock().unwrap();
+            if fh.len() >= 60 { fh.pop_front(); }
+            fh.push_back(*fps);
+        }
+    }
+    *last_opt = Some(now);
+}
+
 // ─── Display loop ─────────────────────────────────────────────────────────────
 
 fn display_loop(panel: Arc<Mutex<Option<Panel>>>, state: DaemonState) {
@@ -876,6 +1665,14 @@ fn display_loop(panel: Arc<Mutex<Option<Panel>>>, state: DaemonState) {
         let rotate_deg = *state.rotate_deg.lock().unwrap();
 
         let result: anyhow::Result<()> = (|| {
+            // ── Freeze: skip rendering, just keepalive ─────────────────────
+            if *state.frozen.lock().unwrap() {
+                let mut g = panel.lock().unwrap();
+                if let Some(p) = g.as_mut() { p.keepalive()?; }
+                thread::sleep(Duration::from_secs(2));
+                return Ok(());
+            }
+
             match mode {
                 DisplayMode::Idle => {
                     let mut g = panel.lock().unwrap();
@@ -918,6 +1715,7 @@ fn display_loop(panel: Arc<Mutex<Option<Panel>>>, state: DaemonState) {
                     if let Some(p) = payload {
                         let img  = render_custom_text(&p);
                         let img  = apply_rotation(img, rotate_deg);
+                        let img  = apply_brightness(img, *state.dim_factor.lock().unwrap());
                         let jpeg = encode_for_panel(&img, quality)?;
                         let jpeg = store_frame(&state, jpeg);
                         let mut g = panel.lock().unwrap();
@@ -953,6 +1751,7 @@ fn display_loop(panel: Arc<Mutex<Option<Panel>>>, state: DaemonState) {
                     let interval = *state.slideshow_interval.lock().unwrap();
                     let img  = image::open(&paths[idx])?;
                     let img  = apply_rotation(img, rotate_deg);
+                    let img  = apply_brightness(img, *state.dim_factor.lock().unwrap());
                     let jpeg = letterbox_for_panel(&img, quality)?;
                     let jpeg = store_frame(&state, jpeg);
                     { let mut g = panel.lock().unwrap(); if let Some(p) = g.as_mut() { p.send_jpeg(&jpeg)?; } }
@@ -964,6 +1763,7 @@ fn display_loop(panel: Arc<Mutex<Option<Panel>>>, state: DaemonState) {
 
             let (img, sleep_secs): (DynamicImage, u64) = match mode {
                 DisplayMode::Clock        => (render_clock(),         1),
+                DisplayMode::BigClock     => (render_big_clock(),     1),
                 DisplayMode::ClockSysinfo => (render_clock_sysinfo(), 2),
                 DisplayMode::Sysinfo      => (render_sysinfo(),        2),
                 DisplayMode::CpuDetail    => (render_cpu_detail(),     2),
@@ -974,6 +1774,36 @@ fn display_loop(panel: Arc<Mutex<Option<Panel>>>, state: DaemonState) {
                 DisplayMode::MemoryDetail => (render_memory_detail(),  4),
                 DisplayMode::CpuGraph     => (render_cpu_graph(),      1),
                 DisplayMode::NetGraph     => (render_net_graph(),      2),
+                DisplayMode::ProcessMemory => (render_process_memory(), 3),
+                DisplayMode::DiskIo        => (render_disk_io(),        3),
+                DisplayMode::Calendar      => (render_calendar(),       30),
+                DisplayMode::Stopwatch    => {
+                    let (elapsed_ms, laps, running) = {
+                        let sw = state.stopwatch.lock().unwrap();
+                        (sw.current_elapsed_ms(), sw.laps.clone(), sw.running)
+                    };
+                    (render_stopwatch(elapsed_ms, &laps, running), if running { 1 } else { 2 })
+                },
+                DisplayMode::Metrics => {
+                    let title = state.metrics_title.lock().unwrap().clone();
+                    let data  = state.metrics_data.lock().unwrap().clone();
+                    (render_metrics(&title, &data), 5)
+                },
+                DisplayMode::Weather => {
+                    let wd = state.weather_data.lock().unwrap().clone();
+                    (render_weather(&wd), 60)
+                },
+                DisplayMode::Notes => {
+                    let title = state.notes_title.lock().unwrap().clone();
+                    let items = state.notes_items.lock().unwrap().clone();
+                    (render_notes(&title, &items), 10)
+                },
+                DisplayMode::QrCode => {
+                    let payload = state.qr_payload.lock().unwrap().clone();
+                    let title   = state.qr_title.lock().unwrap().clone();
+                    // QR content never changes, so refresh every 60 s (just keepalive)
+                    (render_qr_code(&payload, &title), 60)
+                },
                 DisplayMode::RecentAlerts => {
                     let entries: Vec<(u64, bool, String)> = {
                         let h = state.history.lock().unwrap();
@@ -994,6 +1824,24 @@ fn display_loop(panel: Arc<Mutex<Option<Panel>>>, state: DaemonState) {
                             .map(|d| d.as_secs())
                             .unwrap_or(0);
                         let remaining = (cd.target_unix as i64) - (now_secs as i64);
+                        // Auto-expiry: when countdown just hits zero, record history and
+                        // return to the previous mode after showing "TIME'S UP" for 10 s.
+                        if remaining <= 0 && !cd.expired_notified {
+                            let label = cd.label.clone();
+                            {
+                                let mut cd_lock = state.countdown.lock().unwrap();
+                                if let Some(ref mut c) = *cd_lock { c.expired_notified = true; }
+                            }
+                            push_history(&state, HistoryKind::Alert,
+                                format!("⏰ Countdown expired: {}", if label.is_empty() { "Timer" } else { &label }));
+                            log::info!("countdown expired: {label}");
+                        }
+                        // After 10 s in expired state, return to previous mode
+                        if remaining < -10 {
+                            let prev = state.prev_mode.lock().unwrap().clone();
+                            *state.mode.lock().unwrap() = prev;
+                            *state.countdown.lock().unwrap() = None;
+                        }
                         (render_countdown(remaining, cd.total_secs as i64, &cd.label), 1)
                     } else {
                         (render_custom_text(&CustomTextPayload {
@@ -1002,6 +1850,81 @@ fn display_loop(panel: Arc<Mutex<Option<Panel>>>, state: DaemonState) {
                         }), 5)
                     }
                 },
+                DisplayMode::Pomodoro => {
+                    // Check for auto-advance (phase expired while running)
+                    let (check_running, check_remaining, check_phase) = {
+                        let p = state.pomodoro.lock().unwrap();
+                        (p.running, p.remaining_secs(), p.phase.as_str().to_string())
+                    };
+                    if check_running && check_remaining <= 0 {
+                        let next_phase = {
+                            let mut p = state.pomodoro.lock().unwrap();
+                            p.advance_phase();
+                            p.phase.as_str().to_string()
+                        };
+                        let msg = format!("Pomodoro: {} complete → {}", check_phase, next_phase);
+                        push_history(&state, HistoryKind::Alert, msg);
+                        // Audio notification (best-effort, fire-and-forget)
+                        thread::spawn(move || {
+                            // Try paplay (PulseAudio), then aplay (ALSA)
+                            let played = std::process::Command::new("paplay")
+                                .arg("/usr/share/sounds/freedesktop/stereo/complete.oga")
+                                .stdout(std::process::Stdio::null())
+                                .stderr(std::process::Stdio::null())
+                                .status()
+                                .map(|s| s.success())
+                                .unwrap_or(false);
+                            if !played {
+                                let _ = std::process::Command::new("aplay")
+                                    .arg("/usr/share/sounds/alsa/Front_Center.wav")
+                                    .stdout(std::process::Stdio::null())
+                                    .stderr(std::process::Stdio::null())
+                                    .status();
+                            }
+                        });
+                    }
+                    let (phase_str, remaining, total, completed, running) = {
+                        let p = state.pomodoro.lock().unwrap();
+                        (p.phase.as_str().to_string(), p.remaining_secs(), p.phase_total_secs(),
+                         (p.completed_sessions % p.long_break_interval) as u8, p.running)
+                    };
+                    let interval = if running { 1 } else { 2 };
+                    (render_pomodoro(&phase_str, remaining, total, completed, running), interval)
+                },
+                DisplayMode::Ticker => {
+                    let text  = state.ticker_text.lock().unwrap().clone();
+                    let color = state.ticker_color.lock().unwrap().clone();
+                    let pos   = *state.ticker_pos.lock().unwrap();
+                    let img   = render_ticker(&text, pos, &color);
+                    // Advance ~80 px per 1-second tick (good ticker speed)
+                    let text_w = text.len() as i32 * 26 + 480;
+                    {
+                        let mut p = state.ticker_pos.lock().unwrap();
+                        *p = (*p + 80) % text_w.max(1);
+                    }
+                    (img, 1)
+                },
+                DisplayMode::Battery => (render_battery(), 10),
+                DisplayMode::WorldClock => {
+                    let cities = state.world_clock_cities.lock().unwrap().clone();
+                    (render_world_clock(&cities), 1)
+                },
+                DisplayMode::HttpStatus => {
+                    let results = state.http_results.lock().unwrap().clone();
+                    (render_http_status(&results), 5)
+                },
+                DisplayMode::ShellCmd => {
+                    let cmd     = state.shell_cmd_text.lock().unwrap().clone();
+                    let output  = state.shell_cmd_output.lock().unwrap().clone();
+                    let exit_ok = *state.shell_cmd_exit_ok.lock().unwrap();
+                    let run_at  = *state.shell_cmd_run_at.lock().unwrap();
+                    (render_shell_cmd(&cmd, &output, exit_ok, run_at), 5)
+                },
+                DisplayMode::PingMonitor => {
+                    let results = state.ping_results.lock().unwrap().clone();
+                    (render_ping_monitor(&results), 5)
+                },
+                DisplayMode::Dashboard => (render_dashboard(), 2),
                 DisplayMode::Idle
                 | DisplayMode::CustomImage
                 | DisplayMode::CustomText
@@ -1009,7 +1932,7 @@ fn display_loop(panel: Arc<Mutex<Option<Panel>>>, state: DaemonState) {
             };
 
             // Update CPU history for the graph mode (on any live frame)
-            if matches!(mode, DisplayMode::Clock | DisplayMode::ClockSysinfo | DisplayMode::Sysinfo
+            if matches!(mode, DisplayMode::Clock | DisplayMode::BigClock | DisplayMode::ClockSysinfo | DisplayMode::Sysinfo
                 | DisplayMode::CpuDetail | DisplayMode::Network | DisplayMode::DiskUsage
                 | DisplayMode::ProcessTop | DisplayMode::Temperature | DisplayMode::MemoryDetail
                 | DisplayMode::NetGraph) {
@@ -1019,8 +1942,10 @@ fn display_loop(panel: Arc<Mutex<Option<Panel>>>, state: DaemonState) {
                 push_cpu_history(s.global_cpu_usage());
             }
             let img  = apply_rotation(img, rotate_deg);
+            let img  = apply_brightness(img, *state.dim_factor.lock().unwrap());
             let jpeg = store_frame(&state, encode_for_panel(&img, quality)?);
             { let mut g = panel.lock().unwrap(); if let Some(p) = g.as_mut() { p.send_jpeg(&jpeg)?; } }
+            update_fps(&state);
             thread::sleep(Duration::from_secs(sleep_secs));
             Ok(())
         })();
@@ -1070,6 +1995,383 @@ fn rotation_loop(state: DaemonState) {
     }
 }
 
+// ─── Threshold monitoring loop ───────────────────────────────────────────────
+
+/// Background thread: poll CPU usage and temperatures every 15 s;
+/// fire an alert notification if any threshold is exceeded.
+fn threshold_monitor_loop(state: DaemonState) {
+    use sysinfo::{System, Components};
+    loop {
+        thread::sleep(Duration::from_secs(15));
+
+        let thresholds = state.alert_thresholds.lock().unwrap().clone();
+
+        let now_secs = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs()).unwrap_or(0);
+
+        // Rate-limit
+        let last_alert = *state.last_threshold_alert_at.lock().unwrap();
+        if now_secs.saturating_sub(last_alert) < thresholds.cooldown_secs {
+            continue;
+        }
+
+        // ── CPU check ──────────────────────────────────────────────────────
+        if thresholds.cpu_pct > 0.0 {
+            let mut sys = System::new();
+            sys.refresh_cpu_usage();
+            thread::sleep(Duration::from_millis(200));
+            sys.refresh_cpu_usage();
+            let cpu = sys.global_cpu_usage();
+            if cpu >= thresholds.cpu_pct {
+                log::warn!("threshold alert: CPU {:.0}% ≥ {:.0}%", cpu, thresholds.cpu_pct);
+                push_threshold_alert(
+                    &state,
+                    format!("CPU {:.0}%", cpu),
+                    format!("Threshold: {:.0}%", thresholds.cpu_pct),
+                    ttlcd::display::NamedColor::Red,
+                    now_secs,
+                );
+                continue;
+            }
+        }
+
+        // ── Temperature check ──────────────────────────────────────────────
+        if thresholds.temp_c > 0.0 {
+            let components = Components::new_with_refreshed_list();
+            for c in components.iter() {
+                if let Some(temp) = c.temperature() {
+                    if temp >= thresholds.temp_c {
+                        let label = c.label().to_string();
+                        log::warn!("threshold alert: {} = {:.0}°C ≥ {:.0}°C", label, temp, thresholds.temp_c);
+                        push_threshold_alert(
+                            &state,
+                            format!("{:.0}°C — {}", temp, label),
+                            format!("Threshold: {:.0}°C", thresholds.temp_c),
+                            ttlcd::display::NamedColor::Red,
+                            now_secs,
+                        );
+                        break;
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Push a threshold alert into the history ring buffer and switch to
+/// `RecentAlerts` mode briefly (5 s) then return.
+fn push_threshold_alert(
+    state: &DaemonState,
+    title: String,
+    subtitle: String,
+    color: ttlcd::display::NamedColor,
+    now_secs: u64,
+) {
+    *state.last_threshold_alert_at.lock().unwrap() = now_secs;
+
+    let payload = CustomTextPayload {
+        title:     Some(title.clone()),
+        subtitle:  Some(subtitle),
+        color,
+        show_time: true,
+        ..Default::default()
+    };
+    let summary = format!("THRESHOLD — {}", title);
+    push_history(state, HistoryKind::Alert, summary);
+    *state.pending_text.lock().unwrap() = Some(payload);
+    let prev = state.mode.lock().unwrap().clone();
+    if !prev.is_transient() {
+        *state.prev_mode.lock().unwrap() = prev;
+    }
+    *state.mode.lock().unwrap() = DisplayMode::CustomText;
+    *state.auto_clear_at.lock().unwrap() = Some(now_secs + 10);
+}
+
+// ─── Dim schedule loop ────────────────────────────────────────────────────────
+
+/// Background thread: check the dim schedule every 60 s and apply/lift the dim.
+fn dim_schedule_loop(state: DaemonState) {
+    loop {
+        thread::sleep(Duration::from_secs(60));
+
+        let schedule_opt = state.dim_schedule.lock().unwrap().clone();
+        let Some(sched) = schedule_opt else { continue };
+
+        let now_hour = Local::now().hour() as u8;
+        let in_window = if sched.start_hour <= sched.end_hour {
+            now_hour >= sched.start_hour && now_hour < sched.end_hour
+        } else {
+            // Overnight window e.g. 22:00 – 06:00
+            now_hour >= sched.start_hour || now_hour < sched.end_hour
+        };
+
+        let current = *state.dim_factor.lock().unwrap();
+        let target   = if in_window { sched.dim_level } else { 1.0_f32 };
+        if (current - target).abs() > 0.01 {
+            log::info!("dim schedule: {} → brightness {:.0}%", if in_window { "dim" } else { "restore" }, target * 100.0);
+            *state.dim_factor.lock().unwrap() = target;
+        }
+    }
+}
+
+
+// ─── Mode schedule loop ───────────────────────────────────────────────────────
+
+/// Path to ~/.config/ttlcd/mode_schedule.json
+fn mode_schedule_path() -> Option<std::path::PathBuf> {
+    let p = dirs_config_path()?;
+    Some(p.parent()?.join("mode_schedule.json"))
+}
+
+fn load_mode_schedule() -> Vec<ModeScheduleEntry> {
+    (|| -> Option<Vec<ModeScheduleEntry>> {
+        let path = mode_schedule_path()?;
+        let text = std::fs::read_to_string(&path).ok()?;
+        serde_json::from_str(&text).ok()
+    })().unwrap_or_default()
+}
+
+fn save_mode_schedule(entries: &[ModeScheduleEntry]) {
+    let Some(path) = mode_schedule_path() else { return };
+    if let Some(parent) = path.parent() { let _ = std::fs::create_dir_all(parent); }
+    if let Ok(text) = serde_json::to_string_pretty(entries) {
+        let _ = std::fs::write(&path, &text);
+    }
+}
+
+
+// ─── World clock persistence ──────────────────────────────────────────────────
+
+fn world_clock_path() -> Option<std::path::PathBuf> {
+    let p = dirs_config_path()?;
+    Some(p.parent()?.join("world_clock.json"))
+}
+
+fn load_world_clock() -> Vec<(String, i32)> {
+    (|| -> Option<Vec<(String, i32)>> {
+        let path = world_clock_path()?;
+        let text = std::fs::read_to_string(&path).ok()?;
+        serde_json::from_str(&text).ok()
+    })().unwrap_or_default()
+}
+
+fn save_world_clock(cities: &[(String, i32)]) {
+    let Some(path) = world_clock_path() else { return };
+    if let Some(parent) = path.parent() { let _ = std::fs::create_dir_all(parent); }
+    if let Ok(text) = serde_json::to_string_pretty(cities) {
+        let _ = std::fs::write(&path, &text);
+    }
+}
+
+// ─── HTTP health-check loop ───────────────────────────────────────────────────
+
+/// Async background loop: periodically checks all configured HTTP monitors.
+async fn http_check_loop(state: DaemonState) {
+    loop {
+        let interval_secs = *state.http_check_interval_secs.lock().unwrap();
+        tokio::time::sleep(tokio::time::Duration::from_secs(interval_secs.max(5))).await;
+
+        let monitors: Vec<HttpMonitorEntry> = state.http_monitors.lock().unwrap().clone();
+        if monitors.is_empty() { continue; }
+
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(8))
+            .user_agent("ttlcd-rs/0.1 health-checker")
+            .danger_accept_invalid_certs(true)
+            .build()
+            .unwrap_or_else(|_| reqwest::Client::new());
+
+        let mut results: Vec<HttpMonitorResult> = Vec::with_capacity(monitors.len());
+        for m in &monitors {
+            let start = std::time::Instant::now();
+            let resp = client.get(&m.url).send().await;
+            let latency_ms = start.elapsed().as_millis() as u64;
+            let (status_code, ok) = match resp {
+                Ok(r) => {
+                    let code = r.status().as_u16();
+                    (Some(code), code < 400)
+                }
+                Err(_) => (None, false),
+            };
+            results.push(HttpMonitorResult {
+                label:       m.label.clone(),
+                url:         m.url.clone(),
+                status_code,
+                latency_ms:  if ok || status_code.is_some() { Some(latency_ms) } else { None },
+                ok,
+            });
+        }
+        *state.http_results.lock().unwrap() = results;
+    }
+}
+
+// ─── Shell command loop ───────────────────────────────────────────────────────
+
+/// Async background loop: periodically runs the configured shell command.
+async fn shell_cmd_loop(state: DaemonState) {
+    let mut last_run_at: u64 = 0;
+    loop {
+        tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+
+        let cmd_text = state.shell_cmd_text.lock().unwrap().clone();
+        if cmd_text.is_empty() { continue; }
+
+        let interval_secs = *state.shell_cmd_interval_secs.lock().unwrap();
+        if interval_secs == 0 { continue; } // manual-only mode
+
+        let now_secs = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+
+        if now_secs < last_run_at + interval_secs { continue; }
+        last_run_at = now_secs;
+
+        run_shell_cmd_once(&state, &cmd_text).await;
+    }
+}
+
+/// Execute `cmd_text` via `/bin/sh -c` and store output + exit status.
+async fn run_shell_cmd_once(state: &DaemonState, cmd_text: &str) {
+    use tokio::process::Command;
+    let result = Command::new("/bin/sh")
+        .args(["-c", cmd_text])
+        .output()
+        .await;
+
+    let now_secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+
+    match result {
+        Ok(out) => {
+            let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+            let stderr = String::from_utf8_lossy(&out.stderr).to_string();
+            let combined = if stderr.trim().is_empty() {
+                stdout
+            } else {
+                format!("{}
+--- stderr ---
+{}", stdout.trim_end(), stderr.trim_end())
+            };
+            *state.shell_cmd_output.lock().unwrap()  = combined;
+            *state.shell_cmd_exit_ok.lock().unwrap()  = out.status.success();
+            *state.shell_cmd_run_at.lock().unwrap()   = now_secs;
+        }
+        Err(e) => {
+            *state.shell_cmd_output.lock().unwrap()  = format!("exec error: {e}");
+            *state.shell_cmd_exit_ok.lock().unwrap()  = false;
+            *state.shell_cmd_run_at.lock().unwrap()   = now_secs;
+        }
+    }
+}
+
+// ─── Ping monitor loop ───────────────────────────────────────────────────────
+
+/// Async background loop: periodically pings all configured hosts using the
+/// system `ping` command, and stores results in `state.ping_results`.
+async fn ping_monitor_loop(state: DaemonState) {
+    loop {
+        let interval_secs = *state.ping_interval_secs.lock().unwrap();
+        tokio::time::sleep(tokio::time::Duration::from_secs(interval_secs.max(5))).await;
+
+        let hosts: Vec<PingHostEntry> = state.ping_hosts.lock().unwrap().clone();
+        if hosts.is_empty() { continue; }
+
+        let mut results: Vec<PingResult> = Vec::with_capacity(hosts.len());
+        for h in &hosts {
+            let result = run_ping_once(&h.host).await;
+            results.push(PingResult {
+                host:       h.host.clone(),
+                label:      h.label.clone(),
+                latency_ms: result.0,
+                loss_pct:   result.1,
+            });
+        }
+        *state.ping_results.lock().unwrap() = results;
+    }
+}
+
+/// Execute `ping -c 3 -W 1 <host>` and parse the summary.
+/// Returns `(latency_ms, loss_pct)`.
+async fn run_ping_once(host: &str) -> (Option<f64>, f32) {
+    use tokio::process::Command;
+    // -c 3 = send 3 packets; -W 1 = 1s timeout per packet
+    let out = Command::new("ping")
+        .args(["-c", "3", "-W", "1", host])
+        .output()
+        .await;
+
+    match out {
+        Err(_) => (None, 100.0),
+        Ok(o) => {
+            let stdout = String::from_utf8_lossy(&o.stdout);
+            // Parse "rtt min/avg/max/mdev = X/Y/Z/W ms"
+            let avg_ms = stdout.lines()
+                .find(|l| l.contains("rtt min/avg"))
+                .and_then(|l| l.split('/').nth(4))
+                .and_then(|s| s.trim().split(' ').next())
+                .and_then(|s| s.parse::<f64>().ok());
+            // Parse "N packets transmitted, M received, X% packet loss"
+            let loss_pct = stdout.lines()
+                .find(|l| l.contains("packet loss"))
+                .and_then(|l| {
+                    l.split(',')
+                        .find(|s| s.contains("packet loss"))
+                        .and_then(|s| s.trim().split_whitespace().next())
+                        .and_then(|s| s.trim_end_matches('%').parse::<f32>().ok())
+                })
+                .unwrap_or(100.0);
+            (avg_ms, loss_pct)
+        }
+    }
+}
+
+/// Background loop: every 30 s, check if a mode schedule entry matches the current time.
+/// Uses "most recent past slot" logic — finds the latest entry whose (hour, minute) <= now.
+fn mode_schedule_loop(state: DaemonState) {
+    use chrono::Timelike;
+    // Track which slot we last activated to avoid repeated switches
+    let mut last_activated: Option<(u8, u8)> = None;
+
+    loop {
+        thread::sleep(Duration::from_secs(30));
+
+        let entries = state.mode_schedule.lock().unwrap().clone();
+        if entries.is_empty() { last_activated = None; continue; }
+
+        let now = Local::now();
+        let now_h = now.hour() as u8;
+        let now_m = now.minute() as u8;
+
+        // Find the "active" entry: the latest one whose (hour, minute) <= (now_h, now_m).
+        // Wrap-around: if no past entry exists, use the last entry of the previous day.
+        let active = entries.iter()
+            .filter(|e| (e.hour, e.minute) <= (now_h, now_m))
+            .max_by_key(|e| (e.hour, e.minute));
+        let active = active.or_else(|| entries.iter().max_by_key(|e| (e.hour, e.minute)));
+
+        if let Some(entry) = active {
+            let slot = (entry.hour, entry.minute);
+            if last_activated != Some(slot) {
+                if let Ok(mode) = entry.mode.parse::<DisplayMode>() {
+                    let cur = state.mode.lock().unwrap().clone();
+                    if cur != mode {
+                        log::info!("mode schedule: switching to {} (slot {:02}:{:02})", entry.mode, entry.hour, entry.minute);
+                        if !cur.is_transient() { *state.prev_mode.lock().unwrap() = cur; }
+                        *state.mode.lock().unwrap() = mode;
+                        push_history(&state, HistoryKind::System,
+                            format!("Scheduled mode switch → {} at {:02}:{:02}", entry.mode, entry.hour, entry.minute));
+                    }
+                    last_activated = Some(slot);
+                }
+            }
+        }
+    }
+}
+
 // ─── HTTP handlers ────────────────────────────────────────────────────────────
 
 use actix_web::{web, HttpResponse, Responder};
@@ -1097,6 +2399,18 @@ struct StatusResponse {
     countdown_remaining_secs: Option<i64>,
     /// Countdown label (None if not in countdown mode).
     countdown_label: Option<String>,
+    /// Display brightness 0.0–1.0 (1.0 = full brightness).
+    brightness: f32,
+    /// Exponential-moving-average of frames rendered per second.
+    render_fps: f32,
+    /// Seconds since the daemon started.
+    daemon_uptime_secs: u64,
+    /// Whether the display is currently frozen (updates paused).
+    frozen: bool,
+    /// Whether the stopwatch is currently running.
+    stopwatch_running: bool,
+    /// Current stopwatch elapsed milliseconds.
+    stopwatch_elapsed_ms: u64,
 }
 
 async fn api_status(state: web::Data<DaemonState>) -> impl Responder {
@@ -1123,13 +2437,32 @@ async fn api_status(state: web::Data<DaemonState>) -> impl Responder {
         }
     };
 
+    // Extract stopwatch fields before building the response to avoid
+    // holding two MutexGuard temporaries on the same mutex in one expression.
+    let (sw_running, sw_elapsed_ms) = {
+        let sw = state.stopwatch.lock().unwrap();
+        (sw.running, sw.current_elapsed_ms())
+    };
+    let rotate_deg        = *state.rotate_deg.lock().unwrap();
+    let quality           = *state.quality.lock().unwrap();
+    let pending_scheduled = *state.pending_scheduled.lock().unwrap();
+    let brightness        = *state.dim_factor.lock().unwrap();
+    let render_fps        = *state.render_fps.lock().unwrap();
+    let frozen            = *state.frozen.lock().unwrap();
+    let daemon_uptime_secs = {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs()).unwrap_or(0);
+        now.saturating_sub(state.daemon_start_secs)
+    };
+
     HttpResponse::Ok().json(StatusResponse {
         mode,
         version:               env!("CARGO_PKG_VERSION"),
         available_modes:       DisplayMode::ALL_NAMES,
         headless:              state.headless,
-        rotate_deg:            *state.rotate_deg.lock().unwrap(),
-        quality:               *state.quality.lock().unwrap(),
+        rotate_deg,
+        quality,
         frame_seq,
         can_clear,
         rotation_interval:     rot_interval,
@@ -1137,9 +2470,15 @@ async fn api_status(state: web::Data<DaemonState>) -> impl Responder {
         slideshow_image_count: ss_count,
         slideshow_interval:    ss_interval,
         slideshow_current_idx: ss_idx,
-        pending_scheduled:     *state.pending_scheduled.lock().unwrap(),
+        pending_scheduled,
         countdown_remaining_secs: cd_remaining,
         countdown_label:          cd_label,
+        brightness,
+        render_fps,
+        daemon_uptime_secs,
+        frozen,
+        stopwatch_running:    sw_running,
+        stopwatch_elapsed_ms: sw_elapsed_ms,
     })
 }
 
@@ -1155,6 +2494,7 @@ async fn api_set_mode(state: web::Data<DaemonState>, body: web::Json<SetModeRequ
                 *state.prev_mode.lock().unwrap()    = new_mode.clone();
             }
             *state.mode.lock().unwrap() = new_mode;
+            persist_state(&state);
             HttpResponse::Ok().body("ok")
         }
         Err(e) => HttpResponse::BadRequest().body(e),
@@ -1188,6 +2528,7 @@ async fn api_upload_image(state: web::Data<DaemonState>, mut mp: Multipart) -> i
     { let cur = state.mode.lock().unwrap().clone(); if !cur.is_transient() { *state.prev_mode.lock().unwrap() = cur; } }
     *state.pending_jpeg.lock().unwrap() = Some(jpeg);
     *state.mode.lock().unwrap()         = DisplayMode::CustomImage;
+    push_history(&state, HistoryKind::Image, format!("Image uploaded ({} bytes)", raw.len()));
     HttpResponse::Ok().body("image queued")
 }
 
@@ -1290,20 +2631,37 @@ struct ModeInfo {
 
 async fn api_modes_list() -> impl Responder {
     HttpResponse::Ok().json(&[
-        ModeInfo { name: "clock",         description: "Large digital clock with date and uptime" },
-        ModeInfo { name: "clock_sysinfo", description: "Split-screen: clock above, quick stats below" },
-        ModeInfo { name: "sysinfo",       description: "CPU, RAM, temperature, load average, uptime" },
-        ModeInfo { name: "cpu_detail",    description: "Per-core CPU usage grid (up to 32 cores)" },
-        ModeInfo { name: "network",       description: "Per-interface Rx/Tx rates and totals" },
-        ModeInfo { name: "disk_usage",    description: "Disk partition usage bars" },
-        ModeInfo { name: "process_top",   description: "Top processes sorted by CPU usage" },
-        ModeInfo { name: "temperature",   description: "Thermal sensor readings with color-coded bars" },
-        ModeInfo { name: "memory_detail", description: "Detailed RAM breakdown: used, cached, free, swap" },
-        ModeInfo { name: "countdown",    description: "Countdown timer with colour transitions and progress bar" },
-        ModeInfo { name: "cpu_graph",    description: "CPU usage history bar chart (last 2 minutes)" },
-        ModeInfo { name: "net_graph",    description: "Network Rx/Tx I/O history chart (last 60 seconds)" },
-        ModeInfo { name: "recent_alerts", description: "Last 5 notifications as an on-panel log" },
-        ModeInfo { name: "idle",          description: "Keepalive — no display update, prevents blank" },
+        ModeInfo { name: "clock",          description: "Large digital clock with date and uptime" },
+        ModeInfo { name: "big_clock",      description: "Full-screen giant HH:MM with large seconds and progress bar" },
+        ModeInfo { name: "clock_sysinfo",  description: "Split-screen: clock above, quick stats below" },
+        ModeInfo { name: "sysinfo",        description: "CPU, RAM, temperature, load average, uptime" },
+        ModeInfo { name: "cpu_detail",     description: "Per-core CPU usage grid (up to 32 cores)" },
+        ModeInfo { name: "network",        description: "Per-interface Rx/Tx rates and totals" },
+        ModeInfo { name: "disk_usage",     description: "Disk partition usage bars" },
+        ModeInfo { name: "process_top",    description: "Top processes sorted by CPU usage" },
+        ModeInfo { name: "temperature",    description: "Thermal sensor readings with color-coded bars" },
+        ModeInfo { name: "memory_detail",  description: "Detailed RAM breakdown: used, cached, free, swap" },
+        ModeInfo { name: "countdown",      description: "Countdown timer with colour transitions and progress bar" },
+        ModeInfo { name: "cpu_graph",      description: "CPU usage history bar chart (last 2 minutes)" },
+        ModeInfo { name: "net_graph",      description: "Network Rx/Tx I/O history chart (last 60 seconds)" },
+        ModeInfo { name: "recent_alerts",  description: "Last 5 notifications as an on-panel log" },
+        ModeInfo { name: "process_memory", description: "Top 8 processes sorted by RAM usage" },
+        ModeInfo { name: "disk_io",        description: "Disk read/write throughput per block device" },
+        ModeInfo { name: "calendar",       description: "Full-month calendar with today highlighted" },
+        ModeInfo { name: "stopwatch",      description: "Running stopwatch with lap times" },
+        ModeInfo { name: "metrics",        description: "Custom key/value metrics dashboard (up to 8 items)" },
+        ModeInfo { name: "weather",        description: "Weather snapshot — push via /api/weather or web UI" },
+        ModeInfo { name: "notes",          description: "Bulletin board — push text items via /api/notes" },
+        ModeInfo { name: "qr_code",         description: "Display a scannable QR code — set payload via /api/qr" },
+        ModeInfo { name: "pomodoro",        description: "Pomodoro focus timer: 25 min work / 5 min break cycles with visual progress ring" },
+        ModeInfo { name: "battery",        description: "Battery level, charging status, voltage and estimated time remaining (Linux laptops)" },
+        ModeInfo { name: "world_clock",    description: "World clock showing up to 4 cities with configurable UTC offsets and day/night coloring" },
+        ModeInfo { name: "ticker",         description: "Scrolling text ticker — push text via POST /api/ticker" },
+        ModeInfo { name: "http_status",    description: "HTTP health monitor dashboard — configure endpoints via /api/http_status" },
+        ModeInfo { name: "shell_cmd",      description: "Shell command output viewer — set command via POST /api/shell_cmd" },
+        ModeInfo { name: "ping_monitor",   description: "ICMP ping latency dashboard — configure hosts via /api/ping" },
+        ModeInfo { name: "dashboard",      description: "Four-quadrant overview: clock, CPU/RAM, network, temperature" },
+        ModeInfo { name: "idle",           description: "Keepalive — no display update, prevents blank" },
     ])
 }
 
@@ -1446,7 +2804,7 @@ async fn api_countdown(state: web::Data<DaemonState>, body: web::Json<CountdownR
     };
 
     let label = req.label.unwrap_or_default();
-    *state.countdown.lock().unwrap() = Some(CountdownState { target_unix, total_secs, label: label.clone() });
+    *state.countdown.lock().unwrap() = Some(CountdownState { target_unix, total_secs, label: label.clone(), expired_notified: false });
     { let cur = state.mode.lock().unwrap().clone(); if !cur.is_transient() { *state.prev_mode.lock().unwrap() = cur; } }
     *state.mode.lock().unwrap() = DisplayMode::Countdown;
     push_history(&state, HistoryKind::Alert, format!("Countdown: {}s — {}", total_secs, label));
@@ -1473,6 +2831,16 @@ async fn api_health(state: web::Data<DaemonState>) -> impl Responder {
         headless:  state.headless,
         frame_seq: *state.frame_seq.lock().unwrap(),
     })
+}
+
+// ─── Ping ───────────────────────────────────────────────────────────────────────
+
+/// GET /ping or GET /api/ping — returns "pong" instantly.
+/// Useful for latency checks and uptime monitoring.
+async fn api_ping() -> impl Responder {
+    HttpResponse::Ok()
+        .content_type("text/plain; charset=utf-8")
+        .body("pong")
 }
 
 // ─── Blank frame ──────────────────────────────────────────────────────────────
@@ -1554,10 +2922,73 @@ async fn api_image_path(state: web::Data<DaemonState>, body: web::Json<ImagePath
     HttpResponse::Ok().body("image queued")
 }
 
+#[derive(Deserialize)]
+struct ImageUrlRequest {
+    /// HTTP/HTTPS URL of the image to fetch and display.
+    url: String,
+    /// If true, letterbox (fit with black bars) instead of cropping. Defaults to true.
+    #[serde(default = "bool_true")]
+    letterbox: bool,
+}
+
+/// POST /api/image/url — fetch an image from an HTTP/HTTPS URL and display it on the panel.
+///
+/// Useful for dashboards that want to push live chart images, webcam frames,
+/// or any image hosted on the network.
+///
+/// Body: `{ "url": "https://example.com/chart.png", "letterbox": true }`
+async fn api_image_url(state: web::Data<DaemonState>, body: web::Json<ImageUrlRequest>) -> impl Responder {
+    let req = body.into_inner();
+    let url = req.url.trim().to_string();
+    if url.is_empty() {
+        return HttpResponse::BadRequest().body("url must not be empty");
+    }
+    if !url.starts_with("http://") && !url.starts_with("https://") {
+        return HttpResponse::BadRequest().body("url must start with http:// or https://");
+    }
+
+    // Fetch image bytes from URL
+    let image_bytes = match reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+    {
+        Ok(client) => match client.get(&url).send().await {
+            Ok(resp) => {
+                if !resp.status().is_success() {
+                    return HttpResponse::BadGateway()
+                        .body(format!("remote returned {}", resp.status()));
+                }
+                match resp.bytes().await {
+                    Ok(b) => b.to_vec(),
+                    Err(e) => return HttpResponse::BadGateway().body(format!("read error: {e}")),
+                }
+            }
+            Err(e) => return HttpResponse::BadGateway().body(format!("fetch error: {e}")),
+        },
+        Err(e) => return HttpResponse::InternalServerError().body(format!("client error: {e}")),
+    };
+
+    let quality    = *state.quality.lock().unwrap();
+    let rotate_deg = *state.rotate_deg.lock().unwrap();
+    let jpeg = match (|| -> anyhow::Result<Vec<u8>> {
+        let img = image::load_from_memory(&image_bytes)?;
+        let img = apply_rotation(img, rotate_deg);
+        if req.letterbox { letterbox_for_panel(&img, quality) } else { encode_for_panel(&img, quality) }
+    })() {
+        Ok(j)  => j,
+        Err(e) => return HttpResponse::UnprocessableEntity().body(format!("image decode error: {e}")),
+    };
+    push_history(&state, HistoryKind::Image, format!("Image from URL: {}", url.chars().take(80).collect::<String>()));
+    { let cur = state.mode.lock().unwrap().clone(); if !cur.is_transient() { *state.prev_mode.lock().unwrap() = cur; } }
+    *state.pending_jpeg.lock().unwrap() = Some(jpeg);
+    *state.mode.lock().unwrap()         = DisplayMode::CustomImage;
+    HttpResponse::Ok().body("image queued from URL")
+}
+
 // ─── Countdown timer state ───────────────────────────────────────────────────
 
 /// Persistent state for the countdown display mode.
-#[derive(Clone)]
+#[derive(Clone, Default)]
 struct CountdownState {
     /// Unix timestamp (seconds) when the countdown expires.
     target_unix:  u64,
@@ -1565,13 +2996,15 @@ struct CountdownState {
     total_secs:   u64,
     /// Optional label shown below the clock.
     label:        String,
+    /// True once the expiry notification has been pushed to history (prevents duplicate pushes).
+    expired_notified: bool,
 }
 
 // ─── Notification history ────────────────────────────────────────────────────
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "lowercase")]
-enum HistoryKind { Text, Alert }
+enum HistoryKind { Text, Alert, Image, System }
 
 #[derive(Clone, Serialize)]
 struct HistoryEntry {
@@ -1587,20 +3020,78 @@ fn push_history(state: &DaemonState, kind: HistoryKind, summary: String) {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
-    let entry = HistoryEntry { kind, summary, timestamp: ts };
-    let mut h = state.history.lock().unwrap();
-    if h.len() >= 50 { h.pop_front(); }
-    h.push_back(entry);
+
+    // Fire desktop notification for Alert-kind events (if notify-send is available)
+    if matches!(kind, HistoryKind::Alert) {
+        let sum2 = summary.clone();
+        thread::spawn(move || {
+            let _ = std::process::Command::new("notify-send")
+                .args(["ttlcd Alert", &sum2, "--icon", "dialog-warning", "--expire-time", "5000"])
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status();
+        });
+    }
+
+    let entry = HistoryEntry { kind: kind.clone(), summary: summary.clone(), timestamp: ts };
+    {
+        let mut h = state.history.lock().unwrap();
+        if h.len() >= 200 { h.pop_front(); }
+        h.push_back(entry);
+    }
+    // Publish alert events for the SSE stream
+    if matches!(kind, HistoryKind::Alert) {
+        let mut seq = state.alert_seq.lock().unwrap();
+        *seq += 1;
+        let new_seq = *seq;
+        drop(seq);
+        *state.last_alert_event.lock().unwrap() = Some((new_seq, summary));
+    }
 }
 
-/// GET /api/history?limit=N — return the last N notifications (default 50).
+/// GET /api/history — return notifications.
+///
+/// Query params:
+///   `limit=N`    — max entries (default 50, max 50)
+///   `kind=alert|text|image|system` — filter by entry kind
+///   `format=csv` — CSV output (columns: timestamp_unix,kind,summary)
 async fn api_history(state: web::Data<DaemonState>, query: web::Query<std::collections::HashMap<String, String>>) -> impl Responder {
-    let limit: usize = query.get("limit").and_then(|v| v.parse().ok()).unwrap_or(50).min(50);
+    let limit: usize = query.get("limit").and_then(|v| v.parse().ok()).unwrap_or(50).min(200);
+    let fmt         = query.get("format").map(|s| s.as_str()).unwrap_or("json").to_string();
+    let kind_filter = query.get("kind").cloned();
+
+    fn kind_str(k: &HistoryKind) -> &'static str {
+        match k {
+            HistoryKind::Alert  => "alert",
+            HistoryKind::Text   => "text",
+            HistoryKind::Image  => "image",
+            HistoryKind::System => "system",
+        }
+    }
+
     let h = state.history.lock().unwrap();
-    let items: Vec<&HistoryEntry> = h.iter().rev().take(limit).collect();
+    let items: Vec<&HistoryEntry> = h.iter().rev()
+        .filter(|e| {
+            kind_filter.as_ref()
+                .map(|kf| kind_str(&e.kind) == kf.as_str())
+                .unwrap_or(true)
+        })
+        .take(limit)
+        .collect();
+
+    if fmt == "csv" {
+        let mut csv = String::from("timestamp_unix,kind,summary\n");
+        for e in &items {
+            let safe = e.summary.replace('"', "\"\"");
+            csv.push_str(&format!("{},{},\"{}\"\n", e.timestamp, kind_str(&e.kind), safe));
+        }
+        return HttpResponse::Ok()
+            .content_type("text/csv; charset=utf-8")
+            .insert_header(("Content-Disposition", "attachment; filename=\"ttlcd-history.csv\""))
+            .body(csv);
+    }
     HttpResponse::Ok().json(items)
 }
-
 /// DELETE /api/history — clear the notification ring-buffer.
 async fn api_history_clear(state: web::Data<DaemonState>) -> impl Responder {
     let mut h = state.history.lock().unwrap();
@@ -1663,6 +3154,7 @@ async fn api_set_quality(state: web::Data<DaemonState>, body: web::Json<QualityR
     let q = body.quality.clamp(1, 100);
     *state.quality.lock().unwrap() = q;
     log::info!("quality set to {}", q);
+    persist_state(&state);
     // Persist to config file in background
     tokio::spawn(async move {
         persist_setting("quality", &q.to_string());
@@ -1684,6 +3176,7 @@ async fn api_set_orient(state: web::Data<DaemonState>, body: web::Json<OrientReq
     };
     *state.rotate_deg.lock().unwrap() = deg;
     log::info!("rotation set to {}°", deg);
+    persist_state(&state);
     HttpResponse::Ok().body(format!("{}°", deg))
 }
 
@@ -1765,6 +3258,99 @@ async fn api_metrics(state: web::Data<DaemonState>) -> impl Responder {
     push(&mut out, "# HELP ttlcd_history_total Total notification events pushed".into());
     push(&mut out, "# TYPE ttlcd_history_total counter".into());
     push(&mut out, format!("ttlcd_history_total {}", history_len));
+
+    push(&mut out, "# HELP ttlcd_brightness Current display brightness 0.0–1.0".into());
+    push(&mut out, "# TYPE ttlcd_brightness gauge".into());
+    push(&mut out, format!("ttlcd_brightness {:.3}", *state.dim_factor.lock().unwrap()));
+
+    push(&mut out, "# HELP ttlcd_pending_scheduled Scheduled notifications not yet fired".into());
+    push(&mut out, "# TYPE ttlcd_pending_scheduled gauge".into());
+    push(&mut out, format!("ttlcd_pending_scheduled {}", *state.pending_scheduled.lock().unwrap()));
+
+    push(&mut out, "# HELP ttlcd_swap_used_bytes Swap space used in bytes".into());
+    push(&mut out, "# TYPE ttlcd_swap_used_bytes gauge".into());
+    push(&mut out, format!("ttlcd_swap_used_bytes {}", sys.used_swap()));
+
+    push(&mut out, "# HELP ttlcd_swap_total_bytes Total swap space in bytes".into());
+    push(&mut out, "# TYPE ttlcd_swap_total_bytes gauge".into());
+    push(&mut out, format!("ttlcd_swap_total_bytes {}", sys.total_swap()));
+
+    // Per-disk space metrics
+    {
+        use sysinfo::Disks;
+        let disks = Disks::new_with_refreshed_list();
+        push(&mut out, "# HELP ttlcd_disk_used_bytes Disk partition used bytes".into());
+        push(&mut out, "# TYPE ttlcd_disk_used_bytes gauge".into());
+        push(&mut out, "# HELP ttlcd_disk_total_bytes Disk partition total bytes".into());
+        push(&mut out, "# TYPE ttlcd_disk_total_bytes gauge".into());
+        for d in disks.iter() {
+            if d.total_space() == 0 { continue; }
+            let mount = d.mount_point().to_string_lossy().replace('"', "");
+            let used  = d.total_space() - d.available_space();
+            push(&mut out, format!("ttlcd_disk_used_bytes{{mount=\"{mount}\"}} {used}"));
+            push(&mut out, format!("ttlcd_disk_total_bytes{{mount=\"{mount}\"}} {}", d.total_space()));
+        }
+    }
+
+    // All temperature sensors
+    {
+        push(&mut out, "# HELP ttlcd_sensor_temperature_celsius Temperature sensor reading in Celsius".into());
+        push(&mut out, "# TYPE ttlcd_sensor_temperature_celsius gauge".into());
+        for c in comps.iter() {
+            if let Some(t) = c.temperature() {
+                if t.is_nan() || t <= 0.0 { continue; }
+                let label = c.label().replace('"', "").replace(' ', "_");
+                push(&mut out, format!("ttlcd_sensor_temperature_celsius{{sensor=\"{label}\"}} {:.1}", t));
+            }
+        }
+    }
+
+    // Render FPS
+    push(&mut out, "# HELP ttlcd_render_fps Exponential-moving-average render frames per second".into());
+    push(&mut out, "# TYPE ttlcd_render_fps gauge".into());
+    push(&mut out, format!("ttlcd_render_fps {:.3}", *state.render_fps.lock().unwrap()));
+
+    // Daemon uptime
+    let now_s = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+    push(&mut out, "# HELP ttlcd_daemon_uptime_seconds Seconds since daemon started".into());
+    push(&mut out, "# TYPE ttlcd_daemon_uptime_seconds counter".into());
+    push(&mut out, format!("ttlcd_daemon_uptime_seconds {}", now_s.saturating_sub(state.daemon_start_secs)));
+
+    // Frozen state
+    push(&mut out, "# HELP ttlcd_display_frozen Whether the display is frozen (1 = yes, 0 = no)".into());
+    push(&mut out, "# TYPE ttlcd_display_frozen gauge".into());
+    push(&mut out, format!("ttlcd_display_frozen {}", if *state.frozen.lock().unwrap() { 1 } else { 0 }));
+
+    // Stopwatch
+    {
+        let sw = state.stopwatch.lock().unwrap();
+        push(&mut out, "# HELP ttlcd_stopwatch_running Whether the stopwatch is running (1 = yes, 0 = no)".into());
+        push(&mut out, "# TYPE ttlcd_stopwatch_running gauge".into());
+        push(&mut out, format!("ttlcd_stopwatch_running {}", if sw.running { 1 } else { 0 }));
+        push(&mut out, "# HELP ttlcd_stopwatch_elapsed_ms Stopwatch elapsed milliseconds".into());
+        push(&mut out, "# TYPE ttlcd_stopwatch_elapsed_ms counter".into());
+        push(&mut out, format!("ttlcd_stopwatch_elapsed_ms {}", sw.current_elapsed_ms()));
+        push(&mut out, "# HELP ttlcd_stopwatch_lap_count Number of recorded laps".into());
+        push(&mut out, "# TYPE ttlcd_stopwatch_lap_count counter".into());
+        push(&mut out, format!("ttlcd_stopwatch_lap_count {}", sw.laps.len()));
+    }
+
+    // Custom metrics count
+    push(&mut out, "# HELP ttlcd_metrics_count Number of custom metric items currently set".into());
+    push(&mut out, "# TYPE ttlcd_metrics_count gauge".into());
+    push(&mut out, format!("ttlcd_metrics_count {}", state.metrics_data.lock().unwrap().len()));
+
+    // Alert threshold
+    {
+        let t = state.alert_thresholds.lock().unwrap();
+        push(&mut out, "# HELP ttlcd_threshold_cpu_pct CPU alert threshold percent (0 = disabled)".into());
+        push(&mut out, "# TYPE ttlcd_threshold_cpu_pct gauge".into());
+        push(&mut out, format!("ttlcd_threshold_cpu_pct {}", t.cpu_pct));
+        push(&mut out, "# HELP ttlcd_threshold_temp_c Temperature alert threshold Celsius (0 = disabled)".into());
+        push(&mut out, "# TYPE ttlcd_threshold_temp_c gauge".into());
+        push(&mut out, format!("ttlcd_threshold_temp_c {}", t.temp_c));
+    }
 
     HttpResponse::Ok()
         .content_type("text/plain; version=0.0.4; charset=utf-8")
@@ -1858,6 +3444,37 @@ async fn api_preview_frame(state: web::Data<DaemonState>) -> impl Responder {
     }
 }
 
+/// GET /api/preview.png — current panel frame as lossless PNG.
+///
+/// Decodes the stored JPEG and re-encodes as PNG. Useful for high-quality
+/// screenshots, image processing, and clients that prefer lossless format.
+async fn api_preview_frame_png(state: web::Data<DaemonState>) -> impl Responder {
+    let guard = state.last_frame.lock().unwrap();
+    match guard.as_ref() {
+        Some(jpeg) => {
+            // Decode JPEG → re-encode as PNG
+            match image::load_from_memory(jpeg) {
+                Ok(img) => {
+                    let mut buf = std::io::Cursor::new(Vec::new());
+                    match img.write_to(&mut buf, image::ImageFormat::Png) {
+                        Ok(()) => HttpResponse::Ok()
+                            .insert_header(("Cache-Control", "no-store"))
+                            .content_type("image/png")
+                            .body(buf.into_inner()),
+                        Err(e) => HttpResponse::InternalServerError()
+                            .body(format!("PNG encode error: {e}")),
+                    }
+                }
+                Err(e) => HttpResponse::InternalServerError()
+                    .body(format!("JPEG decode error: {e}")),
+            }
+        }
+        None => HttpResponse::NoContent()
+            .insert_header(("Cache-Control", "no-store"))
+            .finish(),
+    }
+}
+
 #[derive(Serialize)]
 struct SysinfoJson {
     cpu_pct:   f32,
@@ -1906,30 +3523,76 @@ async fn api_sysinfo_json() -> impl Responder {
 /// The browser can use this to trigger a fresh `/api/preview` fetch without
 /// polling on a fixed timer.
 async fn api_events(state: web::Data<DaemonState>) -> impl Responder {
-    let frame_seq = Arc::clone(&state.frame_seq);
+    let frame_seq       = Arc::clone(&state.frame_seq);
+    let mode_arc        = Arc::clone(&state.mode);
+    let frozen_arc      = Arc::clone(&state.frozen);
+    let alert_seq_arc   = Arc::clone(&state.alert_seq);
+    let last_alert_arc  = Arc::clone(&state.last_alert_event);
 
+    let init_mode      = mode_arc.lock().unwrap().as_str().to_string();
+    let init_alert_seq = *alert_seq_arc.lock().unwrap();
+
+    // State tuple: (frame_seq, last_frame_seq, last_heartbeat, last_mode,
+    //               mode_arc, frozen_arc, alert_seq_arc, last_alert_arc, last_alert_seq)
     let stream = futures_util::stream::unfold(
-        (frame_seq, u64::MAX, std::time::Instant::now()),
-        |(seq, last_seq, last_hb)| async move {
+        (frame_seq, u64::MAX, std::time::Instant::now(), init_mode,
+         mode_arc, frozen_arc, alert_seq_arc, last_alert_arc, init_alert_seq),
+        |(seq, last_seq, last_hb, last_mode, mode_arc, frozen_arc,
+          alert_seq_arc, last_alert_arc, last_alert_seq)| async move {
             loop {
                 tokio::time::sleep(tokio::time::Duration::from_millis(250)).await;
-                let cur = *seq.lock().unwrap();
-                let now = std::time::Instant::now();
+                let cur       = *seq.lock().unwrap();
+                let mode      = mode_arc.lock().unwrap().as_str().to_string();
+                let alert_seq = *alert_seq_arc.lock().unwrap();
+                let now       = std::time::Instant::now();
 
-                if cur != last_seq {
-                    let event = format!("event: frame\ndata: {cur}\n\n");
+                // Alert event (new alert pushed to history)
+                if alert_seq != last_alert_seq {
+                    let summary = last_alert_arc.lock().unwrap()
+                        .as_ref()
+                        .map(|(_, s)| s.replace('"', "\'").replace('\n', " "))
+                        .unwrap_or_default();
+                    let event = format!(
+                        "event: alert\ndata: {{\"seq\":{alert_seq},\"summary\":\"{summary}\"}}\n\n"
+                    );
                     return Some((
                         Ok::<_, actix_web::Error>(actix_web::web::Bytes::from(event)),
-                        (seq, cur, last_hb),
+                        (seq, last_seq, last_hb, last_mode, mode_arc, frozen_arc,
+                         alert_seq_arc, last_alert_arc, alert_seq),
                     ));
                 }
 
+                // Frame event
+                if cur != last_seq {
+                    let frozen = *frozen_arc.lock().unwrap();
+                    let event = format!(
+                        "event: frame\ndata: {{\"seq\":{cur},\"frozen\":{frozen}}}\n\n"
+                    );
+                    return Some((
+                        Ok::<_, actix_web::Error>(actix_web::web::Bytes::from(event)),
+                        (seq, cur, last_hb, last_mode, mode_arc, frozen_arc,
+                         alert_seq_arc, last_alert_arc, last_alert_seq),
+                    ));
+                }
+
+                // Mode change event
+                if mode != last_mode {
+                    let event = format!("event: mode\ndata: {{\"mode\":\"{mode}\"}}\n\n");
+                    return Some((
+                        Ok::<_, actix_web::Error>(actix_web::web::Bytes::from(event)),
+                        (seq, last_seq, last_hb, mode, mode_arc, frozen_arc,
+                         alert_seq_arc, last_alert_arc, last_alert_seq),
+                    ));
+                }
+
+                // Heartbeat every 15 s
                 if now.duration_since(last_hb).as_secs() >= 15 {
                     return Some((
                         Ok::<_, actix_web::Error>(
                             actix_web::web::Bytes::from_static(b": heartbeat\n\n")
                         ),
-                        (seq, last_seq, now),
+                        (seq, last_seq, now, last_mode, mode_arc, frozen_arc,
+                         alert_seq_arc, last_alert_arc, last_alert_seq),
                     ));
                 }
             }
@@ -2016,6 +3679,25 @@ async fn api_webhook(
     }
 
     let v = body.into_inner();
+
+    // ── Outbound forwarding (fire-and-forget) ────────────────────────────
+    if let Some(fwd_url) = state.webhook_forward_url.lock().unwrap().clone() {
+        let fwd_body = v.clone();
+        tokio::spawn(async move {
+            match reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(10))
+                .build()
+            {
+                Ok(client) => {
+                    match client.post(&fwd_url).json(&fwd_body).send().await {
+                        Ok(resp) => log::info!("webhook forwarded to {} — status {}", fwd_url, resp.status()),
+                        Err(e)   => log::warn!("webhook forward to {} failed: {}", fwd_url, e),
+                    }
+                }
+                Err(e) => log::warn!("webhook forward: could not build HTTP client: {}", e),
+            }
+        });
+    }
 
     // ── GitHub Actions workflow_run ──────────────────────────────────────
     if let Some(wr) = v.get("workflow_run") {
@@ -2508,6 +4190,467 @@ async fn api_disks_json() -> impl Responder {
     HttpResponse::Ok().json(info)
 }
 
+// ─── Brightness control ──────────────────────────────────────────────────────
+
+/// GET /api/brightness — return current brightness as JSON.
+async fn api_get_brightness(state: web::Data<DaemonState>) -> impl Responder {
+    #[derive(Serialize)]
+    struct BrightnessResp { brightness: f32 }
+    HttpResponse::Ok().json(BrightnessResp {
+        brightness: *state.dim_factor.lock().unwrap(),
+    })
+}
+
+#[derive(Deserialize)]
+struct BrightnessRequest {
+    /// Brightness fraction 0.0 (off) to 1.0 (full).  Also accepts 0–100 as a
+    /// convenience — values > 1 are treated as a percentage and divided by 100.
+    brightness: f32,
+}
+
+/// POST /api/brightness — set display brightness (0.0–1.0 or 0–100).
+async fn api_set_brightness(state: web::Data<DaemonState>, body: web::Json<BrightnessRequest>) -> impl Responder {
+    let raw = body.brightness;
+    let factor = if raw > 1.0 { (raw / 100.0).clamp(0.0, 1.0) } else { raw.clamp(0.0, 1.0) };
+    *state.dim_factor.lock().unwrap() = factor;
+    log::info!("brightness set to {:.2}", factor);
+    persist_state(&state);
+    HttpResponse::Ok().body(format!("{:.2}", factor))
+}
+
+// ─── Countdown cancel ─────────────────────────────────────────────────────────
+
+/// DELETE /api/countdown — cancel the running countdown and return to the
+/// previous live mode.
+async fn api_cancel_countdown(state: web::Data<DaemonState>) -> impl Responder {
+    let was_active = state.countdown.lock().unwrap().is_some();
+    *state.countdown.lock().unwrap() = None;
+    // Only revert if currently showing countdown
+    if *state.mode.lock().unwrap() == DisplayMode::Countdown {
+        let prev = state.prev_mode.lock().unwrap().clone();
+        *state.mode.lock().unwrap() = prev;
+    }
+    if was_active {
+        log::info!("countdown cancelled");
+        HttpResponse::Ok().body("countdown cancelled")
+    } else {
+        HttpResponse::Ok().body("no active countdown")
+    }
+}
+
+// ─── Network interface JSON ───────────────────────────────────────────────────
+
+/// GET /api/network — return all network interfaces with Rx/Tx byte totals
+/// and per-second rates (calculated over a ~1-second window).
+async fn api_network_json() -> impl Responder {
+    use sysinfo::Networks;
+
+    #[derive(Serialize)]
+    struct IfaceInfo {
+        name:      String,
+        rx_bytes:  u64,
+        tx_bytes:  u64,
+        rx_per_sec: u64,
+        tx_per_sec: u64,
+        mac:       String,
+    }
+
+    // Sample 1 — capture initial bytes
+    let nets1 = Networks::new_with_refreshed_list();
+    let t0 = std::time::Instant::now();
+    let snap1: Vec<(String, u64, u64)> = nets1.iter()
+        .map(|(name, n)| (name.clone(), n.total_received(), n.total_transmitted()))
+        .collect();
+
+    // Sleep ~1 s to compute per-second rates
+    tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
+
+    let mut nets2 = Networks::new_with_refreshed_list();
+    nets2.refresh(false);
+    let elapsed = t0.elapsed().as_secs_f64().max(0.001);
+
+    let ifaces: Vec<IfaceInfo> = nets2.iter().map(|(name, n)| {
+        let rx_bytes = n.total_received();
+        let tx_bytes = n.total_transmitted();
+        let (rx0, tx0) = snap1.iter()
+            .find(|(nm, ..)| nm == name)
+            .map(|(_, rx, tx)| (*rx, *tx))
+            .unwrap_or((rx_bytes, tx_bytes));
+        let rx_per_sec = ((rx_bytes.saturating_sub(rx0)) as f64 / elapsed) as u64;
+        let tx_per_sec = ((tx_bytes.saturating_sub(tx0)) as f64 / elapsed) as u64;
+        IfaceInfo {
+            name:      name.clone(),
+            rx_bytes,
+            tx_bytes,
+            rx_per_sec,
+            tx_per_sec,
+            mac:       n.mac_address().to_string(),
+        }
+    }).collect();
+
+    HttpResponse::Ok().json(ifaces)
+}
+
+// ─── Temperature sensor JSON ──────────────────────────────────────────────────
+
+/// GET /api/temperatures — return all thermal sensor readings.
+async fn api_temperatures_json() -> impl Responder {
+    use sysinfo::Components;
+
+    #[derive(Serialize)]
+    struct SensorInfo {
+        label:      String,
+        current:    f32,
+        high:       Option<f32>,
+        critical:   Option<f32>,
+    }
+
+    let mut comps = Components::new_with_refreshed_list();
+    comps.refresh(false);
+
+    let sensors: Vec<SensorInfo> = comps.iter()
+        .filter_map(|c| {
+            let temp = c.temperature()?;
+            if temp.is_nan() || temp <= 0.0 { return None; }
+            Some(SensorInfo {
+                label:    c.label().to_string(),
+                current:  temp,
+                high:     c.max(),
+                critical: c.critical(),
+            })
+        })
+        .collect();
+
+    HttpResponse::Ok().json(sensors)
+}
+
+// ─── CPU & net history snapshots ─────────────────────────────────────────────
+
+/// GET /api/cpu/history — return the last 120 CPU usage samples (% 0–100).
+async fn api_cpu_history() -> impl Responder {
+    #[derive(Serialize)]
+    struct CpuHistoryResp {
+        /// Samples, oldest first. Up to 120 values.
+        samples:  Vec<f32>,
+        /// Number of samples in the buffer.
+        count:    usize,
+        /// Maximum capacity of the ring-buffer.
+        capacity: usize,
+    }
+    let samples = get_cpu_history();
+    let count   = samples.len();
+    HttpResponse::Ok().json(CpuHistoryResp { samples, count, capacity: 120 })
+}
+
+/// GET /api/net/history — return the last 60 network Rx/Tx samples (bytes/sec).
+async fn api_net_history() -> impl Responder {
+    #[derive(Serialize)]
+    struct NetHistoryResp {
+        rx_bps:   Vec<u64>,
+        tx_bps:   Vec<u64>,
+        count:    usize,
+        capacity: usize,
+    }
+    let (rx, tx) = get_net_history();
+    let count    = rx.len();
+    HttpResponse::Ok().json(NetHistoryResp { rx_bps: rx, tx_bps: tx, count, capacity: 60 })
+}
+
+// ─── PNG screenshot ───────────────────────────────────────────────────────────
+
+/// GET /api/screenshot.png — return the current panel frame losslessly as PNG.
+///
+/// Useful for embedding in dashboards that require lossless images.  Note that
+/// this decodes and re-encodes the stored JPEG so quality may not exceed the
+/// JPEG encoder's original quality.
+async fn api_screenshot_png(state: web::Data<DaemonState>) -> impl Responder {
+    let guard = state.last_frame.lock().unwrap();
+    match guard.as_ref() {
+        None => HttpResponse::NoContent().insert_header(("Cache-Control", "no-store")).finish(),
+        Some(jpeg) => {
+            match image::load_from_memory_with_format(jpeg, image::ImageFormat::Jpeg) {
+                Ok(img) => {
+                    let mut buf = Vec::new();
+                    match img.write_to(&mut std::io::Cursor::new(&mut buf), image::ImageFormat::Png) {
+                        Ok(_) => HttpResponse::Ok()
+                            .insert_header(("Cache-Control", "no-store"))
+                            .insert_header(("Content-Disposition", "attachment; filename=panel.png"))
+                            .content_type("image/png")
+                            .body(buf),
+                        Err(e) => HttpResponse::InternalServerError().body(e.to_string()),
+                    }
+                }
+                Err(e) => HttpResponse::InternalServerError().body(e.to_string()),
+            }
+        }
+    }
+}
+
+// ─── GET /api/rotation ────────────────────────────────────────────────────────
+
+/// GET /api/rotation — return the current auto-rotation configuration.
+async fn api_rotation_get(state: web::Data<DaemonState>) -> impl Responder {
+    #[derive(Serialize)]
+    struct RotationConfig {
+        modes:    Vec<String>,
+        interval: u64,
+        enabled:  bool,
+    }
+    let modes: Vec<String> = state.rotation_modes.lock().unwrap()
+        .iter().map(|m| m.as_str().to_string()).collect();
+    let interval = *state.rotation_interval.lock().unwrap();
+    HttpResponse::Ok().json(RotationConfig {
+        enabled: interval > 0 && !modes.is_empty(),
+        modes,
+        interval,
+    })
+}
+
+// ─── SVG status badge ────────────────────────────────────────────────────────
+
+/// GET /api/status.svg — return a Shields.io-style SVG badge showing the
+/// current mode.  Suitable for embedding in dashboards and GitHub README files.
+///
+/// Example: `<img src="http://localhost:7070/api/status.svg">`
+async fn api_status_badge(state: web::Data<DaemonState>) -> impl Responder {
+    let mode    = state.mode.lock().unwrap().as_str().to_string();
+    let quality = *state.quality.lock().unwrap();
+    let headless= state.headless;
+    let brightness = *state.dim_factor.lock().unwrap();
+
+    // Pick badge colour based on mode category
+    let badge_color = match mode.as_str() {
+        "clock" | "clock_sysinfo"               => "#89b4fa",  // blue
+        "sysinfo" | "cpu_detail" | "cpu_graph"  => "#cba6f7",  // mauve
+        "network" | "net_graph"                 => "#94e2d5",  // teal
+        "disk_usage" | "disk_io"                => "#f9e2af",  // yellow
+        "process_top" | "process_memory"        => "#a6e3a1",  // green
+        "temperature"                           => "#fab387",  // peach
+        "countdown"                             => "#eba0ac",  // maroon
+        "recent_alerts"                         => "#f38ba8",  // red
+        "idle"                                  => "#585b70",  // surface2
+        _                                       => "#89dceb",  // sky
+    };
+
+    let sub = if headless { "headless".to_string() }
+              else if brightness < 0.99 { format!("{}% bright", (brightness * 100.0) as u8) }
+              else { format!("q{}", quality) };
+
+    // Simple flat badge SVG (compatible with most browsers and README renderers)
+    let mode_disp = mode.replace('_', " ");
+    let left_w   = 48i32;
+    let right_w  = (mode_disp.len() as i32 * 7).max(60);
+    let total_w  = left_w + right_w;
+    let _sub_w   = (sub.len() as i32 * 6).max(30);
+
+    let lx  = left_w / 2;
+    let rx  = left_w + right_w / 2;
+    let svg = format!(
+        r##"<svg xmlns="http://www.w3.org/2000/svg" width="{tw}" height="20"><defs><linearGradient id="s" x2="0" y2="100%"><stop offset="0" stop-color="#bbb" stop-opacity=".1"/><stop offset="1" stop-opacity=".1"/></linearGradient></defs><rect rx="3" width="{tw}" height="20" fill="#555"/><rect rx="3" x="{lw}" width="{rw}" height="20" fill="{bc}"/><rect x="{lw}" width="4" height="20" fill="{bc}"/><rect rx="3" width="{tw}" height="20" fill="url(#s)"/><g fill="#fff" text-anchor="middle" font-family="DejaVu Sans,Verdana,Geneva,sans-serif" font-size="11"><text x="{lx}" y="15" fill="#010101" fill-opacity=".3">ttlcd</text><text x="{lx}" y="14">ttlcd</text><text x="{rx}" y="15" fill="#010101" fill-opacity=".3">{md}</text><text x="{rx}" y="14" fill="#1e1e2e">{md}</text></g><title>ttlcd — {mode} | {sub}</title></svg>"##,
+        tw=total_w, lw=left_w, rw=right_w, bc=badge_color,
+        lx=lx, rx=rx, md=mode_disp, mode=mode, sub=sub
+    );
+
+    HttpResponse::Ok()
+        .content_type("image/svg+xml")
+        .insert_header(("Cache-Control", "no-cache, max-age=0"))
+        .body(svg)
+}
+
+// ─── Version / uptime ───────────────────────────────────────────────────────
+
+/// GET /api/version — daemon version info.
+///
+/// Returns: `{"version": "0.6.0", "name": "ttlcd"}`
+async fn api_version() -> impl Responder {
+    #[derive(serde::Serialize)]
+    struct VersionInfo {
+        name:    &'static str,
+        version: &'static str,
+    }
+    HttpResponse::Ok().json(VersionInfo {
+        name:    env!("CARGO_PKG_NAME"),
+        version: env!("CARGO_PKG_VERSION"),
+    })
+}
+
+/// GET /api/uptime — seconds and human-readable string since daemon start.
+///
+/// Returns: `{"uptime_secs": 3600, "uptime_human": "1h 0m 0s"}`
+async fn api_uptime(state: web::Data<DaemonState>) -> impl Responder {
+    #[derive(serde::Serialize)]
+    struct UptimeResp { uptime_secs: u64, uptime_human: String }
+    let now_s = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+    let secs = now_s.saturating_sub(state.daemon_start_secs);
+    let d = secs / 86400;
+    let h = (secs % 86400) / 3600;
+    let m = (secs % 3600) / 60;
+    let s = secs % 60;
+    let human = if d > 0 {
+        format!("{d}d {h}h {m}m {s}s")
+    } else if h > 0 {
+        format!("{h}h {m}m {s}s")
+    } else {
+        format!("{m}m {s}s")
+    };
+    HttpResponse::Ok().json(UptimeResp { uptime_secs: secs, uptime_human: human })
+}
+
+/// GET /api/panel/info — hardware info for the connected USB panel.
+///
+/// Returns null serial/firmware when running in headless mode.
+async fn api_panel_info(state: web::Data<DaemonState>) -> impl Responder {
+    #[derive(serde::Serialize)]
+    struct PanelInfoResp {
+        connected:     bool,
+        headless:      bool,
+        vid:           String,
+        pid:           String,
+        serial:        Option<String>,
+        firmware_byte: Option<u8>,
+        status_byte:   Option<u8>,
+        width:         u32,
+        height:        u32,
+    }
+    let info = state.panel_info.lock().unwrap().clone();
+    HttpResponse::Ok().json(PanelInfoResp {
+        connected:     info.is_some(),
+        headless:      state.headless,
+        vid:           format!("{:04x}", state.vid),
+        pid:           format!("{:04x}", state.pid),
+        serial:        info.as_ref().map(|i| i.serial.clone()),
+        firmware_byte: info.as_ref().map(|i| i.firmware_byte),
+        status_byte:   info.as_ref().map(|i| i.status_byte),
+        width:         PANEL_WIDTH,
+        height:        PANEL_HEIGHT,
+    })
+}
+
+// ─── Banner endpoint ────────────────────────────────────────────────────────
+
+#[derive(Deserialize)]
+struct BannerRequest {
+    /// Up to 3 lines of text to display large and centred.
+    lines:     Vec<String>,
+    /// Optional subtitle label at the bottom.
+    #[serde(default)]
+    label:     String,
+    /// Accent colour name (blue/green/yellow/red/teal/mauve/peach/white).
+    #[serde(default = "default_banner_color")]
+    color:     String,
+    /// Show clock in the top-right corner (default true).
+    #[serde(default = "default_true")]
+    show_time: bool,
+    /// Auto-clear after N seconds (0 = keep until cleared).
+    #[serde(default)]
+    duration:  u64,
+}
+
+fn default_banner_color() -> String { "blue".to_string() }
+
+/// POST /api/banner — display up to 3 lines of large centred text on the panel.
+///
+/// ```json
+/// {"lines": ["99.8%", "Uptime"], "label": "SLA", "color": "green"}
+/// ```
+async fn api_banner(
+    state: web::Data<DaemonState>,
+    body:  web::Json<BannerRequest>,
+) -> impl Responder {
+    use ttlcd::display::NamedColor;
+    let quality   = *state.quality.lock().unwrap();
+    let rotate    = *state.rotate_deg.lock().unwrap();
+    let brightness= *state.dim_factor.lock().unwrap();
+    let named = NamedColor::from_str_loose(&body.color);
+    let rgb = named.to_rgb_pub();
+    let refs: Vec<&str> = body.lines.iter().map(String::as_str).take(3).collect();
+    let img = render_big_text_banner(&refs, &body.label, rgb, body.show_time);
+    let img = apply_rotation(img, rotate);
+    let img = apply_brightness(img, brightness);
+    let jpeg = match encode_for_panel(&img, quality) {
+        Ok(j)  => j,
+        Err(e) => return HttpResponse::InternalServerError().body(format!("encode error: {e}")),
+    };
+    let jpeg = store_frame(&state, jpeg.clone());
+    *state.prev_mode.lock().unwrap() = state.mode.lock().unwrap().clone();
+    *state.pending_jpeg.lock().unwrap() = Some(jpeg);
+    *state.mode.lock().unwrap() = DisplayMode::CustomImage;
+    if body.duration > 0 {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+        *state.auto_clear_at.lock().unwrap() = Some(now + body.duration);
+    }
+    push_history(&state, HistoryKind::Text,
+        format!("banner: {}", body.lines.first().map(|s| s.as_str()).unwrap_or("")));
+    HttpResponse::Ok().body("ok")
+}
+
+// ─── Modes info ──────────────────────────────────────────────────────────────
+
+/// GET /api/modes/info — return all modes with name and description.
+async fn api_modes_info() -> impl Responder {
+    #[derive(serde::Serialize)]
+    struct ModeInfo { name: &'static str, description: &'static str }
+    let modes: &[ModeInfo] = &[
+        ModeInfo { name: "clock",          description: "Large digital clock with date and uptime" },
+        ModeInfo { name: "big_clock",      description: "Full-screen giant HH:MM with large seconds and progress bar" },
+        ModeInfo { name: "clock_sysinfo",  description: "Split: clock + quick stats" },
+        ModeInfo { name: "sysinfo",        description: "CPU, RAM, temperature, load, uptime" },
+        ModeInfo { name: "cpu_detail",     description: "Per-core CPU usage grid (up to 32 cores)" },
+        ModeInfo { name: "network",        description: "Per-interface Rx/Tx rates and totals" },
+        ModeInfo { name: "disk_usage",     description: "Disk partition usage bars" },
+        ModeInfo { name: "process_top",    description: "Top processes by CPU usage" },
+        ModeInfo { name: "temperature",    description: "Thermal sensor readings with colour-coded bars" },
+        ModeInfo { name: "memory_detail",  description: "Detailed RAM/swap breakdown" },
+        ModeInfo { name: "countdown",      description: "Countdown timer with colour transitions" },
+        ModeInfo { name: "cpu_graph",      description: "CPU usage history bar chart (2 min)" },
+        ModeInfo { name: "net_graph",      description: "Network I/O history chart (60 s)" },
+        ModeInfo { name: "recent_alerts",  description: "Last 5 notifications as on-panel log" },
+        ModeInfo { name: "process_memory", description: "Top processes ranked by RAM usage" },
+        ModeInfo { name: "disk_io",        description: "Disk read/write throughput per device" },
+        ModeInfo { name: "calendar",       description: "Full-month calendar with today highlighted" },
+        ModeInfo { name: "stopwatch",      description: "Running stopwatch with lap times" },
+        ModeInfo { name: "metrics",        description: "Custom key/value metrics dashboard (up to 8 items)" },
+        ModeInfo { name: "weather",        description: "Weather snapshot — push via /api/weather or web UI" },
+        ModeInfo { name: "notes",          description: "Bulletin board — push a list of text items via /api/notes" },
+        ModeInfo { name: "qr_code",         description: "Display a scannable QR code — push payload via POST /api/qr" },
+        ModeInfo { name: "pomodoro",        description: "Pomodoro focus timer: 25 min work / 5 min break cycles with visual progress ring" },
+        ModeInfo { name: "battery",        description: "Battery level, charging status, voltage and estimated time remaining (Linux laptops)" },
+        ModeInfo { name: "world_clock",    description: "World clock showing up to 4 cities with configurable UTC offsets and day/night coloring" },
+        ModeInfo { name: "idle",           description: "Keepalive — no display update" },
+    ];
+    HttpResponse::Ok().json(modes)
+}
+
+// ─── State reload ────────────────────────────────────────────────────────────
+
+/// POST /api/state/reload — re-read the persisted daemon state from disk and
+/// apply quality, rotate_deg, and brightness.  Mode is NOT changed (to avoid
+/// interrupting an active session).
+async fn api_state_reload(state: web::Data<DaemonState>) -> impl Responder {
+    let ps = load_persisted_state();
+    let mut changed: Vec<&str> = Vec::new();
+    if let Some(q) = ps.quality {
+        *state.quality.lock().unwrap() = q;
+        changed.push("quality");
+    }
+    if let Some(r) = ps.rotate_deg {
+        *state.rotate_deg.lock().unwrap() = r;
+        changed.push("rotate_deg");
+    }
+    if let Some(b) = ps.brightness {
+        *state.dim_factor.lock().unwrap() = b;
+        changed.push("brightness");
+    }
+    if changed.is_empty() {
+        HttpResponse::Ok().body("no persisted state found")
+    } else {
+        log::info!("reloaded persisted state: {} field(s) applied", changed.len());
+        HttpResponse::Ok().body(format!("reloaded: {}", changed.join(", ")))
+    }
+}
+
 // ─── Embedded web UI ─────────────────────────────────────────────────────────
 
 async fn web_ui_index() -> HttpResponse {
@@ -2533,4 +4676,1641 @@ fn test_pattern() -> DynamicImage {
         *px = if on_diag || on_edge { image::Rgb([255, 255, 255]) } else { image::Rgb([r, g, b]) };
     }
     DynamicImage::ImageRgb8(img)
+}
+
+// ─── Stopwatch API ────────────────────────────────────────────────────────────
+
+#[derive(Serialize)]
+struct StopwatchResponse {
+    running:    bool,
+    elapsed_ms: u64,
+    /// Accumulated milliseconds before the current running period.
+    /// When running: current_elapsed = elapsed_ms + (now_ms - started_at_unix_ms)
+    base_elapsed_ms:    u64,
+    /// Unix-millisecond timestamp when the stopwatch was last started (0 = not running).
+    started_at_unix_ms: u64,
+    laps:       Vec<u64>,
+    display:    String,
+    lap_count:  usize,
+}
+
+/// GET /api/stopwatch — current stopwatch state.
+async fn api_stopwatch_get(state: web::Data<DaemonState>) -> impl Responder {
+    let sw = state.stopwatch.lock().unwrap();
+    let elapsed = sw.current_elapsed_ms();
+    let lap_count = sw.laps.len();
+    let display = ttlcd::display::format_sw_time(elapsed);
+    HttpResponse::Ok().json(StopwatchResponse {
+        running:    sw.running,
+        elapsed_ms: elapsed,
+        base_elapsed_ms:    sw.elapsed_ms,
+        started_at_unix_ms: sw.started_at_unix_ms,
+        laps:       sw.laps.clone(),
+        display,
+        lap_count,
+    })
+}
+
+/// POST /api/stopwatch/start — start or resume the stopwatch.
+async fn api_stopwatch_start(state: web::Data<DaemonState>) -> impl Responder {
+    let mut sw = state.stopwatch.lock().unwrap();
+    if !sw.running {
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
+        sw.started_at_unix_ms = now_ms;
+        sw.running = true;
+    }
+    drop(sw);
+    // Switch to stopwatch mode
+    *state.mode.lock().unwrap() = DisplayMode::Stopwatch;
+    *state.prev_mode.lock().unwrap() = DisplayMode::Stopwatch;
+    HttpResponse::Ok().body("started")
+}
+
+/// POST /api/stopwatch/stop — pause the stopwatch.
+async fn api_stopwatch_stop(state: web::Data<DaemonState>) -> impl Responder {
+    let mut sw = state.stopwatch.lock().unwrap();
+    if sw.running {
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
+        sw.elapsed_ms += now_ms.saturating_sub(sw.started_at_unix_ms);
+        sw.running = false;
+        sw.started_at_unix_ms = 0;
+    }
+    HttpResponse::Ok().body("stopped")
+}
+
+/// POST /api/stopwatch/lap — record a lap at the current elapsed time.
+async fn api_stopwatch_lap(state: web::Data<DaemonState>) -> impl Responder {
+    let mut sw = state.stopwatch.lock().unwrap();
+    let elapsed = sw.current_elapsed_ms();
+    if elapsed > 0 {
+        sw.laps.push(elapsed);
+        let n = sw.laps.len();
+        drop(sw);
+        HttpResponse::Ok().json(serde_json::json!({ "lap": n, "elapsed_ms": elapsed }))
+    } else {
+        HttpResponse::BadRequest().body("stopwatch not started")
+    }
+}
+
+/// POST /api/stopwatch/reset — stop and zero the stopwatch.
+async fn api_stopwatch_reset(state: web::Data<DaemonState>) -> impl Responder {
+    let mut sw = state.stopwatch.lock().unwrap();
+    *sw = StopwatchState::new();
+    HttpResponse::Ok().body("reset")
+}
+
+// ─── Display freeze / unfreeze ────────────────────────────────────────────────
+
+/// POST /api/display/freeze — stop the display from updating (last frame stays).
+async fn api_display_freeze(state: web::Data<DaemonState>) -> impl Responder {
+    *state.frozen.lock().unwrap() = true;
+    HttpResponse::Ok().body("frozen")
+}
+
+/// POST /api/display/unfreeze — resume normal display updates.
+async fn api_display_unfreeze(state: web::Data<DaemonState>) -> impl Responder {
+    *state.frozen.lock().unwrap() = false;
+    HttpResponse::Ok().body("unfrozen")
+}
+
+/// GET /api/display/frozen — returns {"frozen":true|false}.
+async fn api_display_frozen(state: web::Data<DaemonState>) -> impl Responder {
+    let frozen = *state.frozen.lock().unwrap();
+    HttpResponse::Ok().json(serde_json::json!({ "frozen": frozen }))
+}
+
+// ─── Alert thresholds ─────────────────────────────────────────────────────────
+
+#[derive(Deserialize)]
+struct SetThresholdsRequest {
+    cpu_pct:       Option<f32>,
+    temp_c:        Option<f32>,
+    cooldown_secs: Option<u64>,
+}
+
+/// GET /api/alerts/thresholds — current threshold configuration.
+async fn api_get_thresholds(state: web::Data<DaemonState>) -> impl Responder {
+    let t = state.alert_thresholds.lock().unwrap().clone();
+    HttpResponse::Ok().json(&t)
+}
+
+/// POST /api/alerts/thresholds — update one or more threshold values.
+/// Any omitted fields keep their current value.
+async fn api_set_thresholds(
+    state: web::Data<DaemonState>,
+    body:  web::Json<SetThresholdsRequest>,
+) -> impl Responder {
+    let mut t = state.alert_thresholds.lock().unwrap();
+    if let Some(v) = body.cpu_pct       { t.cpu_pct       = v.clamp(0.0, 100.0); }
+    if let Some(v) = body.temp_c        { t.temp_c        = v.clamp(0.0, 200.0); }
+    if let Some(v) = body.cooldown_secs { t.cooldown_secs = v; }
+    HttpResponse::Ok().json(&*t)
+}
+
+// ─── Night-dim schedule ───────────────────────────────────────────────────────
+
+#[derive(Deserialize)]
+struct SetDimScheduleRequest {
+    start_hour: u8,
+    end_hour:   u8,
+    #[serde(default = "default_dim_level")]
+    dim_level:  f32,
+}
+fn default_dim_level() -> f32 { 0.2 }
+
+/// GET /api/dim/schedule — current dim schedule (null if not set).
+async fn api_get_dim_schedule(state: web::Data<DaemonState>) -> impl Responder {
+    let s = state.dim_schedule.lock().unwrap().clone();
+    HttpResponse::Ok().json(serde_json::json!({ "schedule": s }))
+}
+
+/// POST /api/dim/schedule — set a night-dim schedule.
+/// Example: {"start_hour":22,"end_hour":7,"dim_level":0.15}
+async fn api_set_dim_schedule(
+    state: web::Data<DaemonState>,
+    body:  web::Json<SetDimScheduleRequest>,
+) -> impl Responder {
+    let sched = DimSchedule {
+        start_hour: body.start_hour % 24,
+        end_hour:   body.end_hour   % 24,
+        dim_level:  body.dim_level.clamp(0.0, 1.0),
+    };
+    *state.dim_schedule.lock().unwrap() = Some(sched.clone());
+    log::info!("dim schedule set: {}:00 → {}:00 @ {:.0}%", sched.start_hour, sched.end_hour, sched.dim_level * 100.0);
+    HttpResponse::Ok().json(serde_json::json!({ "schedule": sched }))
+}
+
+/// DELETE /api/dim/schedule — remove the dim schedule.
+async fn api_clear_dim_schedule(state: web::Data<DaemonState>) -> impl Responder {
+    *state.dim_schedule.lock().unwrap() = None;
+    HttpResponse::Ok().body("schedule cleared")
+}
+
+// ─── Custom metrics dashboard ─────────────────────────────────────────────────
+
+#[derive(Deserialize)]
+struct PushMetricsRequest {
+    /// Optional dashboard title (shown at top of panel).
+    #[serde(default)]
+    title:   String,
+    /// Key/value metrics to display (up to 8 shown; extras ignored).
+    metrics: Vec<Metric>,
+    /// If true, switch the display to Metrics mode immediately.
+    #[serde(default = "default_true_metrics")]
+    show:    bool,
+}
+fn default_true_metrics() -> bool { true }
+
+/// POST /api/metrics — push new metric values and optionally switch to Metrics mode.
+///
+/// Example body:
+/// ```json
+/// { "title": "CI Dashboard",
+///   "metrics": [
+///     { "label": "Build", "value": "OK",     "color": "green" },
+///     { "label": "Tests", "value": "1234",   "color": "blue"  },
+///     { "label": "Cover", "value": "92.3%",  "color": "teal"  }
+///   ]
+/// }
+/// ```
+async fn api_push_metrics(
+    state: web::Data<DaemonState>,
+    body:  web::Json<PushMetricsRequest>,
+) -> impl Responder {
+    let req = body.into_inner();
+    *state.metrics_title.lock().unwrap() = req.title;
+    *state.metrics_data.lock().unwrap()  = req.metrics;
+    if req.show {
+        let prev = state.mode.lock().unwrap().clone();
+        if !prev.is_transient() {
+            *state.prev_mode.lock().unwrap() = prev;
+        }
+        *state.mode.lock().unwrap() = DisplayMode::Metrics;
+    }
+    HttpResponse::Ok().json(serde_json::json!({
+        "count": state.metrics_data.lock().unwrap().len()
+    }))
+}
+
+/// GET /api/metrics — return current metric data.
+async fn api_get_metrics(state: web::Data<DaemonState>) -> impl Responder {
+    HttpResponse::Ok().json(serde_json::json!({
+        "title":   *state.metrics_title.lock().unwrap(),
+        "metrics": *state.metrics_data.lock().unwrap(),
+    }))
+}
+
+/// DELETE /api/metrics — clear all metric data.
+async fn api_clear_metrics(state: web::Data<DaemonState>) -> impl Responder {
+    state.metrics_title.lock().unwrap().clear();
+    state.metrics_data.lock().unwrap().clear();
+    HttpResponse::Ok().body("cleared")
+}
+
+// ─── Display profiles ─────────────────────────────────────────────────────────
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct DisplayProfile {
+    name:       String,
+    mode:       String,
+    quality:    u8,
+    rotate_deg: u16,
+    brightness: f32,
+    #[serde(default)]
+    rotation_modes:    Vec<String>,
+    #[serde(default)]
+    rotation_interval: u64,
+}
+
+fn profiles_path() -> Option<PathBuf> {
+    let p = dirs_config_path()?;
+    Some(p.parent()?.join("profiles.json"))
+}
+
+fn load_profiles() -> Vec<DisplayProfile> {
+    (|| -> Option<Vec<DisplayProfile>> {
+        let path = profiles_path()?;
+        let text = std::fs::read_to_string(&path).ok()?;
+        serde_json::from_str(&text).ok()
+    })().unwrap_or_default()
+}
+
+fn save_profiles(profiles: &[DisplayProfile]) {
+    let Some(path) = profiles_path() else { return };
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    if let Ok(text) = serde_json::to_string_pretty(profiles) {
+        let _ = std::fs::write(&path, text);
+    }
+}
+
+/// GET /api/profiles — list all saved display profiles.
+async fn api_profiles_list(_state: web::Data<DaemonState>) -> impl Responder {
+    HttpResponse::Ok().json(load_profiles())
+}
+
+/// POST /api/profiles — save current daemon state as a named profile.
+/// Body: `{"name":"my-profile"}`
+#[derive(Deserialize)]
+struct SaveProfileRequest { name: String }
+
+async fn api_profiles_save(
+    state: web::Data<DaemonState>,
+    body:  web::Json<SaveProfileRequest>,
+) -> impl Responder {
+    let profile = DisplayProfile {
+        name:       body.name.clone(),
+        mode:       state.mode.lock().unwrap().as_str().to_string(),
+        quality:    *state.quality.lock().unwrap(),
+        rotate_deg: *state.rotate_deg.lock().unwrap(),
+        brightness: *state.dim_factor.lock().unwrap(),
+        rotation_modes:    state.rotation_modes.lock().unwrap().iter().map(|m| m.as_str().to_string()).collect(),
+        rotation_interval: *state.rotation_interval.lock().unwrap(),
+    };
+    let mut profiles = load_profiles();
+    // Replace if name already exists, else append
+    if let Some(existing) = profiles.iter_mut().find(|p| p.name == body.name) {
+        *existing = profile.clone();
+    } else {
+        profiles.push(profile.clone());
+    }
+    save_profiles(&profiles);
+    log::info!("profile '{}' saved", body.name);
+    HttpResponse::Ok().json(&profile)
+}
+
+/// POST /api/profiles/{name}/apply — load and apply a saved profile.
+async fn api_profiles_apply(
+    state: web::Data<DaemonState>,
+    name:  web::Path<String>,
+) -> impl Responder {
+    let profiles = load_profiles();
+    let Some(profile) = profiles.iter().find(|p| p.name == name.as_str()) else {
+        return HttpResponse::NotFound().body(format!("profile '{}' not found", name));
+    };
+    // Apply settings
+    if let Some(mode) = DisplayMode::from_str_name(&profile.mode) {
+        *state.mode.lock().unwrap()      = mode.clone();
+        *state.prev_mode.lock().unwrap() = mode;
+    }
+    *state.quality.lock().unwrap()    = profile.quality;
+    *state.rotate_deg.lock().unwrap() = profile.rotate_deg;
+    *state.dim_factor.lock().unwrap() = profile.brightness;
+    if !profile.rotation_modes.is_empty() {
+        let modes: Vec<DisplayMode> = profile.rotation_modes.iter()
+            .filter_map(|s| DisplayMode::from_str_name(s))
+            .collect();
+        *state.rotation_modes.lock().unwrap()    = modes;
+        *state.rotation_interval.lock().unwrap() = profile.rotation_interval;
+    }
+    persist_state(&state);
+    log::info!("profile '{}' applied", name);
+    HttpResponse::Ok().json(profile)
+}
+
+/// DELETE /api/profiles/{name} — delete a saved profile.
+async fn api_profiles_delete(
+    _state: web::Data<DaemonState>,
+    name:   web::Path<String>,
+) -> impl Responder {
+    let mut profiles = load_profiles();
+    let before = profiles.len();
+    profiles.retain(|p| p.name != name.as_str());
+    if profiles.len() < before {
+        save_profiles(&profiles);
+        HttpResponse::Ok().body(format!("deleted '{}'", name))
+    } else {
+        HttpResponse::NotFound().body(format!("profile '{}' not found", name))
+    }
+}
+
+// ─── Comprehensive system snapshot ───────────────────────────────────────────
+
+/// GET /api/sys/snapshot — returns all system statistics in a single call.
+/// Useful for dashboards that poll a single endpoint instead of many.
+async fn api_sys_snapshot(state: web::Data<DaemonState>) -> impl Responder {
+    use sysinfo::{System, Disks, Networks, Components};
+
+    let mut sys = System::new_all();
+    // Two-pass CPU sampling for accuracy
+    sys.refresh_cpu_usage();
+    std::thread::sleep(std::time::Duration::from_millis(200));
+    sys.refresh_all();
+
+    // CPU
+    let cpu_pct  = sys.global_cpu_usage();
+    let cpu_cores: Vec<f32> = sys.cpus().iter().map(|c| c.cpu_usage()).collect();
+    let cpu_name = sys.cpus().first().map(|c| c.brand().to_string()).unwrap_or_default();
+
+    // Memory
+    let mem_total = sys.total_memory();
+    let mem_used  = sys.used_memory();
+    let swap_total= sys.total_swap();
+    let swap_used = sys.used_swap();
+
+    // Load average
+    let load = System::load_average();
+
+    // Uptime
+    let uptime = System::uptime();
+
+    // Hostname
+    let hostname = System::host_name().unwrap_or_default();
+
+    // Kernel / OS
+    let os_name    = System::name().unwrap_or_default();
+    let kernel_ver = System::kernel_version().unwrap_or_default();
+
+    // Processes (top 5 by CPU)
+    let mut procs: Vec<serde_json::Value> = sys.processes().values()
+        .map(|p| {
+            serde_json::json!({
+                "pid":     p.pid().as_u32(),
+                "name":    p.name().to_string_lossy(),
+                "cpu_pct": p.cpu_usage(),
+                "mem_bytes": p.memory(),
+                "status":  format!("{:?}", p.status()),
+            })
+        })
+        .collect();
+    procs.sort_by(|a, b| b["cpu_pct"].as_f64().unwrap_or(0.0)
+        .partial_cmp(&a["cpu_pct"].as_f64().unwrap_or(0.0)).unwrap_or(std::cmp::Ordering::Equal));
+    procs.truncate(5);
+
+    // Disks
+    let disks = Disks::new_with_refreshed_list();
+    let disk_list: Vec<serde_json::Value> = disks.iter()
+        .map(|d| serde_json::json!({
+            "mount":       d.mount_point().to_string_lossy(),
+            "name":        d.name().to_string_lossy(),
+            "total_bytes": d.total_space(),
+            "used_bytes":  d.total_space() - d.available_space(),
+            "free_bytes":  d.available_space(),
+            "fs":          String::from_utf8_lossy(d.file_system().as_encoded_bytes()),
+        }))
+        .collect();
+
+    // Network (1-sample deltas are zero without two passes; return totals)
+    let nets = Networks::new_with_refreshed_list();
+    let net_list: Vec<serde_json::Value> = nets.iter()
+        .map(|(iface, data)| serde_json::json!({
+            "interface":   iface,
+            "total_rx":    data.total_received(),
+            "total_tx":    data.total_transmitted(),
+            "mac":         data.mac_address().to_string(),
+        }))
+        .collect();
+
+    // Temperatures
+    let components = Components::new_with_refreshed_list();
+    let temp_list: Vec<serde_json::Value> = components.iter()
+        .filter_map(|c| c.temperature().map(|t| serde_json::json!({
+            "label": c.label(),
+            "temp_c": t,
+            "critical_c": c.critical(),
+        })))
+        .collect();
+
+    // Daemon state
+    let mode       = state.mode.lock().unwrap().as_str().to_string();
+    let frozen     = *state.frozen.lock().unwrap();
+    let brightness = *state.dim_factor.lock().unwrap();
+    let fps        = *state.render_fps.lock().unwrap();
+    let frame_seq  = *state.frame_seq.lock().unwrap();
+    let uptime_secs = {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs()).unwrap_or(0);
+        now.saturating_sub(state.daemon_start_secs)
+    };
+
+    HttpResponse::Ok().json(serde_json::json!({
+        "timestamp": std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs()).unwrap_or(0),
+        "hostname":    hostname,
+        "os":          os_name,
+        "kernel":      kernel_ver,
+        "cpu": {
+            "name":    cpu_name,
+            "pct":     cpu_pct,
+            "cores":   cpu_cores,
+            "load_1":  load.one,
+            "load_5":  load.five,
+            "load_15": load.fifteen,
+        },
+        "memory": {
+            "total":      mem_total,
+            "used":       mem_used,
+            "free":       mem_total.saturating_sub(mem_used),
+            "swap_total": swap_total,
+            "swap_used":  swap_used,
+        },
+        "uptime_secs": uptime,
+        "processes":   procs,
+        "disks":       disk_list,
+        "network":     net_list,
+        "temperatures": temp_list,
+        "daemon": {
+            "mode":          mode,
+            "frozen":        frozen,
+            "brightness":    brightness,
+            "fps":           fps,
+            "frame_seq":     frame_seq,
+            "uptime_secs":   uptime_secs,
+            "version":       env!("CARGO_PKG_VERSION"),
+        },
+    }))
+}
+
+// ─── Weather API ──────────────────────────────────────────────────────────────
+
+/// GET /api/weather — return the currently cached weather data.
+async fn api_get_weather(state: web::Data<DaemonState>) -> impl Responder {
+    let wd = state.weather_data.lock().unwrap().clone();
+    HttpResponse::Ok().json(wd)
+}
+
+/// POST /api/weather — push new weather data and optionally switch to Weather mode.
+///
+/// Body follows the [`WeatherData`] schema.  An extra `show` boolean field (default true)
+/// controls whether the display switches to weather mode immediately.
+async fn api_update_weather(
+    state: web::Data<DaemonState>,
+    body:  web::Json<serde_json::Value>,
+) -> impl Responder {
+    let now_secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs()).unwrap_or(0);
+
+    let show = body.get("show").and_then(|v| v.as_bool()).unwrap_or(true);
+
+    // Deserialise into WeatherData (ignore unknown fields via Value → serde)
+    let mut wd: WeatherData = match serde_json::from_value(body.into_inner()) {
+        Ok(d)  => d,
+        Err(e) => return HttpResponse::BadRequest().body(format!("invalid body: {e}")),
+    };
+    // Stamp the update time
+    wd.updated_at = Some(now_secs);
+    *state.weather_data.lock().unwrap() = wd;
+
+    if show {
+        let prev = state.mode.lock().unwrap().clone();
+        if !prev.is_transient() {
+            *state.prev_mode.lock().unwrap() = prev;
+        }
+        *state.mode.lock().unwrap() = DisplayMode::Weather;
+    }
+
+    HttpResponse::Ok().json(serde_json::json!({ "ok": true }))
+}
+
+/// DELETE /api/weather — clear cached weather data and switch back to previous mode.
+async fn api_clear_weather(state: web::Data<DaemonState>) -> impl Responder {
+    *state.weather_data.lock().unwrap() = WeatherData::default();
+    let prev = state.prev_mode.lock().unwrap().clone();
+    *state.mode.lock().unwrap() = prev;
+    HttpResponse::Ok().body("weather cleared")
+}
+
+// ─── Notes / bulletin board API ──────────────────────────────────────────────
+
+/// GET /api/notes — return current notes title and items.
+async fn api_get_notes(state: web::Data<DaemonState>) -> impl Responder {
+    let title = state.notes_title.lock().unwrap().clone();
+    let items = state.notes_items.lock().unwrap().clone();
+    HttpResponse::Ok().json(serde_json::json!({ "title": title, "items": items }))
+}
+
+/// POST /api/notes — replace or append notes.
+///
+/// Body JSON schema:
+/// ```json
+/// { "title": "Sprint 42", "items": ["Task A done", "Task B in progress"], "append": false, "show": true }
+/// ```
+/// - `append: true` → add to existing list; `false` (default) → replace.
+/// - `show: true` (default) → switch to Notes mode immediately.
+async fn api_push_notes(
+    state: web::Data<DaemonState>,
+    body:  web::Json<serde_json::Value>,
+) -> impl Responder {
+    let title  = body.get("title").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let append = body.get("append").and_then(|v| v.as_bool()).unwrap_or(false);
+    let show   = body.get("show").and_then(|v| v.as_bool()).unwrap_or(true);
+
+    let new_items: Vec<String> = body.get("items")
+        .and_then(|v| v.as_array())
+        .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+        .unwrap_or_default();
+
+    // Update title if provided
+    if !title.is_empty() {
+        *state.notes_title.lock().unwrap() = title;
+    }
+
+    // Replace or append items
+    {
+        let mut guard = state.notes_items.lock().unwrap();
+        if append {
+            guard.extend(new_items.iter().cloned());
+        } else {
+            *guard = new_items;
+        }
+        let count = guard.len();
+        drop(guard);
+
+        if show {
+            let prev = state.mode.lock().unwrap().clone();
+            if !prev.is_transient() {
+                *state.prev_mode.lock().unwrap() = prev;
+            }
+            *state.mode.lock().unwrap() = DisplayMode::Notes;
+        }
+
+        HttpResponse::Ok().json(serde_json::json!({ "count": count }))
+    }
+}
+
+/// DELETE /api/notes — clear all notes and return to previous mode.
+async fn api_clear_notes(state: web::Data<DaemonState>) -> impl Responder {
+    state.notes_title.lock().unwrap().clear();
+    state.notes_items.lock().unwrap().clear();
+    let prev = state.prev_mode.lock().unwrap().clone();
+    *state.mode.lock().unwrap() = prev;
+    HttpResponse::Ok().body("notes cleared")
+}
+
+// ─── QR Code mode ────────────────────────────────────────────────────────────
+
+#[derive(Deserialize)]
+struct QrSetRequest {
+    /// The text or URL to encode.
+    payload: String,
+    /// Optional title shown in the header bar (defaults to "QR Code").
+    #[serde(default)]
+    title: String,
+    /// If true, automatically switch to qr_code mode after setting.
+    #[serde(default = "bool_true")]
+    show: bool,
+}
+
+fn bool_true() -> bool { true }
+
+/// GET /api/qr — return the current QR payload and title.
+async fn api_get_qr(state: web::Data<DaemonState>) -> impl Responder {
+    let payload = state.qr_payload.lock().unwrap().clone();
+    let title   = state.qr_title.lock().unwrap().clone();
+    HttpResponse::Ok().json(serde_json::json!({ "payload": payload, "title": title }))
+}
+
+/// POST /api/qr — set the QR code payload (and optionally title), switch to qr_code mode.
+///
+/// Body: `{ "payload": "https://...", "title": "My App", "show": true }`
+async fn api_set_qr(state: web::Data<DaemonState>, body: web::Json<QrSetRequest>) -> impl Responder {
+    let payload = body.payload.trim().to_string();
+    if payload.is_empty() {
+        return HttpResponse::BadRequest().body("payload must not be empty");
+    }
+    let title = if body.title.is_empty() { "QR Code".to_string() } else { body.title.clone() };
+    *state.qr_payload.lock().unwrap() = payload.clone();
+    *state.qr_title.lock().unwrap()   = title.clone();
+    push_history(&state, HistoryKind::System, format!("QR code set: {}", &payload.chars().take(60).collect::<String>()));
+    if body.show {
+        let cur = state.mode.lock().unwrap().clone();
+        if !cur.is_transient() { *state.prev_mode.lock().unwrap() = cur; }
+        *state.mode.lock().unwrap() = DisplayMode::QrCode;
+    }
+    HttpResponse::Ok().json(serde_json::json!({ "ok": true, "payload": payload, "title": title }))
+}
+
+/// DELETE /api/qr — clear the QR code and return to the previous mode.
+async fn api_clear_qr(state: web::Data<DaemonState>) -> impl Responder {
+    state.qr_payload.lock().unwrap().clear();
+    *state.qr_title.lock().unwrap() = "QR Code".to_string();
+    let prev = state.prev_mode.lock().unwrap().clone();
+    *state.mode.lock().unwrap() = prev;
+    push_history(&state, HistoryKind::System, "QR code cleared".to_string());
+    HttpResponse::Ok().body("qr cleared")
+}
+
+// ─── Mode schedule API ───────────────────────────────────────────────────────
+
+/// GET /api/schedule/mode — return all mode schedule entries.
+async fn api_get_mode_schedule(state: web::Data<DaemonState>) -> impl Responder {
+    let entries = state.mode_schedule.lock().unwrap().clone();
+    HttpResponse::Ok().json(entries)
+}
+
+/// POST /api/schedule/mode — add or replace a schedule entry.
+///
+/// Body: `{ "hour": 9, "minute": 0, "mode": "clock_sysinfo", "label": "Work hours" }`
+/// Entries are kept sorted by (hour, minute). Adding an entry with the same (hour, minute)
+/// replaces the existing one.
+async fn api_add_mode_schedule(state: web::Data<DaemonState>, body: web::Json<ModeScheduleEntry>) -> impl Responder {
+    // Validate mode
+    if body.mode.parse::<DisplayMode>().is_err() {
+        return HttpResponse::BadRequest().body(format!("unknown mode: {}", body.mode));
+    }
+    if body.hour > 23 || body.minute > 59 {
+        return HttpResponse::BadRequest().body("hour must be 0-23, minute must be 0-59");
+    }
+    let entry = body.into_inner();
+    let mut entries = state.mode_schedule.lock().unwrap();
+    // Replace if same time slot exists, otherwise push
+    if let Some(pos) = entries.iter().position(|e| e.hour == entry.hour && e.minute == entry.minute) {
+        entries[pos] = entry.clone();
+    } else {
+        entries.push(entry.clone());
+    }
+    entries.sort_by_key(|e| (e.hour, e.minute));
+    save_mode_schedule(&entries);
+    HttpResponse::Ok().json(serde_json::json!({ "ok": true, "count": entries.len() }))
+}
+
+/// DELETE /api/schedule/mode — remove all schedule entries.
+async fn api_clear_mode_schedule(state: web::Data<DaemonState>) -> impl Responder {
+    state.mode_schedule.lock().unwrap().clear();
+    save_mode_schedule(&[]);
+    HttpResponse::Ok().body("schedule cleared")
+}
+
+/// DELETE /api/schedule/mode/{{index}} — remove entry at zero-based index.
+async fn api_remove_mode_schedule_entry(
+    state: web::Data<DaemonState>,
+    path:  web::Path<usize>,
+) -> impl Responder {
+    let idx = path.into_inner();
+    let mut entries = state.mode_schedule.lock().unwrap();
+    if idx >= entries.len() {
+        return HttpResponse::BadRequest().body("index out of range");
+    }
+    entries.remove(idx);
+    save_mode_schedule(&entries);
+    HttpResponse::Ok().json(serde_json::json!({ "ok": true, "count": entries.len() }))
+}
+
+// ─── API documentation ────────────────────────────────────────────────────────
+
+/// GET /api/docs — brief HTML reference for all API endpoints.
+///
+/// Useful for quick lookup without reading source code.
+async fn api_docs() -> HttpResponse {
+    let version = env!("CARGO_PKG_VERSION");
+    let html = format!(r##"<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ttlcd API Reference v{version}</title>
+  <style>
+    *, *::before, *::after {{ box-sizing: border-box; margin: 0; padding: 0; }}
+    body {{ background: #1e1e2e; color: #cdd6f4; font-family: 'Segoe UI', system-ui, sans-serif; padding: 2rem; max-width: 900px; margin: 0 auto; }}
+    h1 {{ color: #cba6f7; font-size: 1.8rem; margin-bottom: 0.25rem; }}
+    h1 small {{ color: #6c7086; font-size: 0.75rem; font-weight: 400; margin-left: 0.5rem; }}
+    h2 {{ color: #89b4fa; font-size: 1.1rem; margin: 1.5rem 0 0.6rem; border-bottom: 1px solid #313244; padding-bottom: 0.4rem; }}
+    table {{ width: 100%; border-collapse: collapse; font-size: 0.85rem; margin-bottom: 0.5rem; }}
+    th {{ text-align: left; color: #a6adc8; padding: 0.3rem 0.6rem; background: #181825; font-weight: 600; }}
+    td {{ padding: 0.3rem 0.6rem; border-bottom: 1px solid #313244; vertical-align: top; }}
+    td:first-child {{ font-family: monospace; color: #94e2d5; white-space: nowrap; }}
+    td:nth-child(2) {{ color: #89b4fa; white-space: nowrap; }}
+    code {{ background: #313244; padding: 0.05rem 0.3rem; border-radius: 3px; font-family: monospace; font-size: 0.82rem; }}
+    a {{ color: #89b4fa; }}
+    .badge-get    {{ color: #a6e3a1; }}
+    .badge-post   {{ color: #89b4fa; }}
+    .badge-delete {{ color: #f38ba8; }}
+    footer {{ margin-top: 2rem; color: #6c7086; font-size: 0.8rem; }}
+  </style>
+</head>
+<body>
+  <h1>ttlcd API Reference <small>v{version}</small></h1>
+  <p style="color:#a6adc8;margin-top:0.5rem">HTTP JSON API. All endpoints respond to <code>localhost:7070</code> by default. <a href="/">← Web UI</a></p>
+
+  <h2>Status &amp; Info</h2>
+  <table><thead><tr><th>Endpoint</th><th>Method</th><th>Description</th></tr></thead><tbody>
+    <tr><td>/api/status</td><td class="badge-get">GET</td><td>Full daemon status (mode, version, frame_seq, rotation, etc.)</td></tr>
+    <tr><td>/api/version</td><td class="badge-get">GET</td><td>Version string only</td></tr>
+    <tr><td>/api/uptime</td><td class="badge-get">GET</td><td>Daemon uptime in seconds and human-readable</td></tr>
+    <tr><td>/api/panel/info</td><td class="badge-get">GET</td><td>USB panel hardware info (serial, firmware)</td></tr>
+    <tr><td>/api/modes</td><td class="badge-get">GET</td><td>List of all mode names</td></tr>
+    <tr><td>/api/modes/info</td><td class="badge-get">GET</td><td>Mode names with descriptions</td></tr>
+    <tr><td>/health</td><td class="badge-get">GET</td><td>Liveness probe (plain text)</td></tr>
+    <tr><td>/api/status.svg</td><td class="badge-get">GET</td><td>Shields.io-style SVG badge for current mode</td></tr>
+  </tbody></table>
+
+  <h2>Display Control</h2>
+  <table><thead><tr><th>Endpoint</th><th>Method</th><th>Description</th></tr></thead><tbody>
+    <tr><td>/api/mode</td><td class="badge-post">POST</td><td>Set mode <code>&#123;"mode":"clock"&#125;</code></td></tr>
+    <tr><td>/api/mode/next</td><td class="badge-post">POST</td><td>Advance to next mode in ALL_NAMES</td></tr>
+    <tr><td>/api/mode/prev</td><td class="badge-post">POST</td><td>Go to previous mode</td></tr>
+    <tr><td>/api/quality</td><td class="badge-post">POST</td><td>Set JPEG quality <code>&#123;"quality":85&#125;</code></td></tr>
+    <tr><td>/api/orient</td><td class="badge-post">POST</td><td>Set rotation <code>&#123;"degrees":90&#125;</code></td></tr>
+    <tr><td>/api/brightness</td><td class="badge-get">GET</td><td>Get brightness factor</td></tr>
+    <tr><td>/api/brightness</td><td class="badge-post">POST</td><td>Set brightness <code>&#123;"brightness":0.8&#125;</code></td></tr>
+    <tr><td>/api/display/freeze</td><td class="badge-post">POST</td><td>Freeze display (last frame stays)</td></tr>
+    <tr><td>/api/display/unfreeze</td><td class="badge-post">POST</td><td>Resume display updates</td></tr>
+    <tr><td>/api/display/frozen</td><td class="badge-get">GET</td><td>Returns <code>&#123;"frozen":true|false&#125;</code></td></tr>
+    <tr><td>/api/blank</td><td class="badge-post">POST</td><td>Send a solid black frame</td></tr>
+  </tbody></table>
+
+  <h2>Content Push</h2>
+  <table><thead><tr><th>Endpoint</th><th>Method</th><th>Description</th></tr></thead><tbody>
+    <tr><td>/api/text</td><td class="badge-post">POST</td><td>Push custom text (title, subtitle, lines, progress, color, duration_secs)</td></tr>
+    <tr><td>/api/clear</td><td class="badge-post">POST</td><td>Return to previous live mode</td></tr>
+    <tr><td>/api/image</td><td class="badge-post">POST</td><td>Upload image (multipart/form-data)</td></tr>
+    <tr><td>/api/image/path</td><td class="badge-post">POST</td><td>Display image by server path</td></tr>
+    <tr><td>/api/banner</td><td class="badge-post">POST</td><td>Large centred text banner</td></tr>
+    <tr><td>/api/alert</td><td class="badge-post">POST</td><td>Alert-style push (uses red color)</td></tr>
+    <tr><td>/api/notify</td><td class="badge-post">POST</td><td>Webhook-compatible notification</td></tr>
+    <tr><td>/api/test</td><td class="badge-post">POST</td><td>Show test card for 5s</td></tr>
+  </tbody></table>
+
+  <h2>Presets</h2>
+  <table><thead><tr><th>Endpoint</th><th>Method</th><th>Description</th></tr></thead><tbody>
+    <tr><td>/api/presets</td><td class="badge-get">GET</td><td>List all presets</td></tr>
+    <tr><td>/api/presets</td><td class="badge-post">POST</td><td>Save preset <code>&#123;"name":"…","payload":…&#125;</code></td></tr>
+    <tr><td>/api/presets</td><td class="badge-delete">DELETE</td><td>Clear all presets</td></tr>
+    <tr><td>/api/presets/&#123;name&#125;</td><td class="badge-get">GET</td><td>Get single preset payload</td></tr>
+    <tr><td>/api/presets/&#123;name&#125;</td><td class="badge-post">POST</td><td>Apply preset to panel</td></tr>
+    <tr><td>/api/presets/&#123;name&#125;</td><td class="badge-delete">DELETE</td><td>Delete preset</td></tr>
+    <tr><td>/api/presets/export</td><td class="badge-get">GET</td><td>Export all presets as JSON</td></tr>
+    <tr><td>/api/presets/import</td><td class="badge-post">POST</td><td>Import presets from JSON file</td></tr>
+  </tbody></table>
+
+  <h2>Timers</h2>
+  <table><thead><tr><th>Endpoint</th><th>Method</th><th>Description</th></tr></thead><tbody>
+    <tr><td>/api/countdown</td><td class="badge-post">POST</td><td>Start countdown <code>&#123;"seconds":300,"label":"Break"&#125;</code></td></tr>
+    <tr><td>/api/countdown</td><td class="badge-delete">DELETE</td><td>Cancel countdown</td></tr>
+    <tr><td>/api/stopwatch</td><td class="badge-get">GET</td><td>Get stopwatch state</td></tr>
+    <tr><td>/api/stopwatch/start</td><td class="badge-post">POST</td><td>Start/resume stopwatch</td></tr>
+    <tr><td>/api/stopwatch/stop</td><td class="badge-post">POST</td><td>Pause stopwatch</td></tr>
+    <tr><td>/api/stopwatch/lap</td><td class="badge-post">POST</td><td>Record lap</td></tr>
+    <tr><td>/api/stopwatch/reset</td><td class="badge-post">POST</td><td>Reset stopwatch</td></tr>
+    <tr><td>/api/schedule</td><td class="badge-post">POST</td><td>Schedule delayed notification</td></tr>
+  </tbody></table>
+
+  <h2>Slideshow</h2>
+  <table><thead><tr><th>Endpoint</th><th>Method</th><th>Description</th></tr></thead><tbody>
+    <tr><td>/api/slideshow</td><td class="badge-post">POST</td><td>Start slideshow <code>&#123;"dir":"/path","interval":5&#125;</code></td></tr>
+    <tr><td>/api/slideshow/next</td><td class="badge-post">POST</td><td>Next image</td></tr>
+    <tr><td>/api/slideshow/prev</td><td class="badge-post">POST</td><td>Previous image</td></tr>
+    <tr><td>/api/slideshow/shuffle</td><td class="badge-post">POST</td><td>Randomise image order</td></tr>
+    <tr><td>/api/slideshow/images</td><td class="badge-get">GET</td><td>List images in current slideshow directory</td></tr>
+  </tbody></table>
+
+  <h2>Auto-Rotation</h2>
+  <table><thead><tr><th>Endpoint</th><th>Method</th><th>Description</th></tr></thead><tbody>
+    <tr><td>/api/rotation</td><td class="badge-get">GET</td><td>Get rotation config</td></tr>
+    <tr><td>/api/rotation</td><td class="badge-post">POST</td><td>Set <code>&#123;"modes":["clock","sysinfo"],"interval":30&#125;</code></td></tr>
+  </tbody></table>
+
+  <h2>Custom Metrics</h2>
+  <table><thead><tr><th>Endpoint</th><th>Method</th><th>Description</th></tr></thead><tbody>
+    <tr><td>/api/metrics</td><td class="badge-get">GET</td><td>Get current metrics</td></tr>
+    <tr><td>/api/metrics</td><td class="badge-post">POST</td><td>Push metrics <code>&#123;"title":"…","metrics":[&#123;"label":"CPU","value":"72%","color":"blue"&#125;]&#125;</code></td></tr>
+    <tr><td>/api/metrics</td><td class="badge-delete">DELETE</td><td>Clear metrics</td></tr>
+  </tbody></table>
+
+  <h2>Weather &amp; Notes</h2>
+  <table><thead><tr><th>Endpoint</th><th>Method</th><th>Description</th></tr></thead><tbody>
+    <tr><td>/api/weather</td><td class="badge-get">GET</td><td>Get cached weather data</td></tr>
+    <tr><td>/api/weather</td><td class="badge-post">POST</td><td>Push weather snapshot (WeatherData JSON)</td></tr>
+    <tr><td>/api/weather</td><td class="badge-delete">DELETE</td><td>Clear weather data</td></tr>
+    <tr><td>/api/notes</td><td class="badge-get">GET</td><td>Get current notes</td></tr>
+    <tr><td>/api/notes</td><td class="badge-post">POST</td><td>Push notes <code>&#123;"title":"…","items":["…"],"append":false&#125;</code></td></tr>
+    <tr><td>/api/notes</td><td class="badge-delete">DELETE</td><td>Clear notes</td></tr>
+    <tr><td>/api/qr</td><td class="badge-get">GET</td><td>Get current QR code payload and title</td></tr>
+    <tr><td>/api/qr</td><td class="badge-post">POST</td><td>Set QR code <code>{{&quot;payload&quot;:&quot;https://…&quot;,&quot;title&quot;:&quot;…&quot;,&quot;show&quot;:true}}</code></td></tr>
+    <tr><td>/api/qr</td><td class="badge-delete">DELETE</td><td>Clear QR code and return to previous mode</td></tr>
+    <tr><td>/api/image/url</td><td class="badge-post">POST</td><td>Fetch image from URL and display it <code>{{&quot;url&quot;:&quot;https://…&quot;,&quot;letterbox&quot;:true}}</code></td></tr>
+    <tr><td>/api/preview.png</td><td class="badge-get">GET</td><td>Current panel frame as lossless PNG</td></tr>
+  </tbody></table>
+
+  <h2>System Stats</h2>
+  <table><thead><tr><th>Endpoint</th><th>Method</th><th>Description</th></tr></thead><tbody>
+    <tr><td>/api/sysinfo</td><td class="badge-get">GET</td><td>CPU, RAM, load, uptime</td></tr>
+    <tr><td>/api/temperatures</td><td class="badge-get">GET</td><td>Thermal sensor readings</td></tr>
+    <tr><td>/api/network</td><td class="badge-get">GET</td><td>Network interface rates</td></tr>
+    <tr><td>/api/processes</td><td class="badge-get">GET</td><td>Top processes by CPU</td></tr>
+    <tr><td>/api/disks</td><td class="badge-get">GET</td><td>Disk partition usage</td></tr>
+    <tr><td>/api/cpu/history</td><td class="badge-get">GET</td><td>CPU usage ring-buffer (120 samples)</td></tr>
+    <tr><td>/api/net/history</td><td class="badge-get">GET</td><td>Net Rx/Tx ring-buffer (60 samples)</td></tr>
+    <tr><td>/api/sys/snapshot</td><td class="badge-get">GET</td><td>All system stats in one call</td></tr>
+  </tbody></table>
+
+  <h2>Alerts &amp; Scheduling</h2>
+  <table><thead><tr><th>Endpoint</th><th>Method</th><th>Description</th></tr></thead><tbody>
+    <tr><td>/api/alerts/thresholds</td><td class="badge-get">GET</td><td>Get CPU/temp alert thresholds</td></tr>
+    <tr><td>/api/alerts/thresholds</td><td class="badge-post">POST</td><td>Set thresholds <code>&#123;"cpu_pct":90,"temp_c":80,"cooldown_secs":300&#125;</code></td></tr>
+    <tr><td>/api/dim/schedule</td><td class="badge-get">GET</td><td>Get night-dim schedule</td></tr>
+    <tr><td>/api/dim/schedule</td><td class="badge-post">POST</td><td>Set <code>&#123;"start_hour":22,"end_hour":7,"dim_level":0.15&#125;</code></td></tr>
+    <tr><td>/api/dim/schedule</td><td class="badge-delete">DELETE</td><td>Clear dim schedule</td></tr>
+    <tr><td>/api/history</td><td class="badge-get">GET</td><td>Notification history <code>?limit=20&amp;format=json|csv</code></td></tr>
+    <tr><td>/api/history</td><td class="badge-delete">DELETE</td><td>Clear history</td></tr>
+    <tr><td>/api/schedule/mode</td><td class="badge-get">GET</td><td>List time-of-day mode schedule entries</td></tr>
+    <tr><td>/api/schedule/mode</td><td class="badge-post">POST</td><td>Add schedule entry <code>{{&quot;hour&quot;:9,&quot;minute&quot;:0,&quot;mode&quot;:&quot;clock_sysinfo&quot;,&quot;label&quot;:&quot;…&quot;}}</code></td></tr>
+    <tr><td>/api/schedule/mode</td><td class="badge-delete">DELETE</td><td>Clear all schedule entries</td></tr>
+    <tr><td>/api/schedule/mode/{{index}}</td><td class="badge-delete">DELETE</td><td>Remove one schedule entry by index</td></tr>
+    <tr><td>/api/fps/history</td><td class="badge-get">GET</td><td>Render FPS ring-buffer (last 60 samples)</td></tr>
+    <tr><td>/api/webhook/config</td><td class="badge-get">GET</td><td>Get webhook forward URL</td></tr>
+    <tr><td>/api/webhook/config</td><td class="badge-post">POST</td><td>Set webhook forward URL <code>{{&quot;url&quot;:&quot;https://…&quot;}}</code></td></tr>
+    <tr><td>/api/webhook/config</td><td class="badge-delete">DELETE</td><td>Clear webhook forward URL</td></tr>
+  </tbody></table>
+
+  <h2>Profiles &amp; Config</h2>
+  <table><thead><tr><th>Endpoint</th><th>Method</th><th>Description</th></tr></thead><tbody>
+    <tr><td>/api/profiles</td><td class="badge-get">GET</td><td>List saved display profiles</td></tr>
+    <tr><td>/api/profiles</td><td class="badge-post">POST</td><td>Save current state as profile <code>&#123;"name":"night"&#125;</code></td></tr>
+    <tr><td>/api/profiles/&#123;name&#125;/apply</td><td class="badge-post">POST</td><td>Apply saved profile</td></tr>
+    <tr><td>/api/profiles/&#123;name&#125;</td><td class="badge-delete">DELETE</td><td>Delete profile</td></tr>
+    <tr><td>/api/config</td><td class="badge-get">GET</td><td>Return effective daemon configuration</td></tr>
+    <tr><td>/api/state/reload</td><td class="badge-post">POST</td><td>Reload persisted state from disk</td></tr>
+    <tr><td>/api/info</td><td class="badge-get">GET</td><td>Alias for /api/status</td></tr>
+  </tbody></table>
+
+  <h2>Preview &amp; Screenshot</h2>
+  <table><thead><tr><th>Endpoint</th><th>Method</th><th>Description</th></tr></thead><tbody>
+    <tr><td>/api/preview</td><td class="badge-get">GET</td><td>Current panel frame as JPEG</td></tr>
+    <tr><td>/api/screenshot</td><td class="badge-get">GET</td><td>Alias for /api/preview (download filename)</td></tr>
+    <tr><td>/api/screenshot.png</td><td class="badge-get">GET</td><td>Current panel frame as lossless PNG</td></tr>
+    <tr><td>/api/stream</td><td class="badge-get">GET</td><td>MJPEG live stream</td></tr>
+    <tr><td>/api/events</td><td class="badge-get">GET</td><td>SSE stream: <code>frame</code> and <code>mode</code> events</td></tr>
+    <tr><td>/api/render</td><td class="badge-post">POST</td><td>Render text payload to JPEG (no panel update)</td></tr>
+    <tr><td>/metrics</td><td class="badge-get">GET</td><td>Prometheus-format metrics</td></tr>
+  </tbody></table>
+
+  <h2>Pomodoro Timer</h2>
+  <table><thead><tr><th>Endpoint</th><th>Method</th><th>Description</th></tr></thead><tbody>
+    <tr><td>/api/pomodoro</td><td class="badge-get">GET</td><td>Get Pomodoro state</td></tr>
+    <tr><td>/api/pomodoro/start</td><td class="badge-post">POST</td><td>Start/resume timer</td></tr>
+    <tr><td>/api/pomodoro/pause</td><td class="badge-post">POST</td><td>Pause timer</td></tr>
+    <tr><td>/api/pomodoro/skip</td><td class="badge-post">POST</td><td>Skip current phase</td></tr>
+    <tr><td>/api/pomodoro/stop</td><td class="badge-post">POST</td><td>Stop and reset timer</td></tr>
+    <tr><td>/api/pomodoro/reset</td><td class="badge-post">POST</td><td>Reset to work phase</td></tr>
+    <tr><td>/api/pomodoro/config</td><td class="badge-post">POST</td><td>Configure durations <code>&#123;"work_secs":1500,"short_break_secs":300&#125;</code></td></tr>
+  </tbody></table>
+
+  <h2>World Clock, Ticker &amp; Battery</h2>
+  <table><thead><tr><th>Endpoint</th><th>Method</th><th>Description</th></tr></thead><tbody>
+    <tr><td>/api/world_clock</td><td class="badge-get">GET</td><td>Get city list</td></tr>
+    <tr><td>/api/world_clock</td><td class="badge-post">POST</td><td>Set cities <code>[&#123;"city":"Berlin","utc_offset_mins":60&#125;]</code></td></tr>
+    <tr><td>/api/world_clock</td><td class="badge-delete">DELETE</td><td>Reset to default cities</td></tr>
+    <tr><td>/api/ticker</td><td class="badge-get">GET</td><td>Get ticker text and color</td></tr>
+    <tr><td>/api/ticker</td><td class="badge-post">POST</td><td>Set ticker <code>&#123;"text":"…","color":"teal","switch_mode":true&#125;</code></td></tr>
+    <tr><td>/api/ticker</td><td class="badge-delete">DELETE</td><td>Clear ticker</td></tr>
+    <tr><td>/api/battery</td><td class="badge-get">GET</td><td>Battery level and status</td></tr>
+  </tbody></table>
+
+  <h2>HTTP Monitor, Shell Command &amp; Ping</h2>
+  <table><thead><tr><th>Endpoint</th><th>Method</th><th>Description</th></tr></thead><tbody>
+    <tr><td>/api/http_status</td><td class="badge-get">GET</td><td>Get monitors and latest results</td></tr>
+    <tr><td>/api/http_status</td><td class="badge-post">POST</td><td>Add monitor <code>&#123;"label":"…","url":"https://…"&#125;</code></td></tr>
+    <tr><td>/api/http_status/&#123;index&#125;</td><td class="badge-delete">DELETE</td><td>Remove monitor by index</td></tr>
+    <tr><td>/api/http_status/interval</td><td class="badge-get">GET</td><td>Set check interval <code>&#123;"secs":30&#125;</code> (PUT)</td></tr>
+    <tr><td>/api/shell_cmd</td><td class="badge-get">GET</td><td>Get command, output, status</td></tr>
+    <tr><td>/api/shell_cmd</td><td class="badge-post">POST</td><td>Set command <code>&#123;"cmd":"…","interval_secs":10,"switch_mode":true&#125;</code></td></tr>
+    <tr><td>/api/shell_cmd/run</td><td class="badge-post">POST</td><td>Force immediate re-run</td></tr>
+    <tr><td>/api/shell_cmd</td><td class="badge-delete">DELETE</td><td>Clear command</td></tr>
+    <tr><td>/api/ping_monitor</td><td class="badge-get">GET</td><td>Get hosts and latest ping results</td></tr>
+    <tr><td>/api/ping_monitor</td><td class="badge-post">POST</td><td>Add host <code>&#123;"label":"…","host":"8.8.8.8"&#125;</code></td></tr>
+    <tr><td>/api/ping_monitor/&#123;index&#125;</td><td class="badge-delete">DELETE</td><td>Remove host by index</td></tr>
+    <tr><td>/api/ping_monitor/interval</td><td class="badge-get">GET</td><td>Set ping interval <code>&#123;"secs":10&#125;</code> (PUT)</td></tr>
+  </tbody></table>
+
+  <h2>Settings</h2>
+  <table><thead><tr><th>Endpoint</th><th>Method</th><th>Description</th></tr></thead><tbody>
+    <tr><td>/api/settings/export</td><td class="badge-get">GET</td><td>Export all settings as JSON</td></tr>
+    <tr><td>/api/settings/import</td><td class="badge-post">POST</td><td>Import settings from JSON file</td></tr>
+  </tbody></table>
+
+  <footer>ttlcd v{version} — <a href="/">Back to Web UI</a></footer>
+</body>
+</html>"##, version = version);
+
+    HttpResponse::Ok()
+        .content_type("text/html; charset=utf-8")
+        .insert_header(("Cache-Control", "no-cache"))
+        .body(html)
+}
+
+// ─── FPS history ─────────────────────────────────────────────────────────────
+
+/// GET /api/fps/history — return the render-FPS ring-buffer as a JSON array.
+///
+/// Returns up to 60 recent FPS samples (EMA-smoothed), oldest first.
+/// Use this to draw a sparkline showing render performance over time.
+async fn api_fps_history(state: web::Data<DaemonState>) -> impl Responder {
+    let fh = state.fps_history.lock().unwrap();
+    let samples: Vec<f32> = fh.iter().copied().collect();
+    HttpResponse::Ok().json(serde_json::json!({
+        "samples": samples,
+        "current": state.render_fps.lock().unwrap().clone(),
+        "count":   samples.len(),
+    }))
+}
+
+// ─── Webhook configuration ────────────────────────────────────────────────────
+
+#[derive(serde::Deserialize)]
+struct WebhookConfigRequest {
+    url: Option<String>,
+}
+
+/// GET /api/webhook/config — return the current webhook forward URL (if any).
+async fn api_get_webhook_config(state: web::Data<DaemonState>) -> impl Responder {
+    let url = state.webhook_forward_url.lock().unwrap().clone();
+    HttpResponse::Ok().json(serde_json::json!({
+        "url": url,
+        "configured": url.is_some(),
+    }))
+}
+
+/// POST /api/webhook/config — set the webhook forward URL.
+///
+/// Body: `{"url": "https://hooks.example.com/..."}`
+///
+/// When set, any event received at `/api/webhook` (CI/CD pushes, alerts) is
+/// also forwarded to this URL as a POST with the same JSON body.
+async fn api_set_webhook_config(
+    state: web::Data<DaemonState>,
+    body:  web::Json<WebhookConfigRequest>,
+) -> impl Responder {
+    let url = match &body.url {
+        Some(u) if !u.is_empty() => u.clone(),
+        _ => return HttpResponse::BadRequest().body("url is required and must not be empty"),
+    };
+    *state.webhook_forward_url.lock().unwrap() = Some(url.clone());
+    log::info!("webhook forward URL set to: {}", url);
+    push_history(&state, HistoryKind::System, format!("Webhook forward URL configured: {}", url));
+    HttpResponse::Ok().json(serde_json::json!({ "ok": true, "url": url }))
+}
+
+/// DELETE /api/webhook/config — clear the webhook forward URL.
+async fn api_clear_webhook_config(state: web::Data<DaemonState>) -> impl Responder {
+    let was_set = state.webhook_forward_url.lock().unwrap().take().is_some();
+    if was_set {
+        log::info!("webhook forward URL cleared");
+        push_history(&state, HistoryKind::System, "Webhook forward URL cleared".to_string());
+    }
+    HttpResponse::Ok().json(serde_json::json!({ "ok": true, "cleared": was_set }))
+}
+
+// ─── Settings export / import ─────────────────────────────────────────────────
+
+/// GET /api/settings/export — export complete daemon state as a JSON bundle.
+///
+/// Returns a JSON object containing:
+/// - `daemon_state`: mode, quality, brightness, rotation
+/// - `presets`: all saved text presets
+/// - `profiles`: all saved display profiles
+/// - `alert_thresholds`: CPU/temp thresholds
+/// - `dim_schedule`: night dim configuration
+/// - `notes`: current notes title and items
+/// - `metrics`: current metrics title and items
+///
+/// The bundle can be re-imported via `POST /api/settings/import`.
+async fn api_settings_export(state: web::Data<DaemonState>) -> impl Responder {
+    let presets:    HashMap<String, CustomTextPayload> = state.presets.lock().unwrap().clone();
+    let profiles:   Vec<DisplayProfile>   = load_profiles();
+    let thresholds: AlertThresholds       = state.alert_thresholds.lock().unwrap().clone();
+    let dim_sched:  Option<DimSchedule>   = state.dim_schedule.lock().unwrap().clone();
+
+    let bundle = serde_json::json!({
+        "export_version": 1,
+        "exported_at": std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0),
+        "daemon_state": {
+            "mode":       state.mode.lock().unwrap().as_str(),
+            "quality":    *state.quality.lock().unwrap(),
+            "brightness": *state.dim_factor.lock().unwrap(),
+            "rotate_deg": *state.rotate_deg.lock().unwrap(),
+        },
+        "presets":   presets,
+        "profiles":  profiles,
+        "alert_thresholds": thresholds,
+        "dim_schedule": dim_sched,
+        "notes": {
+            "title": *state.notes_title.lock().unwrap(),
+            "items": *state.notes_items.lock().unwrap(),
+        },
+        "metrics": {
+            "title":   *state.metrics_title.lock().unwrap(),
+            "metrics": *state.metrics_data.lock().unwrap(),
+        },
+        "http_monitors": state.http_monitors.lock().unwrap().clone(),
+        "ping_hosts":    state.ping_hosts.lock().unwrap().clone(),
+        "world_clock":   state.world_clock_cities.lock().unwrap().clone(),
+        "mode_schedule": state.mode_schedule.lock().unwrap().clone(),
+    });
+
+    HttpResponse::Ok()
+        .insert_header(("Content-Disposition", "attachment; filename=ttlcd-settings.json"))
+        .insert_header(("Cache-Control", "no-store"))
+        .json(bundle)
+}
+
+/// POST /api/settings/import — import a previously exported settings bundle.
+///
+/// Accepts the JSON format produced by `GET /api/settings/export`.
+/// Only non-null fields are applied; missing sections are skipped.
+async fn api_settings_import(
+    state: web::Data<DaemonState>,
+    body:  web::Json<serde_json::Value>,
+) -> impl Responder {
+    let mut applied: Vec<&str> = Vec::new();
+
+    // daemon_state
+    if let Some(ds) = body.get("daemon_state") {
+        if let Some(mode_str) = ds.get("mode").and_then(|v| v.as_str()) {
+            if let Some(m) = DisplayMode::from_str_name(mode_str) {
+                *state.mode.lock().unwrap()      = m.clone();
+                *state.prev_mode.lock().unwrap() = m;
+                applied.push("mode");
+            }
+        }
+        if let Some(q) = ds.get("quality").and_then(|v| v.as_u64()) {
+            *state.quality.lock().unwrap() = q.clamp(1, 100) as u8;
+            applied.push("quality");
+        }
+        if let Some(b) = ds.get("brightness").and_then(|v| v.as_f64()) {
+            *state.dim_factor.lock().unwrap() = (b as f32).clamp(0.0, 1.0);
+            applied.push("brightness");
+        }
+        if let Some(r) = ds.get("rotate_deg").and_then(|v| v.as_u64()) {
+            let deg = match r { 90 => 90u16, 180 => 180, 270 => 270, _ => 0 };
+            *state.rotate_deg.lock().unwrap() = deg;
+            applied.push("rotate_deg");
+        }
+        persist_state(&state);
+    }
+
+    // presets
+    if let Some(presets_val) = body.get("presets") {
+        if let Ok(new_presets) = serde_json::from_value::<HashMap<String, CustomTextPayload>>(presets_val.clone()) {
+            let mut guard = state.presets.lock().unwrap();
+            for (k, v) in new_presets { guard.insert(k, v); }
+            save_presets_to_disk(&guard);
+            applied.push("presets");
+        }
+    }
+
+    // profiles
+    if let Some(profiles_val) = body.get("profiles") {
+        if let Ok(new_profiles) = serde_json::from_value::<Vec<DisplayProfile>>(profiles_val.clone()) {
+            let mut existing = load_profiles();
+            for p in new_profiles {
+                if let Some(e) = existing.iter_mut().find(|e| e.name == p.name) { *e = p; }
+                else { existing.push(p); }
+            }
+            save_profiles(&existing);
+            applied.push("profiles");
+        }
+    }
+
+    // alert_thresholds
+    if let Some(t_val) = body.get("alert_thresholds") {
+        if let Ok(t) = serde_json::from_value::<AlertThresholds>(t_val.clone()) {
+            *state.alert_thresholds.lock().unwrap() = t;
+            applied.push("alert_thresholds");
+        }
+    }
+
+    // dim_schedule
+    if let Some(d_val) = body.get("dim_schedule") {
+        if let Ok(sched) = serde_json::from_value::<Option<DimSchedule>>(d_val.clone()) {
+            *state.dim_schedule.lock().unwrap() = sched;
+            applied.push("dim_schedule");
+        }
+    }
+
+    // notes
+    if let Some(n_val) = body.get("notes") {
+        if let Some(title) = n_val.get("title").and_then(|v| v.as_str()) {
+            *state.notes_title.lock().unwrap() = title.to_string();
+        }
+        if let Some(items) = n_val.get("items").and_then(|v| v.as_array()) {
+            let items: Vec<String> = items.iter().filter_map(|v| v.as_str().map(String::from)).collect();
+            *state.notes_items.lock().unwrap() = items;
+        }
+        applied.push("notes");
+    }
+
+    // metrics
+    if let Some(m_val) = body.get("metrics") {
+        if let Some(title) = m_val.get("title").and_then(|v| v.as_str()) {
+            *state.metrics_title.lock().unwrap() = title.to_string();
+        }
+        if let Ok(metrics) = serde_json::from_value::<Vec<Metric>>(m_val.get("metrics").cloned().unwrap_or_default()) {
+            *state.metrics_data.lock().unwrap() = metrics;
+        }
+        applied.push("metrics");
+    }
+
+    // http_monitors
+    if let Some(hm_val) = body.get("http_monitors") {
+        if let Ok(monitors) = serde_json::from_value::<Vec<HttpMonitorEntry>>(hm_val.clone()) {
+            *state.http_monitors.lock().unwrap() = monitors.clone();
+            save_http_monitors(&monitors);
+            applied.push("http_monitors");
+        }
+    }
+
+    // ping_hosts
+    if let Some(ph_val) = body.get("ping_hosts") {
+        if let Ok(hosts) = serde_json::from_value::<Vec<PingHostEntry>>(ph_val.clone()) {
+            *state.ping_hosts.lock().unwrap() = hosts.clone();
+            save_ping_hosts(&hosts);
+            applied.push("ping_hosts");
+        }
+    }
+
+    // world_clock
+    if let Some(wc_val) = body.get("world_clock") {
+        if let Ok(cities) = serde_json::from_value::<Vec<(String, i32)>>(wc_val.clone()) {
+            *state.world_clock_cities.lock().unwrap() = cities.clone();
+            save_world_clock(&cities);
+            applied.push("world_clock");
+        }
+    }
+
+    // mode_schedule
+    if let Some(ms_val) = body.get("mode_schedule") {
+        if let Ok(entries) = serde_json::from_value::<Vec<ModeScheduleEntry>>(ms_val.clone()) {
+            *state.mode_schedule.lock().unwrap() = entries.clone();
+            save_mode_schedule(&entries);
+            applied.push("mode_schedule");
+        }
+    }
+
+    log::info!("settings imported: {} section(s) applied", applied.len());
+    HttpResponse::Ok().json(serde_json::json!({
+        "applied": applied,
+        "count":   applied.len(),
+    }))
+}
+
+// ─── Pomodoro API ─────────────────────────────────────────────────────────────
+
+/// GET /api/pomodoro — current Pomodoro timer state.
+async fn api_get_pomodoro(state: web::Data<DaemonState>) -> impl Responder {
+    let p = state.pomodoro.lock().unwrap();
+    HttpResponse::Ok().json(serde_json::json!({
+        "phase":               p.phase.as_str(),
+        "remaining_secs":      p.remaining_secs(),
+        "total_secs":          p.phase_total_secs(),
+        "running":             p.running,
+        "completed_sessions":  p.completed_sessions,
+        "sessions_in_set":     p.completed_sessions % p.long_break_interval,
+        "work_secs":           p.work_secs,
+        "short_break_secs":    p.short_break_secs,
+        "long_break_secs":     p.long_break_secs,
+        "long_break_interval": p.long_break_interval,
+    }))
+}
+
+/// POST /api/pomodoro/start — start or resume the Pomodoro timer.
+async fn api_pomodoro_start(state: web::Data<DaemonState>) -> impl Responder {
+    {
+        let mut p = state.pomodoro.lock().unwrap();
+        if !p.running {
+            p.running               = true;
+            p.phase_started_unix_ms = now_unix_ms();
+        }
+    }
+    *state.mode.lock().unwrap() = DisplayMode::Pomodoro;
+    push_history(&state, HistoryKind::System, "Pomodoro started".to_string());
+    HttpResponse::Ok().json(serde_json::json!({ "ok": true }))
+}
+
+/// POST /api/pomodoro/pause — pause the running timer.
+async fn api_pomodoro_pause(state: web::Data<DaemonState>) -> impl Responder {
+    {
+        let mut p = state.pomodoro.lock().unwrap();
+        if p.running {
+            p.phase_elapsed_ms      = p.phase_elapsed_ms_now();
+            p.running               = false;
+            p.phase_started_unix_ms = 0;
+        }
+    }
+    push_history(&state, HistoryKind::System, "Pomodoro paused".to_string());
+    HttpResponse::Ok().json(serde_json::json!({ "ok": true }))
+}
+
+/// POST /api/pomodoro/skip — skip the current phase and advance to the next.
+async fn api_pomodoro_skip(state: web::Data<DaemonState>) -> impl Responder {
+    let next_phase = {
+        let mut p = state.pomodoro.lock().unwrap();
+        p.advance_phase();
+        p.phase.as_str().to_string()
+    };
+    *state.mode.lock().unwrap() = DisplayMode::Pomodoro;
+    push_history(&state, HistoryKind::System, format!("Pomodoro skipped → {}", next_phase));
+    HttpResponse::Ok().json(serde_json::json!({ "ok": true, "phase": next_phase }))
+}
+
+/// POST /api/pomodoro/reset — reset the timer to the beginning of the current phase.
+async fn api_pomodoro_reset(state: web::Data<DaemonState>) -> impl Responder {
+    {
+        let mut p = state.pomodoro.lock().unwrap();
+        p.phase                 = PomodoroPhase::Work;
+        p.phase_elapsed_ms      = 0;
+        p.phase_started_unix_ms = 0;
+        p.running               = false;
+        p.completed_sessions    = 0;
+    }
+    push_history(&state, HistoryKind::System, "Pomodoro reset".to_string());
+    HttpResponse::Ok().json(serde_json::json!({ "ok": true }))
+}
+
+#[derive(serde::Deserialize)]
+struct PomodoroConfigRequest {
+    work_mins:           Option<u64>,
+    short_break_mins:    Option<u64>,
+    long_break_mins:     Option<u64>,
+    long_break_interval: Option<u32>,
+}
+
+/// POST /api/pomodoro/config — configure work/break durations.
+///
+/// Body (all fields optional):
+/// ```json
+/// { "work_mins": 25, "short_break_mins": 5, "long_break_mins": 15, "long_break_interval": 4 }
+/// ```
+async fn api_pomodoro_config(
+    state: web::Data<DaemonState>,
+    body:  web::Json<PomodoroConfigRequest>,
+) -> impl Responder {
+    {
+        let mut p = state.pomodoro.lock().unwrap();
+        if let Some(m) = body.work_mins           { p.work_secs           = m * 60; }
+        if let Some(m) = body.short_break_mins    { p.short_break_secs    = m * 60; }
+        if let Some(m) = body.long_break_mins     { p.long_break_secs     = m * 60; }
+        if let Some(n) = body.long_break_interval { p.long_break_interval = n.max(1); }
+    }
+    HttpResponse::Ok().json(serde_json::json!({ "ok": true }))
+}
+
+// ─── Battery info API ─────────────────────────────────────────────────────────
+
+/// GET /api/battery — read live battery status from the system.
+///
+/// On desktops or systems without a battery, returns `{"present": false}`.
+/// On laptops, returns capacity, status, voltage and estimated time remaining.
+async fn api_battery_json() -> impl Responder {
+    use ttlcd::display::read_battery_json;
+    HttpResponse::Ok().json(read_battery_json())
+}
+
+// ─── World clock API ──────────────────────────────────────────────────────────
+
+#[derive(serde::Deserialize)]
+struct WorldClockCity {
+    city:           String,
+    utc_offset_mins: i32,
+}
+
+/// GET /api/world_clock — return the current list of cities.
+async fn api_get_world_clock(state: web::Data<DaemonState>) -> impl Responder {
+    let cities = state.world_clock_cities.lock().unwrap()
+        .iter()
+        .map(|(c, o)| serde_json::json!({ "city": c, "utc_offset_mins": o }))
+        .collect::<Vec<_>>();
+    HttpResponse::Ok().json(serde_json::json!({ "cities": cities }))
+}
+
+/// POST /api/world_clock — set city list (replaces all).
+///
+/// Body: `[{"city":"New York","utc_offset_mins":-300}, ...]`  (up to 4 entries)
+async fn api_set_world_clock(
+    state: web::Data<DaemonState>,
+    body:  web::Json<Vec<WorldClockCity>>,
+) -> impl Responder {
+    let entries: Vec<(String, i32)> = body.0.into_iter()
+        .take(4)
+        .map(|c| (c.city, c.utc_offset_mins.clamp(-14 * 60, 14 * 60)))
+        .collect();
+    let count = entries.len();
+    *state.world_clock_cities.lock().unwrap() = entries.clone();
+    save_world_clock(&entries);
+    HttpResponse::Ok().json(serde_json::json!({ "ok": true, "count": count }))
+}
+
+/// DELETE /api/world_clock — reset to default cities.
+async fn api_clear_world_clock(state: web::Data<DaemonState>) -> impl Responder {
+    state.world_clock_cities.lock().unwrap().clear();
+    save_world_clock(&[]);
+    HttpResponse::Ok().json(serde_json::json!({ "ok": true, "cleared": true }))
+}
+
+/// POST /api/pomodoro/stop — stop the timer and return to the previous mode.
+async fn api_pomodoro_stop(state: web::Data<DaemonState>) -> impl Responder {
+    {
+        let mut p = state.pomodoro.lock().unwrap();
+        p.phase_elapsed_ms      = p.phase_elapsed_ms_now();
+        p.running               = false;
+        p.phase_started_unix_ms = 0;
+    }
+    let prev = state.prev_mode.lock().unwrap().clone();
+    *state.mode.lock().unwrap() = prev;
+    push_history(&state, HistoryKind::System, "Pomodoro stopped".to_string());
+    HttpResponse::Ok().json(serde_json::json!({ "ok": true }))
+}
+
+// ─── Ticker API ───────────────────────────────────────────────────────────────
+
+/// GET /api/ticker — current ticker text and color.
+async fn api_get_ticker(state: web::Data<DaemonState>) -> impl Responder {
+    let text  = state.ticker_text.lock().unwrap().clone();
+    let color = state.ticker_color.lock().unwrap().clone();
+    let pos   = *state.ticker_pos.lock().unwrap();
+    HttpResponse::Ok().json(serde_json::json!({ "text": text, "color": color, "scroll_pos": pos }))
+}
+
+#[derive(serde::Deserialize)]
+struct TickerRequest {
+    text:   String,
+    #[serde(default)]
+    color:  Option<String>,
+    #[serde(default)]
+    switch_mode: Option<bool>,
+}
+
+/// POST /api/ticker — set the ticker text (and optionally switch to ticker mode).
+///
+/// Body: `{"text": "Hello World!", "color": "blue", "switch_mode": true}`
+async fn api_set_ticker(
+    state: web::Data<DaemonState>,
+    body:  web::Json<TickerRequest>,
+) -> impl Responder {
+    let text  = body.text.clone();
+    let color = body.color.clone().unwrap_or_else(|| "blue".to_string());
+
+    *state.ticker_text.lock().unwrap()  = text.clone();
+    *state.ticker_color.lock().unwrap() = color.clone();
+    *state.ticker_pos.lock().unwrap()   = 0;  // reset scroll to start
+
+    if body.switch_mode.unwrap_or(true) {
+        *state.mode.lock().unwrap() = DisplayMode::Ticker;
+    }
+
+    let summary = format!("Ticker: {}", text.chars().take(60).collect::<String>());
+    push_history(&state, HistoryKind::Text, summary);
+    HttpResponse::Ok().json(serde_json::json!({ "ok": true, "text": text, "color": color }))
+}
+
+/// DELETE /api/ticker — clear ticker text and return to previous mode.
+async fn api_clear_ticker(state: web::Data<DaemonState>) -> impl Responder {
+    *state.ticker_text.lock().unwrap()  = String::new();
+    *state.ticker_pos.lock().unwrap()   = 0;
+    let prev = state.prev_mode.lock().unwrap().clone();
+    *state.mode.lock().unwrap() = prev;
+    HttpResponse::Ok().json(serde_json::json!({ "ok": true }))
+}
+
+// ─── HTTP Status Monitor API handlers ────────────────────────────────────────
+
+/// GET /api/http_status — return monitors list and latest check results.
+async fn api_get_http_status(state: web::Data<DaemonState>) -> impl Responder {
+    let monitors: Vec<serde_json::Value> = state.http_monitors.lock().unwrap()
+        .iter().map(|m| serde_json::json!({ "label": m.label, "url": m.url }))
+        .collect();
+    let results = state.http_results.lock().unwrap().clone();
+    let interval = *state.http_check_interval_secs.lock().unwrap();
+    HttpResponse::Ok().json(serde_json::json!({
+        "monitors": monitors,
+        "results":  results,
+        "check_interval_secs": interval,
+    }))
+}
+
+/// POST /api/http_status — add a monitor: {"label":"...", "url":"..."}
+async fn api_add_http_monitor(
+    state: web::Data<DaemonState>,
+    body:  web::Json<serde_json::Value>,
+) -> impl Responder {
+    let label = body.get("label").and_then(|v| v.as_str()).unwrap_or("").trim().to_string();
+    let url   = body.get("url").and_then(|v| v.as_str()).unwrap_or("").trim().to_string();
+    if label.is_empty() || url.is_empty() {
+        return HttpResponse::BadRequest().json(serde_json::json!({ "error": "label and url required" }));
+    }
+    let entry = HttpMonitorEntry { label: label.clone(), url: url.clone() };
+    let mut monitors = state.http_monitors.lock().unwrap();
+    if monitors.len() >= 10 {
+        return HttpResponse::BadRequest().json(serde_json::json!({ "error": "maximum 10 monitors" }));
+    }
+    monitors.push(entry);
+    save_http_monitors(&monitors.clone());
+    HttpResponse::Ok().json(serde_json::json!({ "ok": true, "label": label, "url": url }))
+}
+
+/// DELETE /api/http_status/{index} — remove monitor at given index.
+async fn api_delete_http_monitor(
+    state: web::Data<DaemonState>,
+    path:  web::Path<usize>,
+) -> impl Responder {
+    let idx = path.into_inner();
+    let mut monitors = state.http_monitors.lock().unwrap();
+    if idx >= monitors.len() {
+        return HttpResponse::BadRequest().json(serde_json::json!({ "error": "index out of range" }));
+    }
+    monitors.remove(idx);
+    // Also drop the corresponding result if present
+    let mut results = state.http_results.lock().unwrap();
+    if idx < results.len() { results.remove(idx); }
+    save_http_monitors(&monitors.clone());
+    HttpResponse::Ok().json(serde_json::json!({ "ok": true }))
+}
+
+/// PUT /api/http_status/interval — set check interval: {"secs": 30}
+async fn api_set_http_interval(
+    state: web::Data<DaemonState>,
+    body:  web::Json<serde_json::Value>,
+) -> impl Responder {
+    let secs = body.get("secs").and_then(|v| v.as_u64()).unwrap_or(30).max(5);
+    *state.http_check_interval_secs.lock().unwrap() = secs;
+    HttpResponse::Ok().json(serde_json::json!({ "ok": true, "secs": secs }))
+}
+
+// ─── Shell Command API handlers ───────────────────────────────────────────────
+
+/// GET /api/shell_cmd — return current command, output, and status.
+async fn api_get_shell_cmd(state: web::Data<DaemonState>) -> impl Responder {
+    let cmd      = state.shell_cmd_text.lock().unwrap().clone();
+    let output   = state.shell_cmd_output.lock().unwrap().clone();
+    let exit_ok  = *state.shell_cmd_exit_ok.lock().unwrap();
+    let run_at   = *state.shell_cmd_run_at.lock().unwrap();
+    let interval = *state.shell_cmd_interval_secs.lock().unwrap();
+    HttpResponse::Ok().json(serde_json::json!({
+        "cmd":          cmd,
+        "output":       output,
+        "exit_ok":      exit_ok,
+        "run_at_unix":  run_at,
+        "interval_secs": interval,
+    }))
+}
+
+/// POST /api/shell_cmd — set command: {"cmd":"...", "interval_secs":10, "switch_mode":true}
+async fn api_set_shell_cmd(
+    state: web::Data<DaemonState>,
+    body:  web::Json<serde_json::Value>,
+) -> impl Responder {
+    let cmd = body.get("cmd").and_then(|v| v.as_str()).unwrap_or("").trim().to_string();
+    if cmd.is_empty() {
+        return HttpResponse::BadRequest().json(serde_json::json!({ "error": "cmd required" }));
+    }
+    let interval = body.get("interval_secs").and_then(|v| v.as_u64()).unwrap_or(10);
+    let switch   = body.get("switch_mode").and_then(|v| v.as_bool()).unwrap_or(false);
+
+    *state.shell_cmd_text.lock().unwrap()          = cmd.clone();
+    *state.shell_cmd_interval_secs.lock().unwrap() = interval;
+    // Clear stale output
+    *state.shell_cmd_output.lock().unwrap() = "(running…)".to_string();
+    *state.shell_cmd_exit_ok.lock().unwrap() = true;
+
+    if switch {
+        let prev = state.mode.lock().unwrap().clone();
+        if !matches!(prev, DisplayMode::ShellCmd) {
+            *state.prev_mode.lock().unwrap() = prev;
+        }
+        *state.mode.lock().unwrap() = DisplayMode::ShellCmd;
+        persist_state(&state);
+    }
+
+    // Trigger an immediate run in the background
+    let state2 = state.as_ref().clone();
+    let cmd2 = cmd.clone();
+    tokio::spawn(async move { run_shell_cmd_once(&state2, &cmd2).await });
+
+    HttpResponse::Ok().json(serde_json::json!({ "ok": true, "cmd": cmd, "interval_secs": interval }))
+}
+
+/// POST /api/shell_cmd/run — force an immediate re-run of the current command.
+async fn api_run_shell_cmd_now(state: web::Data<DaemonState>) -> impl Responder {
+    let cmd = state.shell_cmd_text.lock().unwrap().clone();
+    if cmd.is_empty() {
+        return HttpResponse::BadRequest().json(serde_json::json!({ "error": "no command configured" }));
+    }
+    *state.shell_cmd_output.lock().unwrap() = "(running…)".to_string();
+    let state2 = state.as_ref().clone();
+    tokio::spawn(async move { run_shell_cmd_once(&state2, &cmd).await });
+    HttpResponse::Ok().json(serde_json::json!({ "ok": true }))
+}
+
+/// DELETE /api/shell_cmd — clear command and return to previous mode.
+async fn api_clear_shell_cmd(state: web::Data<DaemonState>) -> impl Responder {
+    *state.shell_cmd_text.lock().unwrap()   = String::new();
+    *state.shell_cmd_output.lock().unwrap() = String::new();
+    *state.shell_cmd_run_at.lock().unwrap() = 0;
+    let prev = state.prev_mode.lock().unwrap().clone();
+    *state.mode.lock().unwrap() = prev;
+    HttpResponse::Ok().json(serde_json::json!({ "ok": true }))
+}
+
+// ─── Ping Monitor API handlers ────────────────────────────────────────────────
+
+/// GET /api/ping — return hosts list and latest ping results.
+async fn api_get_ping(state: web::Data<DaemonState>) -> impl Responder {
+    let hosts: Vec<serde_json::Value> = state.ping_hosts.lock().unwrap()
+        .iter().map(|h| serde_json::json!({ "label": h.label, "host": h.host }))
+        .collect();
+    let results = state.ping_results.lock().unwrap().clone();
+    let interval = *state.ping_interval_secs.lock().unwrap();
+    HttpResponse::Ok().json(serde_json::json!({
+        "hosts":    hosts,
+        "results":  results,
+        "check_interval_secs": interval,
+    }))
+}
+
+/// POST /api/ping — add a host: {"label":"...", "host":"8.8.8.8"}
+async fn api_add_ping_host(
+    state: web::Data<DaemonState>,
+    body:  web::Json<serde_json::Value>,
+) -> impl Responder {
+    let label = body.get("label").and_then(|v| v.as_str()).unwrap_or("").trim().to_string();
+    let host  = body.get("host").and_then(|v| v.as_str()).unwrap_or("").trim().to_string();
+    if label.is_empty() || host.is_empty() {
+        return HttpResponse::BadRequest().json(serde_json::json!({ "error": "label and host required" }));
+    }
+    let entry = PingHostEntry { label: label.clone(), host: host.clone() };
+    let mut hosts = state.ping_hosts.lock().unwrap();
+    if hosts.len() >= 12 {
+        return HttpResponse::BadRequest().json(serde_json::json!({ "error": "maximum 12 hosts" }));
+    }
+    hosts.push(entry);
+    save_ping_hosts(&hosts.clone());
+    HttpResponse::Ok().json(serde_json::json!({ "ok": true, "label": label, "host": host }))
+}
+
+/// DELETE /api/ping/{index} — remove host at given index.
+async fn api_delete_ping_host(
+    state: web::Data<DaemonState>,
+    path:  web::Path<usize>,
+) -> impl Responder {
+    let idx = path.into_inner();
+    let mut hosts = state.ping_hosts.lock().unwrap();
+    if idx >= hosts.len() {
+        return HttpResponse::BadRequest().json(serde_json::json!({ "error": "index out of range" }));
+    }
+    hosts.remove(idx);
+    let mut results = state.ping_results.lock().unwrap();
+    if idx < results.len() { results.remove(idx); }
+    save_ping_hosts(&hosts.clone());
+    HttpResponse::Ok().json(serde_json::json!({ "ok": true }))
+}
+
+/// PUT /api/ping/interval — set check interval: {"secs": 10}
+async fn api_set_ping_interval(
+    state: web::Data<DaemonState>,
+    body:  web::Json<serde_json::Value>,
+) -> impl Responder {
+    let secs = body.get("secs").and_then(|v| v.as_u64()).unwrap_or(10).max(5);
+    *state.ping_interval_secs.lock().unwrap() = secs;
+    HttpResponse::Ok().json(serde_json::json!({ "ok": true, "secs": secs }))
 }
