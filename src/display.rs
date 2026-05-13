@@ -1476,6 +1476,13 @@ line 8";
         assert_panel_size(&img);
     }
 
+    #[test]
+    fn test_net_connections_size() {
+        // Just verify it renders without panic (may have 0 connections in test env)
+        let img = render_net_connections();
+        assert_panel_size(&img);
+    }
+
 }
 
 /// Thermal sensor detail — all available temperature components with color-coded bars.
@@ -4492,6 +4499,185 @@ pub fn render_service_status(units: &[ServiceStatus]) -> DynamicImage {
     let failed_count = units.iter().filter(|u| u.state == "failed").count();
     let summary = format!("{} active  {} failed  {} total",
         active_count, failed_count, units.len());
+    draw_centered(&mut img, &mono, PxScale::from(14.0), 456, SUBTEXT, &summary);
+
+    DynamicImage::ImageRgb8(img)
+}
+
+// ─── Network connections (listening ports + established) ──────────────────────
+
+/// A parsed TCP/UDP socket entry from /proc/net/tcp or /proc/net/udp.
+#[derive(Clone, Debug)]
+pub struct NetConn {
+    pub proto:       String,  // "tcp" / "tcp6" / "udp"
+    pub local_addr:  String,
+    pub local_port:  u16,
+    pub remote_addr: String,
+    pub remote_port: u16,
+    /// TCP state name (e.g. "LISTEN", "ESTABLISHED") or empty for UDP.
+    pub state:       String,
+}
+
+/// Parse /proc/net/tcp (or tcp6/udp) format into a list of socket entries.
+/// Only returns LISTEN and ESTABLISHED connections by default.
+pub fn read_net_connections() -> Vec<NetConn> {
+    fn parse_hex_addr(hex: &str) -> (String, u16) {
+        if let Some((addr_h, port_h)) = hex.split_once(':') {
+            let port = u16::from_str_radix(port_h, 16).unwrap_or(0);
+            // IPv4 little-endian 32-bit hex
+            if addr_h.len() == 8 {
+                let a = u32::from_str_radix(addr_h, 16).unwrap_or(0);
+                let ip = std::net::Ipv4Addr::from(u32::from_be(a.swap_bytes()));
+                let s = if ip.is_unspecified() { "0.0.0.0".to_string() } else { ip.to_string() };
+                return (s, port);
+            }
+            // IPv6: 32 hex chars
+            if addr_h.len() == 32 {
+                // 4 groups of 4 bytes, each group reversed
+                let mut bytes = [0u8; 16];
+                for g in 0..4 {
+                    let grp = &addr_h[g*8..(g+1)*8];
+                    let val = u32::from_str_radix(grp, 16).unwrap_or(0).swap_bytes();
+                    bytes[g*4..(g+1)*4].copy_from_slice(&val.to_be_bytes());
+                }
+                let ip6 = std::net::Ipv6Addr::from(bytes);
+                if let Some(v4) = ip6.to_ipv4() {
+                    return (v4.to_string(), port);
+                }
+                return (ip6.to_string(), port);
+            }
+        }
+        ("?".to_string(), 0)
+    }
+
+    const TCP_STATES: &[&str] = &[
+        "", "ESTABLISHED", "SYN_SENT", "SYN_RECV", "FIN_WAIT1", "FIN_WAIT2",
+        "TIME_WAIT", "CLOSE", "CLOSE_WAIT", "LAST_ACK", "LISTEN", "CLOSING",
+    ];
+
+    let mut out = Vec::new();
+
+    let files = [
+        ("/proc/net/tcp",  "tcp",  true),
+        ("/proc/net/tcp6", "tcp6", true),
+        ("/proc/net/udp",  "udp",  false),
+    ];
+
+    for (path, proto, is_tcp) in &files {
+        let Ok(text) = std::fs::read_to_string(path) else { continue };
+        for line in text.lines().skip(1) {
+            let cols: Vec<&str> = line.split_whitespace().collect();
+            if cols.len() < 4 { continue; }
+            let (local_addr, local_port) = parse_hex_addr(cols[1]);
+            let (remote_addr, remote_port) = parse_hex_addr(cols[2]);
+            let state_hex = u8::from_str_radix(cols[3], 16).unwrap_or(0) as usize;
+            let state = if *is_tcp {
+                TCP_STATES.get(state_hex).unwrap_or(&"").to_string()
+            } else {
+                String::new()
+            };
+            // Only show LISTEN and ESTABLISHED for TCP; all for UDP (but limit)
+            if *is_tcp && state != "LISTEN" && state != "ESTABLISHED" { continue; }
+            // Skip pure-loopback established connections
+            if state == "ESTABLISHED" && local_addr.starts_with("127.") && remote_addr.starts_with("127.") { continue; }
+            out.push(NetConn {
+                proto:       proto.to_string(),
+                local_addr,  local_port,
+                remote_addr, remote_port,
+                state,
+            });
+        }
+    }
+    out
+}
+
+/// Render active network connections: listening ports and established sessions.
+pub fn render_net_connections() -> DynamicImage {
+    let mut img = blank();
+    let bold = font_bold();
+    let mono = font_mono();
+
+    let conns = read_net_connections();
+
+    // Header
+    draw_filled_rect_mut(&mut img, Rect::at(0, 0).of_size(480, 52), SURFACE0);
+    draw_centered(&mut img, &bold, PxScale::from(24.0), 12, TEAL, "CONNECTIONS");
+    let now_str = Local::now().format("%H:%M:%S").to_string();
+    draw_centered(&mut img, &mono, PxScale::from(13.0), 36, OVERLAY0, &now_str);
+
+    if conns.is_empty() {
+        draw_centered(&mut img, &mono, PxScale::from(18.0), 220, OVERLAY0, "no connections");
+        return DynamicImage::ImageRgb8(img);
+    }
+
+    // Column header
+    let hdr_y = 54i32;
+    draw_filled_rect_mut(&mut img, Rect::at(0, hdr_y).of_size(480, 20), SURFACE0);
+    draw_text_mut(&mut img, OVERLAY0, 8,   hdr_y + 3, PxScale::from(12.0), &mono, "PROTO");
+    draw_text_mut(&mut img, OVERLAY0, 60,  hdr_y + 3, PxScale::from(12.0), &mono, "LOCAL:PORT");
+    draw_text_mut(&mut img, OVERLAY0, 220, hdr_y + 3, PxScale::from(12.0), &mono, "REMOTE:PORT");
+    draw_text_mut(&mut img, OVERLAY0, 370, hdr_y + 3, PxScale::from(12.0), &mono, "STATE");
+
+    const ROW_H: i32 = 30;
+    const MAX_ROWS: usize = 13;
+    let listen_first: Vec<_> = {
+        let mut v: Vec<_> = conns.into_iter().collect();
+        v.sort_by(|a, b| {
+            // LISTEN first, then ESTABLISHED, then UDP
+            let rank = |c: &NetConn| match c.state.as_str() {
+                "LISTEN"      => 0,
+                "ESTABLISHED" => 1,
+                _             => 2,
+            };
+            rank(a).cmp(&rank(b)).then(a.local_port.cmp(&b.local_port))
+        });
+        v
+    };
+
+    for (idx, conn) in listen_first.iter().take(MAX_ROWS).enumerate() {
+        let y = hdr_y + 22 + idx as i32 * ROW_H;
+
+        if idx % 2 == 1 {
+            draw_filled_rect_mut(&mut img, Rect::at(0, y).of_size(480, ROW_H as u32), SURFACE0);
+        }
+
+        let (state_color, proto_color) = match conn.state.as_str() {
+            "LISTEN"      => (GREEN,   TEAL),
+            "ESTABLISHED" => (BLUE,    BLUE),
+            _             => (OVERLAY0, OVERLAY0),  // UDP
+        };
+
+        // Proto
+        draw_text_mut(&mut img, proto_color, 8, y + 7, PxScale::from(13.0), &mono, &conn.proto);
+
+        // Local addr:port
+        let local_str = if conn.local_addr == "0.0.0.0" || conn.local_addr == "::" {
+            format!("*:{}", conn.local_port)
+        } else {
+            // Shorten long IPv6
+            let addr = if conn.local_addr.len() > 15 { "…".to_string() } else { conn.local_addr.clone() };
+            format!("{}:{}", addr, conn.local_port)
+        };
+        draw_text_mut(&mut img, TEXT, 60, y + 7, PxScale::from(13.0), &mono, &local_str);
+
+        // Remote addr:port (only for ESTABLISHED)
+        if conn.state == "ESTABLISHED" {
+            let rem_str = format!("{}:{}", conn.remote_addr, conn.remote_port);
+            let rem_short: String = rem_str.chars().take(20).collect();
+            draw_text_mut(&mut img, SUBTEXT, 220, y + 7, PxScale::from(13.0), &mono, &rem_short);
+        } else {
+            draw_text_mut(&mut img, OVERLAY0, 220, y + 7, PxScale::from(13.0), &mono, "—");
+        }
+
+        // State
+        draw_text_mut(&mut img, state_color, 370, y + 7, PxScale::from(12.0), &mono, &conn.state);
+    }
+
+    // Footer
+    let listen_count = listen_first.iter().filter(|c| c.state == "LISTEN").count();
+    let estab_count  = listen_first.iter().filter(|c| c.state == "ESTABLISHED").count();
+    draw_divider(&mut img, 452);
+    let summary = format!("{} listening  {} established", listen_count, estab_count);
     draw_centered(&mut img, &mono, PxScale::from(14.0), 456, SUBTEXT, &summary);
 
     DynamicImage::ImageRgb8(img)

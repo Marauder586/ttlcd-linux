@@ -49,6 +49,7 @@ use ttlcd::{
         render_hostname_ip,
         render_rss_feed,
         render_service_status,
+        render_net_connections,
         HttpMonitorResult,
         PingResult,
         Metric,
@@ -734,6 +735,7 @@ enum DisplayMode {
     HostnameIp,
     RssFeed,
     ServiceStatus,
+    NetConnections,
     Idle,
     CustomImage,
     CustomText,
@@ -743,7 +745,7 @@ enum DisplayMode {
 impl DisplayMode {
     const ALL_NAMES: &'static [&'static str] = &[
         "clock", "big_clock", "clock_sysinfo", "sysinfo", "cpu_detail",
-        "network", "disk_usage", "process_top", "temperature", "memory_detail", "countdown", "cpu_graph", "net_graph", "recent_alerts", "process_memory", "disk_io", "calendar", "stopwatch", "metrics", "weather", "notes", "qr_code", "pomodoro", "battery", "world_clock", "ticker", "http_status", "shell_cmd", "ping_monitor", "dashboard", "log_tail", "cpu_freq", "hostname_ip", "rss_feed", "service_status", "idle",
+        "network", "disk_usage", "process_top", "temperature", "memory_detail", "countdown", "cpu_graph", "net_graph", "recent_alerts", "process_memory", "disk_io", "calendar", "stopwatch", "metrics", "weather", "notes", "qr_code", "pomodoro", "battery", "world_clock", "ticker", "http_status", "shell_cmd", "ping_monitor", "dashboard", "log_tail", "cpu_freq", "hostname_ip", "rss_feed", "service_status", "net_connections", "idle",
     ];
 
     fn from_str_name(s: &str) -> Option<Self> {
@@ -780,10 +782,11 @@ impl DisplayMode {
             "dashboard"       => Some(DisplayMode::Dashboard),
             "log_tail"        => Some(DisplayMode::LogTail),
             "cpu_freq"        => Some(DisplayMode::CpuFreq),
-            "hostname_ip"     => Some(DisplayMode::HostnameIp),
-            "rss_feed"        => Some(DisplayMode::RssFeed),
-            "service_status"  => Some(DisplayMode::ServiceStatus),
-            "idle"            => Some(DisplayMode::Idle),
+            "hostname_ip"      => Some(DisplayMode::HostnameIp),
+            "rss_feed"         => Some(DisplayMode::RssFeed),
+            "service_status"   => Some(DisplayMode::ServiceStatus),
+            "net_connections"  => Some(DisplayMode::NetConnections),
+            "idle"             => Some(DisplayMode::Idle),
             "custom_text"   => Some(DisplayMode::CustomText),
             "slideshow"     => Some(DisplayMode::Slideshow),
             _               => None,
@@ -824,10 +827,11 @@ impl DisplayMode {
             DisplayMode::Dashboard     => "dashboard",
             DisplayMode::LogTail       => "log_tail",
             DisplayMode::CpuFreq       => "cpu_freq",
-            DisplayMode::HostnameIp    => "hostname_ip",
-            DisplayMode::RssFeed       => "rss_feed",
-            DisplayMode::ServiceStatus => "service_status",
-            DisplayMode::Idle          => "idle",
+            DisplayMode::HostnameIp     => "hostname_ip",
+            DisplayMode::RssFeed        => "rss_feed",
+            DisplayMode::ServiceStatus  => "service_status",
+            DisplayMode::NetConnections => "net_connections",
+            DisplayMode::Idle           => "idle",
             DisplayMode::CustomImage  => "image",
             DisplayMode::CustomText   => "custom_text",
             DisplayMode::Slideshow    => "slideshow",
@@ -2175,6 +2179,7 @@ fn display_loop(panel: Arc<Mutex<Option<Panel>>>, state: DaemonState) {
                     let units = state.service_statuses.lock().unwrap().clone();
                     (render_service_status(&units), 5)
                 },
+                DisplayMode::NetConnections => (render_net_connections(), 5),
                 DisplayMode::Idle
                 | DisplayMode::CustomImage
                 | DisplayMode::CustomText
@@ -2912,13 +2917,20 @@ fn parse_rss_xml(xml: &str) -> (String, Vec<(String, String)>) {
                 .or_else(|| extract_tag(block, "author"))
                 .map(|s| {
                     let s = decode_entities(extract_cdata(s));
-                    // Shorten RFC-2822 date: "Wed, 14 May 2026 12:00:00 +0000" -> "14 May 2026"
-                    // Skip weekday prefix
+                    // Shorten RFC-2822 date: "Wed, 14 May 2026 12:00:00 +0000" -> "14 May 2026 12:00"
+                    // Strip leading weekday
                     let s2 = if s.contains(',') {
                         s.splitn(2, ',').nth(1).unwrap_or(&s).trim().to_string()
-                    } else { s };
-                    // Take up to 11 chars (enough for "14 May 2026")
-                    s2.chars().take(16).collect::<String>().trim().to_string()
+                    } else { s.clone() };
+                    // Take date + time but drop seconds and timezone: "14 May 2026 12:00"
+                    let parts: Vec<&str> = s2.split_whitespace().collect();
+                    if parts.len() >= 5 {
+                        // parts: ["14","May","2026","12:00:00","+0000"]
+                        let time_short = parts[3].splitn(3, ':').take(2).collect::<Vec<_>>().join(":");
+                        format!("{} {} {} {}", parts[0], parts[1], parts[2], time_short)
+                    } else {
+                        s2.chars().take(20).collect::<String>().trim().to_string()
+                    }
                 })
                 .unwrap_or_default();
             if !title.is_empty() { items.push((title, meta)); }
@@ -4111,6 +4123,39 @@ async fn api_metrics(state: web::Data<DaemonState>) -> impl Responder {
                 let raw_val = m.value.trim_end_matches(|c: char| !c.is_ascii_digit() && c != '.' && c != '-');
                 if let Ok(v) = raw_val.parse::<f64>() {
                     push(&mut out, format!("ttlcd_metrics_source_value{{label=\"{}\"}} {}", label_safe, v));
+                }
+            }
+        }
+    }
+
+
+    // RSS feed availability
+    {
+        let ok  = *state.rss_feed_ok.lock().unwrap();
+        let url = state.rss_feed_url.lock().unwrap().clone();
+        if !url.is_empty() {
+            let url_safe = url.replace('"', "'");
+            push(&mut out, "# HELP ttlcd_rss_feed_up 1 if last RSS feed fetch succeeded".into());
+            push(&mut out, "# TYPE ttlcd_rss_feed_up gauge".into());
+            push(&mut out, format!("ttlcd_rss_feed_up{{url=\"{}\"}} {}", url_safe, if ok { 1 } else { 0 }));
+            push(&mut out, "# HELP ttlcd_rss_feed_items_total Number of RSS items in cache".into());
+            push(&mut out, "# TYPE ttlcd_rss_feed_items_total gauge".into());
+            push(&mut out, format!("ttlcd_rss_feed_items_total{{url=\"{}\"}} {}", url_safe,
+                state.rss_feed_items.lock().unwrap().len()));
+        }
+    }
+
+    // Service statuses
+    {
+        let statuses = state.service_statuses.lock().unwrap().clone();
+        if !statuses.is_empty() {
+            push(&mut out, "# HELP ttlcd_service_active 1 if systemd unit is active".into());
+            push(&mut out, "# TYPE ttlcd_service_active gauge".into());
+            for svc in &statuses {
+                let name_safe = svc.name.replace('"', "'");
+                push(&mut out, format!("ttlcd_service_active{{name=\"{}\"}} {}", name_safe, if svc.state == "active" { 1 } else { 0 }));
+                if svc.state == "failed" {
+                    push(&mut out, format!("ttlcd_service_failed{{name=\"{}\"}} 1", name_safe));
                 }
             }
         }
@@ -6537,6 +6582,13 @@ async fn api_docs() -> HttpResponse {
     <tr><td>/api/metrics/source</td><td class="badge-post">POST</td><td>Set source <code>&#123;"url":"…","fields":[&#123;"label":"CPU","path":"cpu_pct","format":"&#123;&#125;%","color":"green"&#125;]&#125;</code></td></tr>
     <tr><td>/api/metrics/source</td><td class="badge-delete">DELETE</td><td>Clear metrics source</td></tr>
     <tr><td>/api/metrics/source/fetch</td><td class="badge-post">POST</td><td>Trigger immediate fetch from metrics source</td></tr>
+    <tr><td>/api/rss</td><td class="badge-get">GET</td><td>Get RSS feed config, cached title and items</td></tr>
+    <tr><td>/api/rss</td><td class="badge-post">POST</td><td>Set feed <code>&#123;"url":"https://…","interval_secs":300,"switch_mode":true&#125;</code></td></tr>
+    <tr><td>/api/rss</td><td class="badge-delete">DELETE</td><td>Clear RSS feed config</td></tr>
+    <tr><td>/api/rss/fetch</td><td class="badge-post">POST</td><td>Trigger immediate fetch of the configured RSS feed</td></tr>
+    <tr><td>/api/services</td><td class="badge-get">GET</td><td>Get service unit list and latest statuses</td></tr>
+    <tr><td>/api/services</td><td class="badge-post">POST</td><td>Set units <code>&#123;"units":["nginx.service","sshd"],"interval_secs":10,"switch_mode":true&#125;</code></td></tr>
+    <tr><td>/api/services</td><td class="badge-delete">DELETE</td><td>Clear service monitor</td></tr>
   </tbody></table>
 
   <h2>Settings</h2>
