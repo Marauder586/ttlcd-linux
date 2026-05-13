@@ -174,6 +174,26 @@ async function fetchStatus() {
     // Return button for transient modes
     returnBtn.style.display = data.can_clear ? '' : 'none';
 
+    // Scheduled notifications badge
+    if (data.pending_scheduled > 0) {
+      currentModeEl.title = `${data.pending_scheduled} scheduled notification(s) pending`;
+    } else {
+      currentModeEl.title = '';
+    }
+
+    // Countdown display in status bar
+    if (data.mode === 'countdown' && data.countdown_remaining_secs != null) {
+      const rem = Math.max(0, data.countdown_remaining_secs);
+      const h = Math.floor(rem / 3600);
+      const m = Math.floor((rem % 3600) / 60);
+      const s = rem % 60;
+      const ts = h > 0
+        ? `${h}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`
+        : `${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`;
+      const lbl = data.countdown_label ? ` "${data.countdown_label}"` : '';
+      currentModeEl.textContent = `countdown ${ts}${lbl}`;
+    }
+
     // Rotation indicator
     updateRotationIndicator(data.rotation_modes ?? [], data.rotation_interval ?? 0, data.mode);
 

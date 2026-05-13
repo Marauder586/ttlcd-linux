@@ -1039,6 +1039,14 @@ mod tests {
         }
         assert_panel_size(&render_cpu_graph());
     }
+
+    #[test]
+    fn test_net_graph_size() {
+        for (rx, tx) in [(1024u64, 512u64), (2048, 1024), (4096, 2048)] {
+            push_net_history(rx, tx);
+        }
+        assert_panel_size(&render_net_graph());
+    }
 }
 
 /// Thermal sensor detail — all available temperature components with color-coded bars.
@@ -1395,6 +1403,127 @@ pub fn render_cpu_graph() -> DynamicImage {
 
     // ── x-axis label ─────────────────────────────────────────────────────
     draw_centered(&mut img, &mono, PxScale::from(14.0), chart_y + chart_h + 6, OVERLAY0, "← 2 min ago                      now →");
+
+    DynamicImage::ImageRgb8(img)
+}
+
+// ─── Network I/O history graph ───────────────────────────────────────────────
+
+static NET_RX_HISTORY: OnceLock<std::sync::Mutex<std::collections::VecDeque<u64>>> = OnceLock::new();
+static NET_TX_HISTORY: OnceLock<std::sync::Mutex<std::collections::VecDeque<u64>>> = OnceLock::new();
+
+fn net_rx_history() -> std::sync::MutexGuard<'static, std::collections::VecDeque<u64>> {
+    NET_RX_HISTORY.get_or_init(|| std::sync::Mutex::new(std::collections::VecDeque::with_capacity(60)))
+        .lock().unwrap()
+}
+fn net_tx_history() -> std::sync::MutexGuard<'static, std::collections::VecDeque<u64>> {
+    NET_TX_HISTORY.get_or_init(|| std::sync::Mutex::new(std::collections::VecDeque::with_capacity(60)))
+        .lock().unwrap()
+}
+
+/// Append one network sample (bytes/second for rx and tx) to history.
+pub fn push_net_history(rx_bps: u64, tx_bps: u64) {
+    let mut rx = net_rx_history();
+    if rx.len() >= 60 { rx.pop_front(); }
+    rx.push_back(rx_bps);
+
+    let mut tx = net_tx_history();
+    if tx.len() >= 60 { tx.pop_front(); }
+    tx.push_back(tx_bps);
+}
+
+fn format_bps(bps: u64) -> String {
+    if bps >= 1_000_000_000 { format!("{:.1}GB/s", bps as f64 / 1_000_000_000.0) }
+    else if bps >= 1_000_000 { format!("{:.1}MB/s", bps as f64 / 1_000_000.0) }
+    else if bps >= 1_000     { format!("{:.1}KB/s", bps as f64 / 1_000.0) }
+    else                     { format!("{bps}B/s") }
+}
+
+/// Full-screen network I/O history graph.
+///
+/// Shows Rx (download) and Tx (upload) rates for the last 60 seconds as
+/// colour-coded area charts. The scale adapts to the peak value.
+pub fn render_net_graph() -> DynamicImage {
+    use sysinfo::Networks;
+    let mut nets = Networks::new_with_refreshed_list();
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    nets.refresh(true);
+
+    let (total_rx, total_tx): (u64, u64) = nets.iter()
+        .fold((0u64, 0u64), |(rx, tx), (_, d)| {
+            (rx + d.received(), tx + d.transmitted())
+        });
+
+    // Convert to bytes/sec (we slept ~500ms)
+    let rx_bps = total_rx * 2;
+    let tx_bps = total_tx * 2;
+    push_net_history(rx_bps, tx_bps);
+
+    let rx_hist: Vec<u64> = net_rx_history().iter().cloned().collect();
+    let tx_hist: Vec<u64> = net_tx_history().iter().cloned().collect();
+
+    let mut img  = blank();
+    let bold = font_bold();
+    let mono = font_mono();
+
+    // Current time
+    let now      = Local::now();
+    let time_str = now.format("%H:%M:%S").to_string();
+    let tw = text_width(&mono, PxScale::from(22.0), &time_str);
+    draw_text_mut(&mut img, OVERLAY0, 480 - 20 - tw, 18, PxScale::from(22.0), &mono, &time_str);
+
+    draw_text_mut(&mut img, OVERLAY0, 20, 18, PxScale::from(19.0), &bold, "NET GRAPH");
+
+    // Current Rx/Tx
+    draw_centered(&mut img, &bold, PxScale::from(38.0), 55,  GREEN, &format!("↓ {}", format_bps(rx_bps)));
+    draw_centered(&mut img, &bold, PxScale::from(38.0), 100, PEACH, &format!("↑ {}", format_bps(tx_bps)));
+
+    // Charts
+    // Upper chart: Rx (y=145..310, 165px)
+    // Lower chart: Tx (y=320..455, 135px)
+    let charts: &[(i32, i32, &[u64], Rgb<u8>, &str)] = &[
+        (145, 160, &rx_hist, GREEN, "Rx"),
+        (315, 135, &tx_hist, PEACH, "Tx"),
+    ];
+
+    for &(cy, ch, hist, color, label) in charts {
+        let peak = hist.iter().cloned().max().unwrap_or(1).max(1);
+
+        // Background
+        draw_filled_rect_mut(&mut img, Rect::at(0, cy).of_size(480, ch as u32), Rgb([20, 20, 32]));
+
+        // Label
+        draw_text_mut(&mut img, color, 4, cy + 2, PxScale::from(14.0), &bold, label);
+        let peak_str = format_bps(peak);
+        draw_text_mut(&mut img, OVERLAY0, 50, cy + 2, PxScale::from(13.0), &mono, &peak_str);
+
+        // Grid line at 50%
+        let mid_y = cy + ch / 2;
+        for x in (0..480i32).step_by(8) {
+            img.put_pixel(x as u32, mid_y as u32, SURFACE0);
+        }
+
+        // Bars
+        let n = hist.len();
+        if n > 0 {
+            let bar_w = 480 / 60;
+            let offset = 60 - n as i32;
+            for (i, &val) in hist.iter().enumerate() {
+                let bar_h = ((ch - 4) as f64 * val as f64 / peak as f64).max(1.0) as i32;
+                let bx    = (offset + i as i32) * bar_w;
+                let by    = cy + ch - bar_h;
+                // Alpha-blend towards color using surface darkness
+                let draw_col = if i == n - 1 { TEXT } else { color };
+                draw_filled_rect_mut(&mut img, Rect::at(bx, by).of_size(bar_w.max(1) as u32, bar_h as u32), draw_col);
+            }
+        }
+
+        // Bottom border
+        draw_filled_rect_mut(&mut img, Rect::at(0, cy + ch).of_size(480, 1), SURFACE0);
+    }
+
+    // x-axis label
+    draw_centered(&mut img, &mono, PxScale::from(12.0), 458, OVERLAY0, "← 60 s ago      now →");
 
     DynamicImage::ImageRgb8(img)
 }

@@ -21,6 +21,7 @@ use ttlcd::{
         render_custom_text, render_sysinfo, render_solid, render_test_card,
         render_temperature, render_memory_detail, render_countdown,
         render_cpu_graph, push_cpu_history,
+        render_net_graph, push_net_history,
         CustomTextPayload,
     },
     encode_for_panel, letterbox_for_panel, Panel, DEFAULT_JPEG_QUALITY, PANEL_HEIGHT, PANEL_WIDTH,
@@ -574,6 +575,7 @@ enum DisplayMode {
     MemoryDetail,
     Countdown,
     CpuGraph,
+    NetGraph,
     Idle,
     CustomImage,
     CustomText,
@@ -583,7 +585,7 @@ enum DisplayMode {
 impl DisplayMode {
     const ALL_NAMES: &'static [&'static str] = &[
         "clock", "clock_sysinfo", "sysinfo", "cpu_detail",
-        "network", "disk_usage", "process_top", "temperature", "memory_detail", "countdown", "cpu_graph", "idle",
+        "network", "disk_usage", "process_top", "temperature", "memory_detail", "countdown", "cpu_graph", "net_graph", "idle",
     ];
 
     fn from_str_name(s: &str) -> Option<Self> {
@@ -599,6 +601,7 @@ impl DisplayMode {
             "memory_detail" => Some(DisplayMode::MemoryDetail),
             "countdown"    => Some(DisplayMode::Countdown),
             "cpu_graph"    => Some(DisplayMode::CpuGraph),
+            "net_graph"    => Some(DisplayMode::NetGraph),
             "idle"          => Some(DisplayMode::Idle),
             "custom_text"   => Some(DisplayMode::CustomText),
             "slideshow"     => Some(DisplayMode::Slideshow),
@@ -619,6 +622,7 @@ impl DisplayMode {
             DisplayMode::MemoryDetail => "memory_detail",
             DisplayMode::Countdown   => "countdown",
             DisplayMode::CpuGraph    => "cpu_graph",
+            DisplayMode::NetGraph    => "net_graph",
             DisplayMode::Idle         => "idle",
             DisplayMode::CustomImage  => "image",
             DisplayMode::CustomText   => "custom_text",
@@ -960,6 +964,7 @@ fn display_loop(panel: Arc<Mutex<Option<Panel>>>, state: DaemonState) {
                 DisplayMode::Temperature  => (render_temperature(),    5),
                 DisplayMode::MemoryDetail => (render_memory_detail(),  4),
                 DisplayMode::CpuGraph     => (render_cpu_graph(),      1),
+                DisplayMode::NetGraph     => (render_net_graph(),      2),
                 DisplayMode::Countdown => {
                     let cd_opt = state.countdown.lock().unwrap().clone();
                     if let Some(cd) = cd_opt {
@@ -985,7 +990,8 @@ fn display_loop(panel: Arc<Mutex<Option<Panel>>>, state: DaemonState) {
             // Update CPU history for the graph mode (on any live frame)
             if matches!(mode, DisplayMode::Clock | DisplayMode::ClockSysinfo | DisplayMode::Sysinfo
                 | DisplayMode::CpuDetail | DisplayMode::Network | DisplayMode::DiskUsage
-                | DisplayMode::ProcessTop | DisplayMode::Temperature | DisplayMode::MemoryDetail) {
+                | DisplayMode::ProcessTop | DisplayMode::Temperature | DisplayMode::MemoryDetail
+                | DisplayMode::NetGraph) {
                 use sysinfo::System;
                 let mut s = System::new();
                 s.refresh_cpu_usage();
@@ -1066,6 +1072,10 @@ struct StatusResponse {
     slideshow_interval:    u64,
     slideshow_current_idx: usize,
     pending_scheduled:    u32,
+    /// Seconds remaining in countdown (None if not in countdown mode).
+    countdown_remaining_secs: Option<i64>,
+    /// Countdown label (None if not in countdown mode).
+    countdown_label: Option<String>,
 }
 
 async fn api_status(state: web::Data<DaemonState>) -> impl Responder {
@@ -1078,6 +1088,20 @@ async fn api_status(state: web::Data<DaemonState>) -> impl Responder {
     let ss_count = state.slideshow_paths.lock().unwrap().len();
     let ss_interval = *state.slideshow_interval.lock().unwrap();
     let ss_idx = *state.slideshow_idx.lock().unwrap();
+    // Countdown remaining
+    let (cd_remaining, cd_label) = {
+        let cd = state.countdown.lock().unwrap().clone();
+        if let Some(c) = cd {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs()).unwrap_or(0);
+            let rem = (c.target_unix as i64) - (now as i64);
+            (Some(rem), Some(c.label))
+        } else {
+            (None, None)
+        }
+    };
+
     HttpResponse::Ok().json(StatusResponse {
         mode,
         version:               env!("CARGO_PKG_VERSION"),
@@ -1093,6 +1117,8 @@ async fn api_status(state: web::Data<DaemonState>) -> impl Responder {
         slideshow_interval:    ss_interval,
         slideshow_current_idx: ss_idx,
         pending_scheduled:     *state.pending_scheduled.lock().unwrap(),
+        countdown_remaining_secs: cd_remaining,
+        countdown_label:          cd_label,
     })
 }
 
@@ -1254,6 +1280,7 @@ async fn api_modes_list() -> impl Responder {
         ModeInfo { name: "memory_detail", description: "Detailed RAM breakdown: used, cached, free, swap" },
         ModeInfo { name: "countdown",    description: "Countdown timer with colour transitions and progress bar" },
         ModeInfo { name: "cpu_graph",    description: "CPU usage history bar chart (last 2 minutes)" },
+        ModeInfo { name: "net_graph",    description: "Network Rx/Tx I/O history chart (last 60 seconds)" },
         ModeInfo { name: "idle",          description: "Keepalive — no display update, prevents blank" },
     ])
 }
