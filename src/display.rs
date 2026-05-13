@@ -1432,6 +1432,50 @@ line 8";
         assert_panel_size(&render_cpu_freq());
     }
 
+    #[test]
+    fn test_hostname_ip_size() {
+        assert_panel_size(&render_hostname_ip());
+    }
+
+    #[test]
+    fn test_rss_feed_empty_size() {
+        let img = render_rss_feed("TEST FEED", &[], true);
+        assert_panel_size(&img);
+    }
+
+    #[test]
+    fn test_rss_feed_items() {
+        let items = vec![
+            ("Headline one".to_string(), "14 May 2026".to_string()),
+            ("Another headline that is quite long indeed".to_string(), "author".to_string()),
+        ];
+        let img = render_rss_feed("My Feed", &items, true);
+        assert_panel_size(&img);
+    }
+
+    #[test]
+    fn test_rss_feed_error_state() {
+        let img = render_rss_feed("Offline Feed", &[], false);
+        assert_panel_size(&img);
+    }
+
+    #[test]
+    fn test_service_status_empty() {
+        let img = render_service_status(&[]);
+        assert_panel_size(&img);
+    }
+
+    #[test]
+    fn test_service_status_units() {
+        let units = vec![
+            ServiceStatus { name: "nginx.service".to_string(), state: "active".to_string(), sub: "running".to_string() },
+            ServiceStatus { name: "sshd.service".to_string(), state: "inactive".to_string(), sub: "dead".to_string() },
+            ServiceStatus { name: "bad.service".to_string(), state: "failed".to_string(), sub: "failed".to_string() },
+        ];
+        let img = render_service_status(&units);
+        assert_panel_size(&img);
+    }
+
 }
 
 /// Thermal sensor detail — all available temperature components with color-coded bars.
@@ -3713,7 +3757,7 @@ pub fn render_ping_monitor(results: &[PingResult]) -> DynamicImage {
 
 /// Render a four-quadrant overview dashboard:
 ///
-/// ```
+/// ```text
 /// ┌─────────────────┬─────────────────┐
 /// │  CLOCK + DATE   │  CPU / MEM      │
 /// │                 │                 │
@@ -4128,3 +4172,328 @@ pub fn render_cpu_freq() -> DynamicImage {
 
     DynamicImage::ImageRgb8(img)
 }
+
+// ─── Hostname & IP display ────────────────────────────────────────────────────
+
+/// Read all non-loopback IPv4/IPv6 addresses for all interfaces.
+fn read_host_addrs() -> Vec<(String, Vec<String>)> {
+    // Read from /proc/net/fib_trie for IPv4 and /proc/net/if_inet6 for IPv6.
+    // Returns Vec<(ifname, Vec<addr_string>)>
+    let mut result: std::collections::BTreeMap<String, Vec<String>> = std::collections::BTreeMap::new();
+
+    // IPv4: /proc/net/fib_trie
+    // Alternatively, parse /proc/net/if_inet6 for IPv6, and /proc/net/dev for interface names.
+    // Simplest reliable approach: read /sys/class/net/ for interface names, then
+    // read /proc/net/fib_trie for LOCAL entries and correlate.
+    // Actually use a simpler approach: iterate /proc/net/arp entries + parse /proc/net/fib_trie
+
+    // Read IPv4 addresses from /proc/net/fib_trie
+    // Format we care about: lines after "  LOCAL" that contain the address
+    if let Ok(_content) = std::fs::read_to_string("/proc/net/fib_trie") {
+        // Parse fib_trie: look for "<ifname>" lines in fib_triestat or use another approach
+        // Simplest: use ip addresses from /proc/net/if_inet6 for v6 and
+        // parse /proc/net/dev for interface list, then read each interface address
+    }
+
+    // Use /sys/class/net for interface names
+    if let Ok(entries) = std::fs::read_dir("/sys/class/net") {
+        for entry in entries.flatten() {
+            let ifname = entry.file_name().to_string_lossy().to_string();
+            if ifname == "lo" { continue; }
+            let mut addrs = Vec::new();
+
+            // IPv4: read from /proc/net/fib_trie — find LOCAL entries
+            // Then match via /proc/net/fib_triestat which interface they belong to
+            // Alternative simpler: run `ip addr show <ifname>` — but that requires a subprocess
+
+            // Best no-subprocess approach: read /proc/net/if_inet6 (IPv6) and correlate index with
+            // /sys/class/net/<if>/ifindex, then for IPv4 read /proc/net/fib_trie
+
+            // IPv6
+            if let Ok(v6data) = std::fs::read_to_string("/proc/net/if_inet6") {
+                // Format: addr(32 hex) ifindex prefix_len scope flags ifname
+                for line in v6data.lines() {
+                    let parts: Vec<&str> = line.split_whitespace().collect();
+                    if parts.len() >= 6 && parts[5] == ifname {
+                        let hex = parts[0];
+                        // Skip link-local (fe80) and loopback
+                        if hex.starts_with("fe80") || hex.starts_with("0000") { continue; }
+                        // Format as IPv6 with colons
+                        let groups: Vec<String> = (0..8)
+                            .map(|i| hex[i*4..(i+1)*4].to_string())
+                            .collect();
+                        let v6_str = groups.join(":");
+                        // prefix length
+                        let prefix = u8::from_str_radix(parts[2], 16).unwrap_or(0);
+                        addrs.push(format!("{}/{}", v6_str, prefix));
+                    }
+                }
+            }
+
+            if !addrs.is_empty() || {
+                // Check if interface is up
+                let flags_path = format!("/sys/class/net/{}/flags", ifname);
+                std::fs::read_to_string(&flags_path)
+                    .ok()
+                    .and_then(|s| u32::from_str_radix(s.trim().trim_start_matches("0x"), 16).ok())
+                    .map(|f| f & 1 != 0) // IFF_UP
+                    .unwrap_or(false)
+            } {
+                result.entry(ifname.clone()).or_default().extend(addrs);
+            }
+        }
+    }
+
+    // IPv4: parse /proc/net/fib_trie for LOCAL host entries
+    // Then determine interface from /proc/net/fib_triestat is complex.
+    // Use simpler: read each interface's ipv4 addr from a subprocess-free method.
+    // Scan /proc/net/fib_trie for LEAF + LOCAL addresses:
+    //   - each leaf has lines like "  +-- <ip> <prefix>" and then children
+    //   - LOCAL entries appear under each interface's subtree
+    // This is complex to parse correctly. Instead, use /proc/net/dev to list interfaces,
+    // then use SIOCGIFADDR via FFI — too complex.
+    // Simplest robust approach: run "ip -o -4 addr" as subprocess.
+    if let Ok(out) = std::process::Command::new("ip")
+        .args(["-o", "-4", "addr", "show"])
+        .output()
+    {
+        let text = String::from_utf8_lossy(&out.stdout);
+        for line in text.lines() {
+            // Format: <idx>: <ifname>    inet <addr>/<prefix> brd <brd> scope ...
+            let parts: Vec<&str> = line.split_whitespace().collect();
+            if parts.len() >= 4 && parts[2] == "inet" {
+                let ifname = parts[1].trim_end_matches(':').to_string();
+                let addr = parts[3]; // "addr/prefix"
+                if ifname != "lo" {
+                    result.entry(ifname).or_default().push(addr.to_string());
+                }
+            }
+        }
+    }
+
+    result.into_iter().collect()
+}
+
+/// Render hostname and all network IP addresses — useful for quick machine identification.
+pub fn render_hostname_ip() -> DynamicImage {
+    let mut img = blank();
+    let bold = font_bold();
+    let mono = font_mono();
+
+    // Title bar
+    draw_filled_rect_mut(&mut img, Rect::at(0, 0).of_size(480, 56), SURFACE0);
+    draw_centered(&mut img, &bold, PxScale::from(26.0), 14, BLUE, "MACHINE ID");
+
+    // Hostname
+    let hostname = std::fs::read_to_string("/proc/sys/kernel/hostname")
+        .unwrap_or_else(|_| "unknown".to_string());
+    let hostname = hostname.trim();
+
+    // Draw big hostname
+    let host_scale = if hostname.len() <= 16 { 38.0 } else if hostname.len() <= 24 { 28.0 } else { 22.0 };
+    draw_centered(&mut img, &bold, PxScale::from(host_scale), 68, TEXT, hostname);
+
+    // Divider
+    draw_divider(&mut img, 116);
+
+    // Network interfaces
+    let ifaces = read_host_addrs();
+    let row_h = 42i32;
+    let mut y = 122i32;
+    let max_rows = 8;
+    let mut count = 0;
+
+    if ifaces.is_empty() {
+        draw_centered(&mut img, &mono, PxScale::from(18.0), y, OVERLAY0, "no network interfaces");
+    }
+
+    for (ifname, addrs) in &ifaces {
+        if count >= max_rows { break; }
+
+        // Interface name pill background
+        let pill_w = 120i32;
+        draw_filled_rect_mut(&mut img, Rect::at(12, y).of_size(pill_w as u32, 28), SURFACE0);
+        draw_text_mut(&mut img, TEAL, 18, y + 5, PxScale::from(16.0), &mono, ifname);
+
+        // Addresses
+        let mut addr_y = y;
+        if addrs.is_empty() {
+            draw_text_mut(&mut img, OVERLAY0, pill_w + 22, addr_y + 5, PxScale::from(15.0), &mono, "(no addr)");
+        }
+        for addr in addrs {
+            if count >= max_rows { break; }
+            let color = if addr.contains(':') { MAUVE } else { GREEN };
+            draw_text_mut(&mut img, color, pill_w + 22, addr_y + 5, PxScale::from(15.0), &mono, addr);
+            addr_y += row_h / 2;
+            count += 1;
+        }
+
+        y += row_h.max(addr_y - y + 8);
+        count += 1;
+    }
+
+    // Footer: uptime
+    let uptime_secs = std::fs::read_to_string("/proc/uptime")
+        .ok()
+        .and_then(|s| s.split_whitespace().next().and_then(|v| v.parse::<f64>().ok()))
+        .unwrap_or(0.0) as u64;
+    let d = uptime_secs / 86400;
+    let h = (uptime_secs % 86400) / 3600;
+    let m = (uptime_secs % 3600) / 60;
+    let uptime_str = if d > 0 {
+        format!("up {}d {:02}h {:02}m", d, h, m)
+    } else if h > 0 {
+        format!("up {}h {:02}m", h, m)
+    } else {
+        format!("up {}m", m)
+    };
+    draw_divider(&mut img, 452);
+    draw_centered(&mut img, &mono, PxScale::from(16.0), 456, SUBTEXT, &uptime_str);
+
+    DynamicImage::ImageRgb8(img)
+}
+
+// ─── RSS / Atom headline feed ─────────────────────────────────────────────────
+
+/// Render a list of RSS headlines.
+/// `feed_title`: channel/feed title
+/// `items`: Vec<(title, pub_date_or_author)>
+/// `ok`: false = error state (feed unavailable)
+pub fn render_rss_feed(feed_title: &str, items: &[(String, String)], ok: bool) -> DynamicImage {
+    let mut img = blank();
+    let bold = font_bold();
+    let mono = font_mono();
+
+    // Header
+    let header_color = if ok { BLUE } else { RED };
+    draw_filled_rect_mut(&mut img, Rect::at(0, 0).of_size(480, 52), SURFACE0);
+    let title_display = if feed_title.is_empty() { "RSS FEED" } else { feed_title };
+    let title_scale = if title_display.len() <= 20 { 22.0f32 } else { 16.0 };
+    draw_centered(&mut img, &bold, PxScale::from(title_scale), 7, header_color, title_display);
+    let status_str = if ok { "● LIVE" } else { "✕ OFFLINE" };
+    draw_centered(&mut img, &mono, PxScale::from(14.0), 32, if ok { GREEN } else { RED }, status_str);
+
+    if items.is_empty() {
+        draw_centered(&mut img, &mono, PxScale::from(18.0), 220, OVERLAY0,
+            if ok { "no items" } else { "feed unavailable" });
+        return DynamicImage::ImageRgb8(img);
+    }
+
+    // Draw items
+    const ITEM_H: i32 = 68;
+    const MAX_ITEMS: usize = 6;
+    let colors = [BLUE, MAUVE, GREEN, TEAL, PEACH, YELLOW];
+
+    for (idx, (title, meta)) in items.iter().take(MAX_ITEMS).enumerate() {
+        let y = 56 + idx as i32 * ITEM_H;
+        let accent = colors[idx % colors.len()];
+
+        // Left accent bar
+        draw_filled_rect_mut(&mut img, Rect::at(0, y).of_size(4, ITEM_H as u32 - 2), accent);
+
+        // Divider between items
+        if idx > 0 {
+            draw_filled_rect_mut(&mut img, Rect::at(4, y - 1).of_size(476, 1), SURFACE0);
+        }
+
+        // Title — word-wrapped to ~44 chars across 2 lines
+        let title_clean: String = title.chars().take(88).collect();
+        let (line1, line2) = if title_clean.len() <= 44 {
+            (title_clean.as_str(), "")
+        } else {
+            // find last space before char 44
+            let break_at = title_clean[..44].rfind(' ').unwrap_or(44);
+            (&title_clean[..break_at], title_clean[break_at..].trim_start())
+        };
+        draw_text_mut(&mut img, TEXT, 10, y + 4, PxScale::from(16.0), &bold, line1);
+        if !line2.is_empty() {
+            let line2_trim: String = line2.chars().take(44).collect();
+            draw_text_mut(&mut img, SUBTEXT, 10, y + 22, PxScale::from(15.0), &mono, &line2_trim);
+        }
+
+        // Meta (date/author)
+        if !meta.is_empty() {
+            let meta_short: String = meta.chars().take(40).collect();
+            draw_text_mut(&mut img, OVERLAY0, 10, y + ITEM_H - 18, PxScale::from(13.0), &mono, &meta_short);
+        }
+    }
+
+    DynamicImage::ImageRgb8(img)
+}
+
+// ─── Systemd / service status ─────────────────────────────────────────────────
+
+/// A snapshot of one systemd unit.
+#[derive(Clone, Debug)]
+pub struct ServiceStatus {
+    pub name:    String,
+    pub state:   String,   // "active", "inactive", "failed", ...
+    pub sub:     String,   // "running", "dead", "exited", ...
+}
+
+/// Render a grid of systemd service statuses.
+pub fn render_service_status(units: &[ServiceStatus]) -> DynamicImage {
+    let mut img = blank();
+    let bold = font_bold();
+    let mono = font_mono();
+
+    // Header
+    draw_filled_rect_mut(&mut img, Rect::at(0, 0).of_size(480, 52), SURFACE0);
+    draw_centered(&mut img, &bold, PxScale::from(24.0), 12, BLUE, "SERVICE STATUS");
+
+    let now_str = Local::now().format("%H:%M:%S").to_string();
+    draw_centered(&mut img, &mono, PxScale::from(13.0), 36, OVERLAY0, &now_str);
+
+    if units.is_empty() {
+        draw_centered(&mut img, &mono, PxScale::from(18.0), 220, OVERLAY0, "no units configured");
+        return DynamicImage::ImageRgb8(img);
+    }
+
+    const ROW_H: i32 = 36;
+    const MAX_ROWS: usize = 11;
+
+    for (idx, svc) in units.iter().take(MAX_ROWS).enumerate() {
+        let y = 54 + idx as i32 * ROW_H;
+
+        // Alternating row background
+        if idx % 2 == 1 {
+            draw_filled_rect_mut(&mut img, Rect::at(0, y).of_size(480, ROW_H as u32), SURFACE0);
+        }
+
+        // Status indicator
+        let (indicator, ind_color) = match svc.state.as_str() {
+            "active"   => ("●", GREEN),
+            "failed"   => ("✖", RED),
+            "inactive" => ("○", OVERLAY0),
+            _          => ("?", YELLOW),
+        };
+        draw_text_mut(&mut img, ind_color, 8, y + 8, PxScale::from(18.0), &bold, indicator);
+
+        // Service name (truncated)
+        let name_short: String = svc.name.trim_end_matches(".service")
+            .chars().take(24).collect();
+        draw_text_mut(&mut img, TEXT, 30, y + 9, PxScale::from(16.0), &mono, &name_short);
+
+        // Sub-state
+        let sub_color = match svc.sub.as_str() {
+            "running" => GREEN,
+            "exited"  => SUBTEXT,
+            "dead"    => OVERLAY0,
+            "failed"  => RED,
+            _         => YELLOW,
+        };
+        let sub_x = 480 - 80;
+        draw_text_mut(&mut img, sub_color, sub_x, y + 9, PxScale::from(15.0), &mono, &svc.sub);
+    }
+
+    // Footer count
+    draw_divider(&mut img, 452);
+    let active_count = units.iter().filter(|u| u.state == "active").count();
+    let failed_count = units.iter().filter(|u| u.state == "failed").count();
+    let summary = format!("{} active  {} failed  {} total",
+        active_count, failed_count, units.len());
+    draw_centered(&mut img, &mono, PxScale::from(14.0), 456, SUBTEXT, &summary);
+
+    DynamicImage::ImageRgb8(img)
+}
+

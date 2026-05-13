@@ -2985,6 +2985,210 @@ async function fetchLogTail() {
   } catch (_) {}
 }
 
+
+// ─── RSS Feed section ─────────────────────────────────────────────────────────
+(function injectRssFeedSection() {
+  if (document.getElementById('rss-url-input')) return;
+  var sec = document.createElement('section');
+  sec.id = 'rss-section';
+  sec.className = 'card';
+  sec.innerHTML = [
+    '<h2>📰 RSS / Atom Feed</h2>',
+    '<p class="card-hint">Display the latest headlines from any RSS or Atom feed URL on the panel.</p>',
+    '<div class="form-row" style="gap:0.5rem;flex-wrap:wrap;align-items:flex-end">',
+    '  <div class="form-group" style="flex:4"><label>Feed URL</label>',
+    '    <input type="url" id="rss-url-input" placeholder="https://feeds.bbci.co.uk/news/rss.xml" style="width:100%"></div>',
+    '  <div class="form-group" style="flex:1"><label>Interval (s)</label>',
+    '    <input type="number" id="rss-interval-input" value="300" min="30" max="86400" style="width:100%"></div>',
+    '</div>',
+    '<div class="form-row" style="gap:0.5rem;margin-top:0.4rem;flex-wrap:wrap">',
+    '  <button id="rss-set-btn"   class="btn-primary"   style="flex:2">Set & Switch to RSS Feed</button>',
+    '  <button id="rss-fetch-btn" class="btn-secondary" style="flex:1">⟳ Fetch Now</button>',
+    '  <button id="rss-clear-btn" class="btn-danger"    style="flex:1">Clear</button>',
+    '</div>',
+    '<div id="rss-status" style="margin-top:0.5rem;font-size:0.82rem;color:var(--overlay0)"></div>',
+    '<ul id="rss-items" style="margin-top:0.5rem;list-style:none;padding:0;font-size:0.82rem;max-height:160px;overflow-y:auto"></ul>',
+  ].join('\n');
+
+  var ltSec = document.getElementById('log-tail-section');
+  if (ltSec && ltSec.nextSibling) {
+    ltSec.parentNode.insertBefore(sec, ltSec.nextSibling);
+  } else {
+    document.querySelector('main').appendChild(sec);
+  }
+
+  async function setRss(switchMode) {
+    var url  = document.getElementById('rss-url-input').value.trim();
+    var secs = parseInt(document.getElementById('rss-interval-input').value, 10) || 300;
+    if (!url) { showToast('Enter a feed URL first', 'alert', 2000); return; }
+    try {
+      await apiJson('POST', '/api/rss', { url, interval_secs: secs, switch_mode: switchMode });
+      showToast(switchMode ? 'RSS feed started' : 'RSS feed configured', 'ok', 2500);
+      setTimeout(fetchRssFeed, 400);
+      if (switchMode) fetchStatus();
+    } catch (e) { showToast('Error: ' + e.message, 'alert', 3000); }
+  }
+
+  document.getElementById('rss-set-btn').addEventListener('click',   () => setRss(true));
+  document.getElementById('rss-fetch-btn').addEventListener('click', async function() {
+    try {
+      await api('POST', '/api/rss/fetch');
+      showToast('RSS feed fetched', 'ok', 2000);
+      setTimeout(fetchRssFeed, 400);
+    } catch (e) { showToast('Fetch error: ' + e.message, 'alert', 3000); }
+  });
+  document.getElementById('rss-clear-btn').addEventListener('click', async function() {
+    try {
+      await api('DELETE', '/api/rss');
+      document.getElementById('rss-status').textContent = 'Cleared.';
+      document.getElementById('rss-items').innerHTML = '';
+      fetchStatus();
+      showToast('RSS feed cleared', 'ok', 2000);
+    } catch (e) { showToast('Error: ' + e.message, 'alert', 3000); }
+  });
+})();
+
+async function fetchRssFeed() {
+  try {
+    var d = await apiJson('GET', '/api/rss');
+    var status = document.getElementById('rss-status');
+    var items  = document.getElementById('rss-items');
+    if (!status || !items) return;
+
+    if (!d.url) {
+      status.textContent = 'No feed configured.';
+      items.innerHTML = '';
+      return;
+    }
+
+    var okText  = d.ok ? '✓ live'    : '✗ unavailable';
+    var okColor = d.ok ? 'var(--green)' : 'var(--red)';
+    status.innerHTML = '<span style="color:' + okColor + '">' + okText + '</span>'
+      + ' &mdash; <a href="' + escHtml(d.url) + '" target="_blank" rel="noopener" style="color:var(--blue)">'
+      + escHtml(d.title || d.url) + '</a>'
+      + ' (' + (d.items ? d.items.length : 0) + ' items)';
+
+    // Update inputs if empty
+    var urlInput = document.getElementById('rss-url-input');
+    if (!urlInput.value) urlInput.value = d.url;
+
+    if (d.items && d.items.length) {
+      items.innerHTML = d.items.slice(0,6).map(function(item) {
+        return '<li style="padding:0.25rem 0;border-bottom:1px solid var(--surface0)">'
+          + '<span style="color:var(--text)">' + escHtml(item[0]) + '</span>'
+          + (item[1] ? ' <span style="color:var(--overlay0);font-size:0.75rem">' + escHtml(item[1]) + '</span>' : '')
+          + '</li>';
+      }).join('');
+    } else {
+      items.innerHTML = '<li style="color:var(--overlay0)">' + (d.ok ? '(no items yet)' : '(feed unavailable)') + '</li>';
+    }
+  } catch (_) {}
+}
+
+// ─── Service Status section ───────────────────────────────────────────────────
+(function injectServiceStatusSection() {
+  if (document.getElementById('svc-units-input')) return;
+  var sec = document.createElement('section');
+  sec.id = 'service-section';
+  sec.className = 'card';
+  sec.innerHTML = [
+    '<h2>⚙ Service Status Monitor</h2>',
+    '<p class="card-hint">Watch systemd unit states on the panel. Enter unit names (one per line or comma-separated).</p>',
+    '<div class="form-row" style="gap:0.5rem;flex-wrap:wrap;align-items:flex-end">',
+    '  <div class="form-group" style="flex:3"><label>Units <span class="hint-inline">(e.g. nginx.service, sshd)</span></label>',
+    '    <textarea id="svc-units-input" rows="3" placeholder="nginx.service&#10;sshd.service&#10;postgresql.service" style="width:100%;resize:vertical;background:var(--surface0);color:var(--text);border:1px solid var(--overlay0);border-radius:4px;padding:0.4rem"></textarea></div>',
+    '  <div class="form-group" style="flex:1"><label>Poll interval (s)</label>',
+    '    <input type="number" id="svc-interval-input" value="10" min="5" max="3600" style="width:100%"></div>',
+    '</div>',
+    '<div class="form-row" style="gap:0.5rem;margin-top:0.4rem;flex-wrap:wrap">',
+    '  <button id="svc-set-btn"   class="btn-primary"   style="flex:2">Set & Switch to Services</button>',
+    '  <button id="svc-apply-btn" class="btn-secondary" style="flex:1">Apply (no switch)</button>',
+    '  <button id="svc-clear-btn" class="btn-danger"    style="flex:1">Clear</button>',
+    '</div>',
+    '<div id="svc-status" style="margin-top:0.5rem;font-size:0.82rem;color:var(--overlay0)"></div>',
+    '<table id="svc-table" style="margin-top:0.5rem;width:100%;font-size:0.82rem;border-collapse:collapse"></table>',
+  ].join('\n');
+
+  var rssSec = document.getElementById('rss-section');
+  if (rssSec && rssSec.nextSibling) {
+    rssSec.parentNode.insertBefore(sec, rssSec.nextSibling);
+  } else {
+    document.querySelector('main').appendChild(sec);
+  }
+
+  function parseUnits(raw) {
+    return raw.split(/[\n,]+/).map(s => s.trim()).filter(Boolean);
+  }
+
+  async function setServices(switchMode) {
+    var raw   = document.getElementById('svc-units-input').value;
+    var units = parseUnits(raw);
+    var secs  = parseInt(document.getElementById('svc-interval-input').value, 10) || 10;
+    if (!units.length) { showToast('Enter at least one unit name', 'alert', 2000); return; }
+    try {
+      await apiJson('POST', '/api/services', { units, interval_secs: secs, switch_mode: switchMode });
+      showToast(switchMode ? 'Services monitor started' : 'Services configured', 'ok', 2500);
+      setTimeout(fetchServices, 400);
+      if (switchMode) fetchStatus();
+    } catch (e) { showToast('Error: ' + e.message, 'alert', 3000); }
+  }
+
+  document.getElementById('svc-set-btn').addEventListener('click',   () => setServices(true));
+  document.getElementById('svc-apply-btn').addEventListener('click', () => setServices(false));
+  document.getElementById('svc-clear-btn').addEventListener('click', async function() {
+    try {
+      await api('DELETE', '/api/services');
+      document.getElementById('svc-status').textContent = 'Cleared.';
+      document.getElementById('svc-table').innerHTML = '';
+      fetchStatus();
+      showToast('Services cleared', 'ok', 2000);
+    } catch (e) { showToast('Error: ' + e.message, 'alert', 3000); }
+  });
+})();
+
+async function fetchServices() {
+  try {
+    var d = await apiJson('GET', '/api/services');
+    var status = document.getElementById('svc-status');
+    var table  = document.getElementById('svc-table');
+    if (!status || !table) return;
+
+    if (!d.units || !d.units.length) {
+      status.textContent = 'No units configured.';
+      table.innerHTML = '';
+      return;
+    }
+
+    var active  = d.statuses.filter(s => s.state === 'active').length;
+    var failed  = d.statuses.filter(s => s.state === 'failed').length;
+    status.innerHTML = '<span style="color:var(--green)">' + active + ' active</span>'
+      + '  <span style="color:var(--red)">' + failed + ' failed</span>'
+      + '  of ' + d.units.length + ' units'
+      + ' (poll every ' + d.interval + 's)';
+
+    // Update textarea if empty
+    var ta = document.getElementById('svc-units-input');
+    if (!ta.value && d.units.length) ta.value = d.units.join('\n');
+
+    var stateColor = {active:'var(--green)',inactive:'var(--overlay0)',failed:'var(--red)'};
+    var stateIcon  = {active:'●',inactive:'○',failed:'✖'};
+    table.innerHTML = '<tr style="border-bottom:1px solid var(--surface0)">'
+      + '<th style="text-align:left;padding:0.2rem 0.3rem;color:var(--overlay0)">Unit</th>'
+      + '<th style="text-align:left;padding:0.2rem 0.3rem;color:var(--overlay0)">State</th>'
+      + '<th style="text-align:left;padding:0.2rem 0.3rem;color:var(--overlay0)">Sub</th>'
+      + '</tr>'
+      + (d.statuses || []).map(function(s) {
+          var c = stateColor[s.state] || 'var(--yellow)';
+          var ic = stateIcon[s.state] || '?';
+          return '<tr style="border-bottom:1px solid var(--surface0)">'
+            + '<td style="padding:0.2rem 0.3rem;color:var(--text)">' + escHtml(s.name.replace(/\.service$/, '')) + '</td>'
+            + '<td style="padding:0.2rem 0.3rem;color:' + c + '">' + ic + ' ' + escHtml(s.state) + '</td>'
+            + '<td style="padding:0.2rem 0.3rem;color:var(--subtext1)">' + escHtml(s.sub) + '</td>'
+            + '</tr>';
+        }).join('');
+  } catch (_) {}
+}
+
 // ─── Keyboard shortcuts ───────────────────────────────────────────────────────
 document.addEventListener('keydown', e => {
   // Don't fire shortcuts when typing in a text input
@@ -3037,6 +3241,15 @@ document.addEventListener('keydown', e => {
           showToast('Pomodoro phase skipped', 'ok', 2000);
         } catch (_) {}
       })();
+      break;
+    case 'I':  // Shift+I = Hostname/IP
+      api('POST', '/api/mode', { mode: 'hostname_ip' }).then(() => fetchStatus()).catch(() => {});
+      break;
+    case 'R':  // Shift+R = RSS Feed
+      api('POST', '/api/mode', { mode: 'rss_feed' }).then(() => fetchStatus()).catch(() => {});
+      break;
+    case 'V':  // Shift+V = Services
+      api('POST', '/api/mode', { mode: 'service_status' }).then(() => fetchStatus()).catch(() => {});
       break;
     case 'Escape':
       if (returnBtn.style.display !== 'none') returnBtn.click();
@@ -3141,6 +3354,8 @@ function startPolling() {
   fetchShellCmd();
   fetchPing();
   fetchLogTail();
+  fetchRssFeed();
+  fetchServices();
 
   statusPollTimer  = setInterval(fetchStatus,    3000);
   snapshotTimer    = setInterval(fetchSnapshot,  5000);
@@ -3152,7 +3367,9 @@ function startPolling() {
   setInterval(fetchShellCmd,      8000);
   setInterval(fetchHttpStatus,    35000);
   setInterval(fetchPing,          15000);
-  setInterval(fetchLogTail,        8000);
+  setInterval(fetchLogTail,  8000);
+  setInterval(fetchRssFeed, 30000);
+  setInterval(fetchServices, 15000);
 }
 
 // ─── Boot ─────────────────────────────────────────────────────────────────────

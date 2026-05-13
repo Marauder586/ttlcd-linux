@@ -46,6 +46,9 @@ use ttlcd::{
         render_dashboard,
         render_cpu_freq,
         render_log_tail,
+        render_hostname_ip,
+        render_rss_feed,
+        render_service_status,
         HttpMonitorResult,
         PingResult,
         Metric,
@@ -728,6 +731,9 @@ enum DisplayMode {
     Dashboard,
     LogTail,
     CpuFreq,
+    HostnameIp,
+    RssFeed,
+    ServiceStatus,
     Idle,
     CustomImage,
     CustomText,
@@ -737,7 +743,7 @@ enum DisplayMode {
 impl DisplayMode {
     const ALL_NAMES: &'static [&'static str] = &[
         "clock", "big_clock", "clock_sysinfo", "sysinfo", "cpu_detail",
-        "network", "disk_usage", "process_top", "temperature", "memory_detail", "countdown", "cpu_graph", "net_graph", "recent_alerts", "process_memory", "disk_io", "calendar", "stopwatch", "metrics", "weather", "notes", "qr_code", "pomodoro", "battery", "world_clock", "ticker", "http_status", "shell_cmd", "ping_monitor", "dashboard", "log_tail", "cpu_freq", "idle",
+        "network", "disk_usage", "process_top", "temperature", "memory_detail", "countdown", "cpu_graph", "net_graph", "recent_alerts", "process_memory", "disk_io", "calendar", "stopwatch", "metrics", "weather", "notes", "qr_code", "pomodoro", "battery", "world_clock", "ticker", "http_status", "shell_cmd", "ping_monitor", "dashboard", "log_tail", "cpu_freq", "hostname_ip", "rss_feed", "service_status", "idle",
     ];
 
     fn from_str_name(s: &str) -> Option<Self> {
@@ -774,6 +780,9 @@ impl DisplayMode {
             "dashboard"       => Some(DisplayMode::Dashboard),
             "log_tail"        => Some(DisplayMode::LogTail),
             "cpu_freq"        => Some(DisplayMode::CpuFreq),
+            "hostname_ip"     => Some(DisplayMode::HostnameIp),
+            "rss_feed"        => Some(DisplayMode::RssFeed),
+            "service_status"  => Some(DisplayMode::ServiceStatus),
             "idle"            => Some(DisplayMode::Idle),
             "custom_text"   => Some(DisplayMode::CustomText),
             "slideshow"     => Some(DisplayMode::Slideshow),
@@ -815,6 +824,9 @@ impl DisplayMode {
             DisplayMode::Dashboard     => "dashboard",
             DisplayMode::LogTail       => "log_tail",
             DisplayMode::CpuFreq       => "cpu_freq",
+            DisplayMode::HostnameIp    => "hostname_ip",
+            DisplayMode::RssFeed       => "rss_feed",
+            DisplayMode::ServiceStatus => "service_status",
             DisplayMode::Idle          => "idle",
             DisplayMode::CustomImage  => "image",
             DisplayMode::CustomText   => "custom_text",
@@ -1028,6 +1040,21 @@ struct DaemonState {
     log_tail_interval: Arc<Mutex<u64>>,
     /// Whether the last read succeeded.
     log_tail_ok:       Arc<Mutex<bool>>,
+    /// RSS feed: title and items (title, meta).
+    rss_feed_title:    Arc<Mutex<String>>,
+    rss_feed_items:    Arc<Mutex<Vec<(String, String)>>>,
+    /// Whether the last RSS fetch succeeded.
+    rss_feed_ok:       Arc<Mutex<bool>>,
+    /// RSS feed URL (empty = not configured).
+    rss_feed_url:      Arc<Mutex<String>>,
+    /// Seconds between RSS re-fetches (0 = manual only).
+    rss_feed_interval: Arc<Mutex<u64>>,
+    /// Systemd units to watch (service names).
+    service_units:     Arc<Mutex<Vec<String>>>,
+    /// Cached service status snapshots.
+    service_statuses:  Arc<Mutex<Vec<ttlcd::display::ServiceStatus>>>,
+    /// Seconds between service status polls (minimum 5).
+    service_poll_interval: Arc<Mutex<u64>>,
 }
 
 /// A single entry in the display-mode schedule.
@@ -1153,6 +1180,14 @@ struct PersistedNewSettings {
     log_tail_interval: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     metrics_source:    Option<MetricsSource>,
+    #[serde(default)]
+    rss_feed_url:      String,
+    #[serde(default)]
+    rss_feed_interval: u64,
+    #[serde(default)]
+    service_units:     Vec<String>,
+    #[serde(default)]
+    service_poll_interval: u64,
 }
 
 fn new_settings_path() -> Option<PathBuf> {
@@ -1179,6 +1214,10 @@ fn save_new_settings(state: &DaemonState) {
         log_tail_n:        *state.log_tail_n.lock().unwrap(),
         log_tail_interval: *state.log_tail_interval.lock().unwrap(),
         metrics_source:    state.metrics_source.lock().unwrap().clone(),
+        rss_feed_url:      state.rss_feed_url.lock().unwrap().clone(),
+        rss_feed_interval: *state.rss_feed_interval.lock().unwrap(),
+        service_units:     state.service_units.lock().unwrap().clone(),
+        service_poll_interval: *state.service_poll_interval.lock().unwrap(),
     };
     if let Ok(text) = serde_json::to_string_pretty(&s) {
         let _ = std::fs::write(&path, text);
@@ -1424,6 +1463,14 @@ async fn run_daemon(
         log_tail_n:        Arc::new(Mutex::new(16)),
         log_tail_interval: Arc::new(Mutex::new(3)),
         log_tail_ok:       Arc::new(Mutex::new(false)),
+        rss_feed_title:    Arc::new(Mutex::new(String::new())),
+        rss_feed_items:    Arc::new(Mutex::new(Vec::new())),
+        rss_feed_ok:       Arc::new(Mutex::new(false)),
+        rss_feed_url:      Arc::new(Mutex::new(String::new())),
+        rss_feed_interval: Arc::new(Mutex::new(300)),
+        service_units:         Arc::new(Mutex::new(Vec::new())),
+        service_statuses:      Arc::new(Mutex::new(Vec::new())),
+        service_poll_interval: Arc::new(Mutex::new(10)),
     };
 
     let panel: Arc<Mutex<Option<Panel>>> = if headless {
@@ -1525,6 +1572,14 @@ async fn run_daemon(
         if let Some(src) = ns.metrics_source {
             *state.metrics_source.lock().unwrap() = Some(src);
         }
+        if !ns.rss_feed_url.is_empty() {
+            *state.rss_feed_url.lock().unwrap()      = ns.rss_feed_url;
+            *state.rss_feed_interval.lock().unwrap() = ns.rss_feed_interval.max(30);
+        }
+        if !ns.service_units.is_empty() {
+            *state.service_units.lock().unwrap()         = ns.service_units;
+            *state.service_poll_interval.lock().unwrap() = ns.service_poll_interval.max(5);
+        }
     }
 
     // ── HTTP health-check background thread ───────────────────────────────
@@ -1561,6 +1616,18 @@ async fn run_daemon(
     {
         let state_lt = state.clone();
         tokio::spawn(async move { log_tail_loop(state_lt).await });
+    }
+
+    // ── RSS feed background thread ────────────────────────────────────────
+    {
+        let state_rss = state.clone();
+        tokio::spawn(async move { rss_feed_loop(state_rss).await });
+    }
+
+    // ── Service status background thread ─────────────────────────────────
+    {
+        let state_svc = state.clone();
+        tokio::spawn(async move { service_status_loop(state_svc).await });
     }
 
     // ── HTTP server ────────────────────────────────────────────────────────
@@ -1767,6 +1834,15 @@ async fn run_daemon(
             .route("/api/log_tail",                 web::get().to(api_get_log_tail))
             .route("/api/log_tail",                 web::post().to(api_set_log_tail))
             .route("/api/log_tail",                 web::delete().to(api_clear_log_tail))
+            // RSS feed
+            .route("/api/rss",                      web::get().to(api_get_rss))
+            .route("/api/rss",                      web::post().to(api_set_rss))
+            .route("/api/rss",                      web::delete().to(api_clear_rss))
+            .route("/api/rss/fetch",                web::post().to(api_fetch_rss))
+            // Service status monitor
+            .route("/api/services",                 web::get().to(api_get_services))
+            .route("/api/services",                 web::post().to(api_set_services))
+            .route("/api/services",                 web::delete().to(api_clear_services))
             // API docs
             .route("/api/docs",           web::get().to(api_docs))
             // Web UI
@@ -2088,6 +2164,17 @@ fn display_loop(panel: Arc<Mutex<Option<Panel>>>, state: DaemonState) {
                     (render_log_tail(&path, &lines, ok), 3)
                 },
                 DisplayMode::CpuFreq => (render_cpu_freq(), 2),
+                DisplayMode::HostnameIp => (render_hostname_ip(), 10),
+                DisplayMode::RssFeed => {
+                    let title = state.rss_feed_title.lock().unwrap().clone();
+                    let items = state.rss_feed_items.lock().unwrap().clone();
+                    let ok    = *state.rss_feed_ok.lock().unwrap();
+                    (render_rss_feed(&title, &items, ok), 30)
+                },
+                DisplayMode::ServiceStatus => {
+                    let units = state.service_statuses.lock().unwrap().clone();
+                    (render_service_status(&units), 5)
+                },
                 DisplayMode::Idle
                 | DisplayMode::CustomImage
                 | DisplayMode::CustomText
@@ -2734,17 +2821,183 @@ fn read_tail_lines(path: &str, n: usize) -> std::io::Result<Vec<String>> {
     }
 
     reader.seek(SeekFrom::Start(start))?;
-    let lines: Vec<String> = std::io::BufReader::new({
-        let mut f = std::fs::File::open(path)?;
-        f.seek(SeekFrom::Start(start))?;
-        f
-    })
-    .lines()
-    .filter_map(|l| l.ok())
-    .filter(|l| !l.is_empty())
-    .collect();
+    let lines: Vec<String> = reader
+        .lines()
+        .filter_map(|l| l.ok())
+        .filter(|l| !l.is_empty())
+        .collect();
 
     Ok(if lines.len() > n { lines[lines.len() - n..].to_vec() } else { lines })
+}
+
+
+// ─── RSS feed background loop ─────────────────────────────────────────────────
+
+/// Parse a simple RSS 2.0 or Atom feed from XML text.
+/// Returns (feed_title, Vec<(item_title, item_date_or_author)>)
+fn parse_rss_xml(xml: &str) -> (String, Vec<(String, String)>) {
+    // Very lightweight XML-free parser using string scanning
+    fn extract_tag<'a>(text: &'a str, tag: &str) -> Option<&'a str> {
+        let open  = format!("<{}>", tag);
+        let close = format!("</{}>", tag);
+        let start = text.find(&open)? + open.len();
+        let end   = text[start..].find(&close)? + start;
+        Some(&text[start..end])
+    }
+    fn extract_cdata(s: &str) -> &str {
+        if let Some(inner) = s.strip_prefix("<![CDATA[") {
+            inner.strip_suffix("]]>").unwrap_or(inner)
+        } else { s }
+    }
+    fn decode_entities(s: &str) -> String {
+        s.replace("&amp;", "&")
+         .replace("&lt;", "<")
+         .replace("&gt;", ">")
+         .replace("&quot;", "\"")
+         .replace("&apos;", "'")
+         .replace("&#39;", "'")
+         .replace("&#x27;", "'")
+    }
+
+    let is_atom = xml.contains("xmlns=\"http://www.w3.org/2005/Atom\"");
+    let mut feed_title = String::new();
+    let mut items: Vec<(String, String)> = Vec::new();
+
+    if is_atom {
+        // Atom: <feed><title>...</title> and <entry><title/><updated/>...
+        if let Some(raw) = extract_tag(xml, "title") {
+            feed_title = decode_entities(extract_cdata(raw));
+        }
+        // Parse <entry> blocks
+        let mut rest = xml;
+        while let Some(entry_start) = rest.find("<entry>") {
+            let after = &rest[entry_start + 7..];
+            let entry_end = after.find("</entry>").unwrap_or(after.len());
+            let block = &after[..entry_end];
+
+            let title = extract_tag(block, "title")
+                .map(|s| decode_entities(extract_cdata(s)))
+                .unwrap_or_default();
+            let meta = extract_tag(block, "updated")
+                .or_else(|| extract_tag(block, "published"))
+                .or_else(|| extract_tag(block, "author"))
+                .map(|s| decode_entities(extract_cdata(s)))
+                .unwrap_or_default();
+            // Shorten ISO date to date only
+            let meta = meta.split('T').next().unwrap_or(&meta).to_string();
+            if !title.is_empty() { items.push((title, meta)); }
+            rest = &after[entry_end..];
+            if rest.len() < 8 { break; }
+        }
+    } else {
+        // RSS 2.0: <channel><title>...</title> and <item>...</item>
+        // Find channel title (first <title> that is not inside an item)
+        if let Some(ch_start) = xml.find("<channel>") {
+            let ch = &xml[ch_start..];
+            if let Some(raw) = extract_tag(ch, "title") {
+                feed_title = decode_entities(extract_cdata(raw));
+            }
+        }
+        let mut rest = xml;
+        while let Some(item_start) = rest.find("<item>") {
+            let after = &rest[item_start + 6..];
+            let item_end = after.find("</item>").unwrap_or(after.len());
+            let block = &after[..item_end];
+
+            let title = extract_tag(block, "title")
+                .map(|s| decode_entities(extract_cdata(s)))
+                .unwrap_or_default();
+            let meta = extract_tag(block, "pubDate")
+                .or_else(|| extract_tag(block, "dc:date"))
+                .or_else(|| extract_tag(block, "author"))
+                .map(|s| {
+                    let s = decode_entities(extract_cdata(s));
+                    // Shorten RFC-2822 date: "Wed, 14 May 2026 12:00:00 +0000" -> "14 May 2026"
+                    // Skip weekday prefix
+                    let s2 = if s.contains(',') {
+                        s.splitn(2, ',').nth(1).unwrap_or(&s).trim().to_string()
+                    } else { s };
+                    // Take up to 11 chars (enough for "14 May 2026")
+                    s2.chars().take(16).collect::<String>().trim().to_string()
+                })
+                .unwrap_or_default();
+            if !title.is_empty() { items.push((title, meta)); }
+            rest = &after[item_end..];
+            if rest.len() < 6 { break; }
+        }
+    }
+
+    (feed_title, items)
+}
+
+/// Fetch the RSS/Atom feed URL and update the cache.
+async fn fetch_rss_feed(state: &DaemonState, url: &str) -> anyhow::Result<()> {
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(15))
+        .user_agent("ttlcd/0.13 rss-reader")
+        .build()?;
+    let text = client.get(url).send().await?.text().await?;
+    let (feed_title, items) = parse_rss_xml(&text);
+    *state.rss_feed_title.lock().unwrap() = if feed_title.is_empty() { "RSS FEED".to_string() } else { feed_title };
+    *state.rss_feed_items.lock().unwrap() = items;
+    *state.rss_feed_ok.lock().unwrap()    = true;
+    Ok(())
+}
+
+/// Background loop: re-fetches the RSS feed at the configured interval.
+async fn rss_feed_loop(state: DaemonState) {
+    loop {
+        let interval_secs = *state.rss_feed_interval.lock().unwrap();
+        tokio::time::sleep(tokio::time::Duration::from_secs(interval_secs.max(30))).await;
+
+        let url = state.rss_feed_url.lock().unwrap().clone();
+        if url.is_empty() { continue; }
+
+        if let Err(e) = fetch_rss_feed(&state, &url).await {
+            log::warn!("rss_feed: fetch error for '{}': {e:#}", url);
+            *state.rss_feed_ok.lock().unwrap() = false;
+        }
+    }
+}
+
+// ─── Service status background loop ──────────────────────────────────────────
+
+/// Query systemd service states via `systemctl show`.
+fn query_service_statuses(units: &[String]) -> Vec<ttlcd::display::ServiceStatus> {
+    units.iter().map(|name| {
+        let out = std::process::Command::new("systemctl")
+            .args(["show", name, "--property=ActiveState,SubState", "--no-pager"])
+            .output();
+        let (state, sub) = if let Ok(o) = out {
+            let text = String::from_utf8_lossy(&o.stdout);
+            let mut st  = String::from("unknown");
+            let mut sub = String::from("unknown");
+            for line in text.lines() {
+                if let Some(v) = line.strip_prefix("ActiveState=") { st  = v.to_string(); }
+                if let Some(v) = line.strip_prefix("SubState=")    { sub = v.to_string(); }
+            }
+            (st, sub)
+        } else {
+            ("unknown".to_string(), "unknown".to_string())
+        };
+        ttlcd::display::ServiceStatus { name: name.clone(), state, sub }
+    }).collect()
+}
+
+/// Background loop: periodically polls systemd unit states.
+async fn service_status_loop(state: DaemonState) {
+    loop {
+        let interval_secs = *state.service_poll_interval.lock().unwrap();
+        tokio::time::sleep(tokio::time::Duration::from_secs(interval_secs.max(5))).await;
+
+        let units: Vec<String> = state.service_units.lock().unwrap().clone();
+        if units.is_empty() { continue; }
+
+        let statuses = tokio::task::spawn_blocking(move || query_service_statuses(&units))
+            .await
+            .unwrap_or_default();
+        *state.service_statuses.lock().unwrap() = statuses;
+    }
 }
 
 /// Background loop: every 30 s, check if a mode schedule entry matches the current time.
@@ -7110,4 +7363,151 @@ async fn api_clear_log_tail(state: web::Data<DaemonState>) -> impl Responder {
     }
     save_new_settings(&state);
     HttpResponse::Ok().body("log tail cleared")
+}
+
+// ─── RSS feed API handlers ────────────────────────────────────────────────────
+
+#[derive(serde::Serialize)]
+struct RssFeedStatus {
+    url:      String,
+    title:    String,
+    ok:       bool,
+    items:    Vec<(String, String)>,
+    interval: u64,
+}
+
+async fn api_get_rss(state: web::Data<DaemonState>) -> impl Responder {
+    HttpResponse::Ok().json(RssFeedStatus {
+        url:      state.rss_feed_url.lock().unwrap().clone(),
+        title:    state.rss_feed_title.lock().unwrap().clone(),
+        ok:       *state.rss_feed_ok.lock().unwrap(),
+        items:    state.rss_feed_items.lock().unwrap().clone(),
+        interval: *state.rss_feed_interval.lock().unwrap(),
+    })
+}
+
+#[derive(serde::Deserialize)]
+struct RssFeedRequest {
+    url:          String,
+    #[serde(default)]
+    interval_secs: u64,
+    #[serde(default)]
+    switch_mode:  bool,
+}
+
+async fn api_set_rss(
+    state: web::Data<DaemonState>,
+    body:  web::Json<RssFeedRequest>,
+) -> impl Responder {
+    if body.url.is_empty() {
+        return HttpResponse::BadRequest().body("url is required");
+    }
+    *state.rss_feed_url.lock().unwrap()      = body.url.clone();
+    *state.rss_feed_interval.lock().unwrap() = body.interval_secs.max(30).min(86400);
+    *state.rss_feed_ok.lock().unwrap()       = false;
+    if body.switch_mode {
+        *state.prev_mode.lock().unwrap() = state.mode.lock().unwrap().clone();
+        *state.mode.lock().unwrap()      = DisplayMode::RssFeed;
+    }
+    save_new_settings(&state);
+    HttpResponse::Ok().body("rss feed configured")
+}
+
+async fn api_clear_rss(state: web::Data<DaemonState>) -> impl Responder {
+    *state.rss_feed_url.lock().unwrap()   = String::new();
+    *state.rss_feed_title.lock().unwrap() = String::new();
+    *state.rss_feed_items.lock().unwrap() = Vec::new();
+    *state.rss_feed_ok.lock().unwrap()    = false;
+    if matches!(*state.mode.lock().unwrap(), DisplayMode::RssFeed) {
+        let prev = state.prev_mode.lock().unwrap().clone();
+        *state.mode.lock().unwrap() = prev;
+    }
+    save_new_settings(&state);
+    HttpResponse::Ok().body("rss feed cleared")
+}
+
+async fn api_fetch_rss(state: web::Data<DaemonState>) -> impl Responder {
+    let url = state.rss_feed_url.lock().unwrap().clone();
+    if url.is_empty() {
+        return HttpResponse::BadRequest().body(
+            r#"no url configured; use POST /api/rss first"#
+        );
+    }
+    match fetch_rss_feed(&state, &url).await {
+        Ok(())   => HttpResponse::Ok().body("rss feed fetched"),
+        Err(e)   => HttpResponse::InternalServerError().body(format!("fetch error: {e:#}")),
+    }
+}
+
+// ─── Service status API handlers ──────────────────────────────────────────────
+
+#[derive(serde::Serialize)]
+struct ServiceStatusResponse {
+    units:    Vec<String>,
+    statuses: Vec<ServiceStatusItem>,
+    interval: u64,
+}
+
+#[derive(serde::Serialize)]
+struct ServiceStatusItem {
+    name:  String,
+    state: String,
+    sub:   String,
+}
+
+async fn api_get_services(state: web::Data<DaemonState>) -> impl Responder {
+    let statuses: Vec<ServiceStatusItem> = state.service_statuses.lock().unwrap()
+        .iter()
+        .map(|s| ServiceStatusItem { name: s.name.clone(), state: s.state.clone(), sub: s.sub.clone() })
+        .collect();
+    HttpResponse::Ok().json(ServiceStatusResponse {
+        units:    state.service_units.lock().unwrap().clone(),
+        statuses,
+        interval: *state.service_poll_interval.lock().unwrap(),
+    })
+}
+
+#[derive(serde::Deserialize)]
+struct ServicesRequest {
+    units:        Vec<String>,
+    #[serde(default)]
+    interval_secs: u64,
+    #[serde(default)]
+    switch_mode:  bool,
+}
+
+async fn api_set_services(
+    state: web::Data<DaemonState>,
+    body:  web::Json<ServicesRequest>,
+) -> impl Responder {
+    if body.units.is_empty() {
+        return HttpResponse::BadRequest().body("units array is required");
+    }
+    *state.service_units.lock().unwrap()         = body.units.clone();
+    *state.service_poll_interval.lock().unwrap() = body.interval_secs.max(5).min(3600);
+
+    // Do an immediate poll
+    let units = body.units.clone();
+    let statuses = tokio::task::spawn_blocking(move || query_service_statuses(&units))
+        .await
+        .unwrap_or_default();
+    *state.service_statuses.lock().unwrap() = statuses;
+
+    if body.switch_mode {
+        *state.prev_mode.lock().unwrap() = state.mode.lock().unwrap().clone();
+        *state.mode.lock().unwrap()      = DisplayMode::ServiceStatus;
+    }
+    save_new_settings(&state);
+    HttpResponse::Ok().body("services configured")
+}
+
+async fn api_clear_services(state: web::Data<DaemonState>) -> impl Responder {
+    *state.service_units.lock().unwrap()    = Vec::new();
+    *state.service_statuses.lock().unwrap() = Vec::new();
+    if matches!(*state.mode.lock().unwrap(), DisplayMode::ServiceStatus) {
+        let prev = state.prev_mode.lock().unwrap().clone();
+        *state.mode.lock().unwrap() = prev;
+    }
+    save_new_settings(&state);
+    HttpResponse::Ok().body("services cleared")
 }

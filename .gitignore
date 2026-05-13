@@ -1,2 +1,9 @@
 /target
 /result
+.direnv/
+.envrc
+*.py
+*.patch
+*.log
+berr.txt
+build_err.txt
