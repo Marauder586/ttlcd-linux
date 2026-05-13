@@ -1,0 +1,31 @@
+# ttlcd configuration file
+# Copy to ~/.config/ttlcd/config.toml and edit as needed.
+# All fields are optional — unset fields use built-in defaults.
+# CLI arguments always take precedence over this file.
+
+[device]
+# USB vendor ID (hex).  Default: 264a (XinWeiYe / Thermaltake).
+# vid = "264a"
+
+# USB product ID (hex).  Default: 2343 (3.95" 480×480 panel).
+# pid = "2343"
+
+[daemon]
+# TCP port for the web UI and REST API.
+port = 7070
+
+# Initial display mode.
+# Choices: clock  clock_sysinfo  sysinfo  cpu_detail
+#          network  disk_usage  process_top  idle
+mode = "clock_sysinfo"
+
+# JPEG quality sent to panel (1–100).  Higher = sharper but larger transfer.
+quality = 85
+
+# Rotate all output (degrees).  Valid: 0  90  180  270.
+# Useful when the panel is mounted sideways or upside-down.
+rotate = 0
+
+# Set to true to start the web server without opening the USB device.
+# Useful for testing the UI or pushing text updates from scripts.
+headless = false

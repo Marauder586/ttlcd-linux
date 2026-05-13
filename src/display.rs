@@ -708,6 +708,121 @@ pub fn render_process_top() -> DynamicImage {
     DynamicImage::ImageRgb8(img)
 }
 
+
+// ─── Custom text display ─────────────────────────────────────────────────────
+
+/// Named colour for [`CustomTextPayload`].
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum NamedColor {
+    #[default]
+    Blue,
+    Green,
+    Yellow,
+    Red,
+    Teal,
+    Mauve,
+    Peach,
+    White,
+}
+
+impl NamedColor {
+    fn to_rgb(&self) -> Rgb<u8> {
+        match self {
+            NamedColor::Blue   => BLUE,
+            NamedColor::Green  => GREEN,
+            NamedColor::Yellow => YELLOW,
+            NamedColor::Red    => RED,
+            NamedColor::Teal   => TEAL,
+            NamedColor::Mauve  => MAUVE,
+            NamedColor::Peach  => PEACH,
+            NamedColor::White  => TEXT,
+        }
+    }
+}
+
+/// Content pushed via `POST /api/text`.
+///
+/// All fields are optional; omitted fields use sensible defaults.
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize, Default)]
+pub struct CustomTextPayload {
+    /// Large title at top of screen.
+    pub title: Option<String>,
+    /// Smaller subtitle line below the title.
+    pub subtitle: Option<String>,
+    /// Up to 8 body lines (shown in monospace).
+    #[serde(default)]
+    pub lines: Vec<String>,
+    /// Progress bar value 0.0–1.0 (absent = no bar).
+    pub progress: Option<f32>,
+    /// Colour for the progress bar and title (default: blue).
+    #[serde(default)]
+    pub color: NamedColor,
+    /// If true, show current time in the top-right corner.
+    #[serde(default = "bool_true")]
+    pub show_time: bool,
+}
+
+fn bool_true() -> bool { true }
+
+/// Render a [`CustomTextPayload`] to a 480×480 frame.
+pub fn render_custom_text(payload: &CustomTextPayload) -> DynamicImage {
+    let mut img = blank();
+    let bold = font_bold();
+    let mono = font_mono();
+
+    let accent = payload.color.to_rgb();
+    let now    = Local::now();
+    let time_s = now.format("%H:%M:%S").to_string();
+
+    let mut y: i32 = 14;
+
+    // ── Timestamp in top-right ─────────────────────────────────────────────
+    if payload.show_time {
+        let tw = text_width(&mono, PxScale::from(22.0), &time_s);
+        draw_text_mut(&mut img, OVERLAY0, 480 - 20 - tw, y, PxScale::from(22.0), &mono, &time_s);
+    }
+
+    // ── Title ──────────────────────────────────────────────────────────────
+    if let Some(title) = &payload.title {
+        let t = if title.len() > 22 { format!("{}…", &title[..21]) } else { title.clone() };
+        draw_centered(&mut img, &bold, PxScale::from(34.0), y, accent, &t);
+        y += 42;
+    } else {
+        y += 14;
+    }
+
+    // ── Subtitle ───────────────────────────────────────────────────────────
+    if let Some(sub) = &payload.subtitle {
+        let s = if sub.len() > 38 { format!("{}…", &sub[..37]) } else { sub.clone() };
+        draw_centered(&mut img, &bold, PxScale::from(20.0), y, SUBTEXT, &s);
+        y += 26;
+    }
+
+    draw_divider(&mut img, y); y += 12;
+
+    // ── Body lines ─────────────────────────────────────────────────────────
+    let line_scale = PxScale::from(20.0);
+    for line in payload.lines.iter().take(10) {
+        if y > 420 { break; }
+        let l = if line.len() > 38 { format!("{}…", &line[..37]) } else { line.clone() };
+        draw_text_mut(&mut img, TEXT, 20, y, line_scale, &mono, &l);
+        y += 26;
+    }
+
+    // ── Progress bar ───────────────────────────────────────────────────────
+    if let Some(pct) = payload.progress {
+        let pct = pct.clamp(0.0, 1.0);
+        let bar_y = 420i32;
+        draw_bar(&mut img, 20, bar_y, 400, 22, pct, accent);
+        let pct_s = format!("{:.0}%", pct * 100.0);
+        let pw = text_width(&mono, PxScale::from(18.0), &pct_s);
+        draw_text_mut(&mut img, accent, 460 - pw, bar_y + 2, PxScale::from(18.0), &mono, &pct_s);
+    }
+
+    DynamicImage::ImageRgb8(img)
+}
+
 // ─── Private helpers ──────────────────────────────────────────────────────────
 
 fn blank() -> RgbImage {

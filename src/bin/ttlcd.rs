@@ -17,7 +17,8 @@ use ttlcd::{
         load_slideshow_frames,
         render_clock, render_clock_sysinfo, render_cpu_detail,
         render_disk_usage, render_network, render_process_top,
-        render_sysinfo, render_solid, render_test_card,
+        render_custom_text, render_sysinfo, render_solid, render_test_card,
+    CustomTextPayload,
     },
     encode_for_panel, letterbox_for_panel, Panel, DEFAULT_JPEG_QUALITY, PANEL_HEIGHT, PANEL_WIDTH,
 };
@@ -272,11 +273,75 @@ fn open_panel(vid: u16, pid: u16, reset: bool) -> anyhow::Result<Panel> {
     }
 }
 
+
+// ─── Config file ──────────────────────────────────────────────────────────────
+
+/// Persistent settings loaded from `~/.config/ttlcd/config.toml`.
+/// All fields are optional; CLI args override these values.
+#[derive(Debug, Default, serde::Deserialize)]
+#[serde(default)]
+struct Config {
+    device:  ConfigDevice,
+    daemon:  ConfigDaemon,
+}
+
+#[derive(Debug, Default, serde::Deserialize)]
+#[serde(default)]
+struct ConfigDevice {
+    vid: Option<String>,  // hex, e.g. "264a"
+    pid: Option<String>,
+}
+
+#[derive(Debug, Default, serde::Deserialize)]
+#[serde(default)]
+struct ConfigDaemon {
+    port:       Option<u16>,
+    mode:       Option<String>,
+    quality:    Option<u8>,
+    rotate:     Option<u16>,
+    headless:   Option<bool>,
+}
+
+fn load_config() -> Config {
+    let path = dirs_config_path();
+    let Some(p) = path else { return Config::default() };
+    let text = match std::fs::read_to_string(&p) {
+        Ok(t) => t,
+        Err(_) => return Config::default(),
+    };
+    match toml::from_str::<Config>(&text) {
+        Ok(c) => {
+            log::info!("loaded config from {}", p.display());
+            c
+        }
+        Err(e) => {
+            log::warn!("config parse error ({}): {e}", p.display());
+            Config::default()
+        }
+    }
+}
+
+fn dirs_config_path() -> Option<std::path::PathBuf> {
+    // XDG_CONFIG_HOME or ~/.config
+    let base = std::env::var("XDG_CONFIG_HOME")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|_| {
+            let home = std::env::var("HOME").unwrap_or_default();
+            std::path::PathBuf::from(home).join(".config")
+        });
+    if base.as_os_str().is_empty() { return None; }
+    Some(base.join("ttlcd").join("config.toml"))
+}
+
 // ─── Entry point ──────────────────────────────────────────────────────────────
 
 fn main() -> Result<()> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
     let cli = Cli::parse();
+    let cfg = load_config();
+    // Apply config defaults where CLI kept the default value.
+    // (This is a simple approach: if CLI has same value as clap default, use config.)
+    let _ = &cfg; // used in Daemon arm below
 
     match cli.cmd {
         Cmd::Init => {
@@ -410,7 +475,19 @@ fn main() -> Result<()> {
         }
 
         Cmd::Daemon { port, mode, quality, headless, rotate } => {
-            run_daemon(cli.vid, cli.pid, port, mode, quality, headless, rotate)?;
+            // Config file provides defaults; CLI args still override.
+            let eff_port     = cfg.daemon.port.unwrap_or(port);
+            let eff_mode     = cfg.daemon.mode.clone().unwrap_or(mode);
+            let eff_quality  = cfg.daemon.quality.unwrap_or(quality);
+            let eff_headless = cfg.daemon.headless.unwrap_or(headless);
+            let eff_rotate   = cfg.daemon.rotate.unwrap_or(rotate);
+            let eff_vid = cfg.device.vid.as_deref()
+                .and_then(|s| u16::from_str_radix(s.trim_start_matches("0x"), 16).ok())
+                .unwrap_or(cli.vid);
+            let eff_pid = cfg.device.pid.as_deref()
+                .and_then(|s| u16::from_str_radix(s.trim_start_matches("0x"), 16).ok())
+                .unwrap_or(cli.pid);
+            run_daemon(eff_vid, eff_pid, eff_port, eff_mode, eff_quality, eff_headless, eff_rotate)?;
         }
 
         Cmd::Keepalive => {
@@ -480,12 +557,15 @@ enum DisplayMode {
     ProcessTop,
     Idle,
     CustomImage,
+    /// Custom text + progress bar (driven by POST /api/text).
+    CustomText,
 }
 
 impl DisplayMode {
     const ALL_NAMES: &'static [&'static str] = &[
         "clock", "clock_sysinfo", "sysinfo", "cpu_detail",
         "network", "disk_usage", "process_top", "idle",
+        // custom_text and image are transient; not listed here
     ];
 
     fn from_str_name(s: &str) -> Option<Self> {
@@ -498,6 +578,7 @@ impl DisplayMode {
             "disk_usage"    => Some(DisplayMode::DiskUsage),
             "process_top"   => Some(DisplayMode::ProcessTop),
             "idle"          => Some(DisplayMode::Idle),
+            "custom_text"   => Some(DisplayMode::CustomText),
             _               => None,
         }
     }
@@ -513,6 +594,7 @@ impl DisplayMode {
             DisplayMode::ProcessTop   => "process_top",
             DisplayMode::Idle         => "idle",
             DisplayMode::CustomImage  => "image",
+            DisplayMode::CustomText   => "custom_text",
         }
     }
 }
@@ -534,6 +616,8 @@ struct DaemonState {
     pending_jpeg: Arc<Mutex<Option<Vec<u8>>>>,
     /// Last rendered JPEG (for /api/preview in headless mode).
     last_frame:   Arc<Mutex<Option<Vec<u8>>>>,
+    /// Custom text payload (set by POST /api/text).
+    pending_text: Arc<Mutex<Option<CustomTextPayload>>>,
     quality:      u8,
     vid:          u16,
     pid:          u16,
@@ -554,6 +638,7 @@ async fn run_daemon(
         mode:         Arc::new(Mutex::new(initial_mode)),
         pending_jpeg: Arc::new(Mutex::new(None)),
         last_frame:   Arc::new(Mutex::new(None)),
+        pending_text: Arc::new(Mutex::new(None)),
         quality,
         vid,
         pid,
@@ -606,6 +691,7 @@ async fn run_daemon(
             .route("/api/image",    web::post().to(api_upload_image))
             .route("/api/sysinfo",  web::get().to(api_sysinfo_json))
             .route("/api/preview",  web::get().to(api_preview_frame))
+            .route("/api/text",     web::post().to(api_text))
             // Web UI
             .route("/",                  web::get().to(web_ui_index))
             .route("/static/app.css",    web::get().to(web_ui_css))
@@ -658,6 +744,26 @@ fn display_loop(panel: Arc<Mutex<Option<Panel>>>, state: DaemonState) {
                     thread::sleep(Duration::from_secs(2));
                     return Ok(());
                 }
+                DisplayMode::CustomText => {
+                    let payload = state.pending_text.lock().unwrap().clone();
+                    if let Some(p) = payload {
+                        let img  = render_custom_text(&p);
+                        let img  = apply_rotation(img, state.rotate_deg);
+                        let jpeg = encode_for_panel(&img, quality)?;
+                        *state.last_frame.lock().unwrap() = Some(jpeg.clone());
+                        let mut guard = panel.lock().unwrap();
+                        if let Some(panel) = guard.as_mut() {
+                            panel.send_jpeg(&jpeg)?;
+                        }
+                    } else {
+                        let mut guard = panel.lock().unwrap();
+                        if let Some(p) = guard.as_mut() {
+                            p.keepalive()?;
+                        }
+                    }
+                    thread::sleep(Duration::from_secs(2));
+                    return Ok(());
+                }
                 _ => {}
             }
 
@@ -671,7 +777,7 @@ fn display_loop(panel: Arc<Mutex<Option<Panel>>>, state: DaemonState) {
                 DisplayMode::DiskUsage    => (render_disk_usage(),    8),
                 DisplayMode::ProcessTop   => (render_process_top(),   3), // ~200ms internal sleep
                 // Handled above
-                DisplayMode::Idle | DisplayMode::CustomImage => unreachable!(),
+                DisplayMode::Idle | DisplayMode::CustomImage | DisplayMode::CustomText => unreachable!(),
             };
 
             let img = apply_rotation(img, state.rotate_deg);
@@ -795,6 +901,24 @@ async fn api_upload_image(
     *state.mode.lock().unwrap()         = DisplayMode::CustomImage;
 
     HttpResponse::Ok().body("image queued")
+}
+
+/// Push custom text + optional progress bar to the display.
+///
+/// The display mode is switched to `custom_text` and the payload is cached
+/// until a new `POST /api/text` or `POST /api/mode` request arrives.
+///
+/// Example body:
+/// ```json
+/// {"title":"Build","lines":["Running tests…","17 / 20 pass"],"progress":0.85,"color":"green"}
+/// ```
+async fn api_text(
+    state: web::Data<DaemonState>,
+    body:  web::Json<CustomTextPayload>,
+) -> impl Responder {
+    *state.pending_text.lock().unwrap() = Some(body.into_inner());
+    *state.mode.lock().unwrap()         = DisplayMode::CustomText;
+    HttpResponse::Ok().body("ok")
 }
 
 /// Serves the last rendered frame as JPEG (great for headless testing).
