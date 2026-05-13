@@ -28,6 +28,7 @@ const hdrVersion       = document.getElementById('hdr-version');
 const panelPreviewImg  = document.getElementById('panel-preview-img');
 const panelPreviewEmpty= document.getElementById('panel-preview-empty');
 const returnBtn        = document.getElementById('return-btn');
+const logClearBtn      = document.getElementById('log-clear-btn');
 
 // Live stat elements
 const statCpu       = document.getElementById('stat-cpu');
@@ -52,10 +53,11 @@ const txtStatus   = document.getElementById('txt-status');
 const progPctLbl  = document.getElementById('prog-pct-label');
 
 // Preset refs
-const presetSelect   = document.getElementById('preset-select');
-const presetApplyBtn = document.getElementById('preset-apply-btn');
-const presetSaveBtn  = document.getElementById('preset-save-btn');
-const presetDelBtn   = document.getElementById('preset-del-btn');
+const presetSelect    = document.getElementById('preset-select');
+const presetApplyBtn  = document.getElementById('preset-apply-btn');
+const presetSaveBtn   = document.getElementById('preset-save-btn');
+const presetDelBtn    = document.getElementById('preset-del-btn');
+const presetClearBtn  = document.getElementById('preset-clear-btn');
 
 // Quick notify refs
 const quickStatus = document.getElementById('quick-status');
@@ -76,6 +78,13 @@ const rotIndicator    = document.getElementById('rot-indicator');
 const rotModeList     = document.getElementById('rot-mode-list');
 const rotIntervalDisp = document.getElementById('rot-interval-display');
 
+// Panel settings refs
+const setQuality   = document.getElementById('set-quality');
+const setQualityLbl= document.getElementById('set-quality-lbl');
+const setOrient    = document.getElementById('set-orient');
+const setApplyBtn  = document.getElementById('set-apply-btn');
+const setStatus    = document.getElementById('set-status');
+
 // ── Logging ───────────────────────────────────────────────────────────────────
 function logEntry(msg, level = 'info') {
   const now = new Date();
@@ -84,8 +93,10 @@ function logEntry(msg, level = 'info') {
   li.className = level;
   li.innerHTML = `<span class="ts">${ts}</span><span class="msg">${escHtml(msg)}</span>`;
   logEl.prepend(li);
-  if (logEl.children.length > 60) logEl.lastChild.remove();
+  if (logEl.children.length > 80) logEl.lastChild.remove();
 }
+
+logClearBtn.addEventListener('click', () => { logEl.innerHTML = ''; logEntry('Log cleared'); });
 
 function escHtml(s) {
   return String(s)
@@ -126,6 +137,15 @@ async function fetchStatus() {
     infoQuality.textContent    = data.quality != null ? `${data.quality}%` : '—';
     infoHeadless.textContent   = data.headless ? 'yes (USB skipped)' : 'no';
     hdrVersion.textContent     = `v${ver}`;
+
+    // Sync the settings sliders/selects with current daemon state
+    if (data.quality != null) {
+      setQuality.value       = data.quality;
+      setQualityLbl.textContent = `${data.quality}%`;
+    }
+    if (data.rotate_deg != null) {
+      setOrient.value = String(data.rotate_deg);
+    }
 
     modeBtns.forEach(btn => {
       btn.classList.toggle('active', btn.dataset.mode === data.mode);
@@ -467,7 +487,6 @@ function loadPresetIntoForm(p) {
   txtSubtitle.value = p.subtitle ?? '';
   txtLines.value    = (p.lines   ?? []).join('\n');
   if (p.color) {
-    // Match against <select> options (case-insensitive)
     const lc = p.color.toLowerCase();
     const opt = [...txtColor.options].find(o => o.value === lc);
     if (opt) txtColor.value = lc;
@@ -523,6 +542,54 @@ presetDelBtn.addEventListener('click', async () => {
     if (r.ok) { logEntry(`Deleted preset: "${name}"`, 'ok'); await refreshPresets(); }
     else       { logEntry(`Delete failed: ${await r.text()}`, 'err'); }
   } catch (e) { logEntry(`Delete error: ${e.message}`, 'err'); }
+});
+
+presetClearBtn.addEventListener('click', async () => {
+  if (!confirm('Delete ALL presets? This cannot be undone.')) return;
+  try {
+    const r = await fetch('/api/presets', { method: 'DELETE' });
+    if (r.ok) {
+      logEntry(`All presets cleared: ${await r.text()}`, 'ok');
+      await refreshPresets();
+    } else { logEntry(`Clear presets failed: ${await r.text()}`, 'err'); }
+  } catch (e) { logEntry(`Clear presets error: ${e.message}`, 'err'); }
+});
+
+// ── Panel settings (quality + orient) ────────────────────────────────────────
+setQuality.addEventListener('input', () => {
+  setQualityLbl.textContent = `${setQuality.value}%`;
+});
+
+setApplyBtn.addEventListener('click', async () => {
+  const quality = parseInt(setQuality.value, 10);
+  const rotate  = parseInt(setOrient.value, 10);
+  setApplyBtn.disabled = true;
+  setStatus.textContent = '⏳ Applying…'; setStatus.className = '';
+  try {
+    const [qr, or] = await Promise.all([
+      fetch('/api/quality', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ quality }),
+      }),
+      fetch('/api/orient', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ rotate }),
+      }),
+    ]);
+    if (qr.ok && or.ok) {
+      setStatus.textContent = `✓ Quality=${quality}% · Rotate=${rotate}°`;
+      setStatus.className = 'status-ok';
+      logEntry(`Settings applied: quality=${quality}% rotate=${rotate}°`, 'ok');
+      fetchStatus();
+    } else {
+      const err = (!qr.ok ? await qr.text() : '') + (!or.ok ? ` ${await or.text()}` : '');
+      setStatus.textContent = `✗ ${err.trim()}`; setStatus.className = 'status-err';
+      logEntry(`Settings error: ${err.trim()}`, 'err');
+    }
+  } catch (e) {
+    setStatus.textContent = `✗ ${e.message}`; setStatus.className = 'status-err';
+    logEntry(`Settings error: ${e.message}`, 'err');
+  } finally { setApplyBtn.disabled = false; }
 });
 
 // ── Slideshow ─────────────────────────────────────────────────────────────────
@@ -594,4 +661,8 @@ rotStopBtn.addEventListener('click', async () => {
 
 // ── Init ──────────────────────────────────────────────────────────────────────
 refreshPresets();
+
+// Sync quality slider label on load
+setQualityLbl.textContent = `${setQuality.value}%`;
+
 logEntry('ttlcd UI ready', 'ok');

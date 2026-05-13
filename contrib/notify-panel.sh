@@ -15,17 +15,21 @@
 #        7  Color      blue|green|yellow|red|teal|mauve|peach|white  (default: blue)
 #
 #   2. Severity alert (--alert flag):
-#      Usage: ./notify-panel.sh --alert <level> "Message" ["Detail"]
+#      Usage: ./notify-panel.sh --alert <level> "Message" ["Detail"] [progress]
 #      Levels: error | warning | info | success | critical
 #      Example:
 #        ./notify-panel.sh --alert error "Disk full" "/dev/sda1 at 100%"
-#        ./notify-panel.sh --alert success "Deploy done"
+#        ./notify-panel.sh --alert success "Deploy done" "" 1.0
 #
 #   3. Mode switching:
 #      ./notify-panel.sh --mode <mode-name>
 #      ./notify-panel.sh --next     (advance to next mode)
 #      ./notify-panel.sh --prev     (go to previous mode)
 #      ./notify-panel.sh --return   (return from custom text / image / slideshow)
+#
+#   4. Runtime panel settings:
+#      ./notify-panel.sh --quality <1-100>   (change JPEG quality)
+#      ./notify-panel.sh --orient  <0|90|180|270>  (rotate output)
 #
 # Environment:
 #   TTLCD_URL   base URL of the daemon (default: http://localhost:7070)
@@ -35,9 +39,9 @@
 #   ./notify-panel.sh "Build OK" "ttlcd-rs v0.3" "" "" "" 1.0 green
 #   ./notify-panel.sh --alert error "Build FAILED" "check CI logs"
 #
-#   # Deployment
-#   ./notify-panel.sh --alert info "Deploying" "Rolling update…"
-#   ./notify-panel.sh --alert success "Deploy complete"
+#   # Deployment with progress bar
+#   ./notify-panel.sh --alert info "Deploying" "Rolling update…" 0.5
+#   ./notify-panel.sh --alert success "Deploy complete" "" 1.0
 #
 #   # Simple one-liner
 #   ./notify-panel.sh "Hello World"
@@ -51,6 +55,10 @@
 #   ./notify-panel.sh --mode temperature
 #   ./notify-panel.sh --next
 #   ./notify-panel.sh --return
+#
+#   # Runtime panel adjustments
+#   ./notify-panel.sh --quality 95    # higher quality for photo slides
+#   ./notify-panel.sh --orient 90     # rotate display 90 degrees
 #
 # Preset management (requires curl + jq):
 #   # Save current payload as a preset
@@ -103,19 +111,41 @@ if [[ "${1:-}" == "--mode" ]]; then
     exit 0
 fi
 
-# ── Mode: --alert <level> <message> [<detail>] ────────────────────────────────
+# ── Panel settings: --quality / --orient ──────────────────────────────────────
+if [[ "${1:-}" == "--quality" ]]; then
+    Q="${2:?'--quality requires a value (1-100)'}"
+    result=$(curl -sf -X POST "${DAEMON_URL}/api/quality" \
+         -H 'Content-Type: application/json' \
+         -d "{\"quality\":${Q}}")
+    echo "Quality → ${result}"
+    exit 0
+fi
+
+if [[ "${1:-}" == "--orient" ]]; then
+    R="${2:?'--orient requires 0, 90, 180, or 270'}"
+    result=$(curl -sf -X POST "${DAEMON_URL}/api/orient" \
+         -H 'Content-Type: application/json' \
+         -d "{\"rotate\":${R}}")
+    echo "Orientation → ${result}"
+    exit 0
+fi
+
+# ── Mode: --alert <level> <message> [<detail>] [<progress>] ───────────────────
 if [[ "${1:-}" == "--alert" ]]; then
     LEVEL="${2:?'--alert requires a level: error|warning|info|success|critical'}"
     MESSAGE="${3:?'--alert requires a message string'}"
     DETAIL="${4:-}"
+    PROGRESS="${5:-}"
 
     payload=$(python3 -c "
 import json, sys
 obj = {'level': sys.argv[1], 'message': sys.argv[2]}
 if sys.argv[3]:
     obj['detail'] = sys.argv[3]
+if sys.argv[4]:
+    obj['progress'] = float(sys.argv[4])
 print(json.dumps(obj))
-" "$LEVEL" "$MESSAGE" "$DETAIL")
+" "$LEVEL" "$MESSAGE" "$DETAIL" "$PROGRESS")
 
     curl -sf \
          -X POST "${DAEMON_URL}/api/alert" \

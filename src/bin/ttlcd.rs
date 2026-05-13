@@ -4,7 +4,7 @@
 //! Run `ttlcd daemon` to start the HTTP control server (default port 7070).
 //! Run `ttlcd daemon --headless` to try the web UI without the USB device.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -651,11 +651,13 @@ struct DaemonState {
     rotation_modes:    Arc<Mutex<Vec<DisplayMode>>>,
     /// Seconds between auto-rotation advances (0 = disabled).
     rotation_interval: Arc<Mutex<u64>>,
-    quality:    u8,
+    quality:    Arc<Mutex<u8>>,
     vid:        u16,
     pid:        u16,
     headless:   bool,
-    rotate_deg: u16,
+    rotate_deg: Arc<Mutex<u16>>,
+    /// Ring-buffer of the last 50 text/alert notifications sent to the panel.
+    history:    Arc<Mutex<VecDeque<HistoryEntry>>>,
 }
 
 #[tokio::main]
@@ -703,11 +705,12 @@ async fn run_daemon(
         slideshow_interval: Arc::new(Mutex::new(5)),
         rotation_modes:     Arc::new(Mutex::new(rotation_modes)),
         rotation_interval:  Arc::new(Mutex::new(rotation_interval)),
-        quality,
+        quality:    Arc::new(Mutex::new(quality)),
         vid,
         pid,
         headless,
-        rotate_deg,
+        rotate_deg: Arc::new(Mutex::new(rotate_deg)),
+        history:    Arc::new(Mutex::new(VecDeque::with_capacity(50))),
     };
 
     let panel: Arc<Mutex<Option<Panel>>> = if headless {
@@ -772,6 +775,15 @@ async fn run_daemon(
             .route("/api/modes",          web::get().to(api_modes_list))
             .route("/api/mode/next",      web::post().to(api_mode_next))
             .route("/api/mode/prev",      web::post().to(api_mode_prev))
+            // Notification history
+            .route("/api/history",        web::get().to(api_history))
+            // Runtime quality and orientation
+            .route("/api/quality",        web::post().to(api_set_quality))
+            .route("/api/orient",         web::post().to(api_set_orient))
+            // Prometheus metrics
+            .route("/metrics",            web::get().to(api_metrics))
+            // Clear all presets
+            .route("/api/presets",        web::delete().to(api_presets_clear))
             // Slideshow & rotation
             .route("/api/slideshow",      web::post().to(api_slideshow))
             .route("/api/rotation",       web::post().to(api_rotation))
@@ -800,8 +812,9 @@ fn store_frame(state: &DaemonState, jpeg: Vec<u8>) -> Vec<u8> {
 
 fn display_loop(panel: Arc<Mutex<Option<Panel>>>, state: DaemonState) {
     loop {
-        let mode    = state.mode.lock().unwrap().clone();
-        let quality = state.quality;
+        let mode       = state.mode.lock().unwrap().clone();
+        let quality    = *state.quality.lock().unwrap();
+        let rotate_deg = *state.rotate_deg.lock().unwrap();
 
         let result: anyhow::Result<()> = (|| {
             match mode {
@@ -828,7 +841,7 @@ fn display_loop(panel: Arc<Mutex<Option<Panel>>>, state: DaemonState) {
                     let payload = state.pending_text.lock().unwrap().clone();
                     if let Some(p) = payload {
                         let img  = render_custom_text(&p);
-                        let img  = apply_rotation(img, state.rotate_deg);
+                        let img  = apply_rotation(img, rotate_deg);
                         let jpeg = encode_for_panel(&img, quality)?;
                         let jpeg = store_frame(&state, jpeg);
                         let mut g = panel.lock().unwrap();
@@ -848,7 +861,7 @@ fn display_loop(panel: Arc<Mutex<Option<Panel>>>, state: DaemonState) {
                             subtitle: Some("No images loaded".into()),
                             ..Default::default()
                         });
-                        let placeholder = apply_rotation(placeholder, state.rotate_deg);
+                        let placeholder = apply_rotation(placeholder, rotate_deg);
                         let jpeg = store_frame(&state, encode_for_panel(&placeholder, quality)?);
                         let mut g = panel.lock().unwrap();
                         if let Some(p) = g.as_mut() { p.send_jpeg(&jpeg)?; }
@@ -863,7 +876,7 @@ fn display_loop(panel: Arc<Mutex<Option<Panel>>>, state: DaemonState) {
                     };
                     let interval = *state.slideshow_interval.lock().unwrap();
                     let img  = image::open(&paths[idx])?;
-                    let img  = apply_rotation(img, state.rotate_deg);
+                    let img  = apply_rotation(img, rotate_deg);
                     let jpeg = letterbox_for_panel(&img, quality)?;
                     let jpeg = store_frame(&state, jpeg);
                     { let mut g = panel.lock().unwrap(); if let Some(p) = g.as_mut() { p.send_jpeg(&jpeg)?; } }
@@ -888,7 +901,7 @@ fn display_loop(panel: Arc<Mutex<Option<Panel>>>, state: DaemonState) {
                 | DisplayMode::Slideshow => unreachable!(),
             };
 
-            let img  = apply_rotation(img, state.rotate_deg);
+            let img  = apply_rotation(img, rotate_deg);
             let jpeg = store_frame(&state, encode_for_panel(&img, quality)?);
             { let mut g = panel.lock().unwrap(); if let Some(p) = g.as_mut() { p.send_jpeg(&jpeg)?; } }
             thread::sleep(Duration::from_secs(sleep_secs));
@@ -977,8 +990,8 @@ async fn api_status(state: web::Data<DaemonState>) -> impl Responder {
         version:               env!("CARGO_PKG_VERSION"),
         available_modes:       DisplayMode::ALL_NAMES,
         headless:              state.headless,
-        rotate_deg:            state.rotate_deg,
-        quality:               state.quality,
+        rotate_deg:            *state.rotate_deg.lock().unwrap(),
+        quality:               *state.quality.lock().unwrap(),
         frame_seq,
         can_clear,
         rotation_interval:     rot_interval,
@@ -1024,7 +1037,7 @@ async fn api_upload_image(state: web::Data<DaemonState>, mut mp: Multipart) -> i
 
     let jpeg = match (|| -> anyhow::Result<Vec<u8>> {
         let img = image::load_from_memory(&raw)?;
-        letterbox_for_panel(&apply_rotation(img, state.rotate_deg), state.quality)
+        letterbox_for_panel(&apply_rotation(img, *state.rotate_deg.lock().unwrap()), *state.quality.lock().unwrap())
     })() {
         Ok(j)  => j,
         Err(e) => return HttpResponse::UnprocessableEntity().body(format!("decode error: {e}")),
@@ -1037,8 +1050,11 @@ async fn api_upload_image(state: web::Data<DaemonState>, mut mp: Multipart) -> i
 }
 
 async fn api_text(state: web::Data<DaemonState>, body: web::Json<CustomTextPayload>) -> impl Responder {
+    let payload = body.into_inner();
+    let summary = payload.title.clone().unwrap_or_else(|| "(no title)".into());
+    push_history(&state, HistoryKind::Text, summary);
     { let cur = state.mode.lock().unwrap().clone(); if !cur.is_transient() { *state.prev_mode.lock().unwrap() = cur; } }
-    *state.pending_text.lock().unwrap() = Some(body.into_inner());
+    *state.pending_text.lock().unwrap() = Some(payload);
     *state.mode.lock().unwrap()         = DisplayMode::CustomText;
     HttpResponse::Ok().body("ok")
 }
@@ -1173,6 +1189,9 @@ struct AlertRequest {
     message: String,
     #[serde(default)]
     detail:  Option<String>,
+    /// Optional progress bar value 0.0–1.0.
+    #[serde(default)]
+    progress: Option<f32>,
 }
 
 #[derive(Deserialize)]
@@ -1189,14 +1208,16 @@ async fn api_alert(state: web::Data<DaemonState>, body: web::Json<AlertRequest>)
         AlertLevel::Success  => ("SUCCESS",  NamedColor::Green),
         AlertLevel::Critical => ("CRITICAL", NamedColor::Red),
     };
+    let msg_summary = req.message.clone();
     let payload = CustomTextPayload {
         title:     Some(title.into()),
         subtitle:  Some(req.message),
         lines:     req.detail.into_iter().collect(),
+        progress:  req.progress,
         color,
         show_time: true,
-        ..Default::default()
     };
+    push_history(&state, HistoryKind::Alert, format!("{} — {}", title, msg_summary));
     { let cur = state.mode.lock().unwrap().clone(); if !cur.is_transient() { *state.prev_mode.lock().unwrap() = cur; } }
     *state.pending_text.lock().unwrap() = Some(payload);
     *state.mode.lock().unwrap()         = DisplayMode::CustomText;
@@ -1218,6 +1239,172 @@ async fn api_screenshot(state: web::Data<DaemonState>) -> impl Responder {
             .insert_header(("Cache-Control", "no-store"))
             .finish(),
     }
+}
+
+// ─── Notification history ────────────────────────────────────────────────────
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "lowercase")]
+enum HistoryKind { Text, Alert }
+
+#[derive(Clone, Serialize)]
+struct HistoryEntry {
+    kind:      HistoryKind,
+    summary:   String,
+    /// Unix timestamp (seconds).
+    timestamp: u64,
+}
+
+/// Push an entry to the ring-buffer (capped at 50 items).
+fn push_history(state: &DaemonState, kind: HistoryKind, summary: String) {
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let entry = HistoryEntry { kind, summary, timestamp: ts };
+    let mut h = state.history.lock().unwrap();
+    if h.len() >= 50 { h.pop_front(); }
+    h.push_back(entry);
+}
+
+/// GET /api/history?limit=N — return the last N notifications (default 50).
+async fn api_history(state: web::Data<DaemonState>, query: web::Query<std::collections::HashMap<String, String>>) -> impl Responder {
+    let limit: usize = query.get("limit").and_then(|v| v.parse().ok()).unwrap_or(50).min(50);
+    let h = state.history.lock().unwrap();
+    let items: Vec<&HistoryEntry> = h.iter().rev().take(limit).collect();
+    HttpResponse::Ok().json(items)
+}
+
+// ─── Runtime quality / orient controls ───────────────────────────────────────
+
+#[derive(Deserialize)]
+struct QualityRequest {
+    /// New JPEG quality (1–100).
+    quality: u8,
+}
+
+/// POST /api/quality — change JPEG quality at runtime (1–100).
+async fn api_set_quality(state: web::Data<DaemonState>, body: web::Json<QualityRequest>) -> impl Responder {
+    let q = body.quality.clamp(1, 100);
+    *state.quality.lock().unwrap() = q;
+    log::info!("quality set to {}", q);
+    HttpResponse::Ok().body(format!("{}", q))
+}
+
+#[derive(Deserialize)]
+struct OrientRequest {
+    /// Rotation in degrees: 0, 90, 180, or 270.
+    rotate: u16,
+}
+
+/// POST /api/orient — rotate all output at runtime (0/90/180/270).
+async fn api_set_orient(state: web::Data<DaemonState>, body: web::Json<OrientRequest>) -> impl Responder {
+    let deg = match body.rotate {
+        0 | 90 | 180 | 270 => body.rotate,
+        other => return HttpResponse::BadRequest().body(format!("invalid rotation {other}; use 0, 90, 180, or 270")),
+    };
+    *state.rotate_deg.lock().unwrap() = deg;
+    log::info!("rotation set to {}°", deg);
+    HttpResponse::Ok().body(format!("{}°", deg))
+}
+
+// ─── Prometheus metrics ───────────────────────────────────────────────────────
+
+/// GET /metrics — expose key system and daemon metrics in Prometheus text format.
+async fn api_metrics(state: web::Data<DaemonState>) -> impl Responder {
+    use sysinfo::{Components, System};
+    let mut sys = System::new_all();
+    sys.refresh_cpu_usage();
+    sys.refresh_memory();
+    let load = System::load_average();
+    let mut comps = Components::new_with_refreshed_list();
+    comps.refresh(false);
+    let cpu_temp: Option<f32> = comps.iter()
+        .filter(|c| { let l = c.label().to_lowercase(); l.contains("cpu") || l.contains("core") || l.contains("package") })
+        .filter_map(|c| c.temperature())
+        .filter(|t| *t > 0.0 && !t.is_nan())
+        .reduce(f32::max);
+
+    let mode    = state.mode.lock().unwrap().as_str().to_string();
+    let quality = *state.quality.lock().unwrap();
+    let rotate  = *state.rotate_deg.lock().unwrap();
+    let history_len = state.history.lock().unwrap().len();
+
+    let mut out = String::with_capacity(1024);
+    let push = |s: &mut String, line: String| { s.push_str(&line); s.push('\n'); };
+
+    push(&mut out, "# HELP ttlcd_cpu_usage_percent System CPU usage percentage".into());
+    push(&mut out, "# TYPE ttlcd_cpu_usage_percent gauge".into());
+    push(&mut out, format!("ttlcd_cpu_usage_percent {:.2}", sys.global_cpu_usage()));
+
+    push(&mut out, "# HELP ttlcd_memory_used_bytes RAM used in bytes".into());
+    push(&mut out, "# TYPE ttlcd_memory_used_bytes gauge".into());
+    push(&mut out, format!("ttlcd_memory_used_bytes {}", sys.used_memory()));
+
+    push(&mut out, "# HELP ttlcd_memory_total_bytes Total RAM in bytes".into());
+    push(&mut out, "# TYPE ttlcd_memory_total_bytes gauge".into());
+    push(&mut out, format!("ttlcd_memory_total_bytes {}", sys.total_memory()));
+
+    push(&mut out, "# HELP ttlcd_load1 1-minute load average".into());
+    push(&mut out, "# TYPE ttlcd_load1 gauge".into());
+    push(&mut out, format!("ttlcd_load1 {:.4}", load.one));
+
+    push(&mut out, "# HELP ttlcd_load5 5-minute load average".into());
+    push(&mut out, "# TYPE ttlcd_load5 gauge".into());
+    push(&mut out, format!("ttlcd_load5 {:.4}", load.five));
+
+    push(&mut out, "# HELP ttlcd_load15 15-minute load average".into());
+    push(&mut out, "# TYPE ttlcd_load15 gauge".into());
+    push(&mut out, format!("ttlcd_load15 {:.4}", load.fifteen));
+
+    if let Some(t) = cpu_temp {
+        push(&mut out, "# HELP ttlcd_cpu_temperature_celsius CPU temperature".into());
+        push(&mut out, "# TYPE ttlcd_cpu_temperature_celsius gauge".into());
+        push(&mut out, format!("ttlcd_cpu_temperature_celsius {:.1}", t));
+    }
+
+    push(&mut out, "# HELP ttlcd_uptime_seconds System uptime in seconds".into());
+    push(&mut out, "# TYPE ttlcd_uptime_seconds counter".into());
+    push(&mut out, format!("ttlcd_uptime_seconds {}", System::uptime()));
+
+    push(&mut out, "# HELP ttlcd_frame_seq Monotonic frame counter".into());
+    push(&mut out, "# TYPE ttlcd_frame_seq counter".into());
+    push(&mut out, format!("ttlcd_frame_seq {}", *state.frame_seq.lock().unwrap()));
+
+    push(&mut out, "# HELP ttlcd_quality_percent Current JPEG quality setting".into());
+    push(&mut out, "# TYPE ttlcd_quality_percent gauge".into());
+    push(&mut out, format!("ttlcd_quality_percent {}", quality));
+
+    push(&mut out, "# HELP ttlcd_rotate_deg Current output rotation (degrees)".into());
+    push(&mut out, "# TYPE ttlcd_rotate_deg gauge".into());
+    push(&mut out, format!("ttlcd_rotate_deg {}", rotate));
+
+    push(&mut out, "# HELP ttlcd_display_mode Current display mode (label only)".into());
+    push(&mut out, "# TYPE ttlcd_display_mode gauge".into());
+    push(&mut out, format!("ttlcd_display_mode{{mode=\"{}\"}} 1", mode));
+
+    push(&mut out, "# HELP ttlcd_history_total Total notification events pushed".into());
+    push(&mut out, "# TYPE ttlcd_history_total counter".into());
+    push(&mut out, format!("ttlcd_history_total {}", history_len));
+
+    HttpResponse::Ok()
+        .content_type("text/plain; version=0.0.4; charset=utf-8")
+        .body(out)
+}
+
+// ─── Clear all presets ────────────────────────────────────────────────────────
+
+/// DELETE /api/presets — remove ALL saved presets (irreversible).
+async fn api_presets_clear(state: web::Data<DaemonState>) -> impl Responder {
+    let count = {
+        let mut guard = state.presets.lock().unwrap();
+        let n = guard.len();
+        guard.clear();
+        save_presets_to_disk(&guard);
+        n
+    };
+    log::info!("all {} preset(s) cleared", count);
+    HttpResponse::Ok().body(format!("cleared {} preset(s)", count))
 }
 
 // ─── Slideshow ────────────────────────────────────────────────────────────────

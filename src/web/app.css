@@ -673,3 +673,66 @@ button.danger-btn:hover {
   color: var(--subtext);
   margin-left: auto;
 }
+
+/* ── Panel settings ───────────────────────────────────────────────────── */
+
+.settings-form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.8rem;
+}
+
+#set-status {
+  font-size: 0.85rem;
+  min-height: 1.2rem;
+}
+
+/* ── Preview actions ──────────────────────────────────────────────────── */
+
+.preview-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 0.6rem;
+}
+
+.btn-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.35rem 0.85rem;
+  background: var(--surface0);
+  color: var(--blue);
+  text-decoration: none;
+  border-radius: 6px;
+  font-size: 0.85rem;
+  font-weight: 500;
+  transition: background 0.15s;
+}
+
+.btn-link:hover {
+  background: var(--surface1);
+}
+
+/* ── Log actions ──────────────────────────────────────────────────────── */
+
+.log-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: 0.5rem;
+}
+
+.small-btn {
+  padding: 0.2rem 0.65rem;
+  font-size: 0.78rem;
+  background: var(--surface0);
+  color: var(--subtext);
+  border: 1px solid var(--surface1);
+  border-radius: 5px;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.small-btn:hover {
+  background: var(--surface1);
+  color: var(--text);
+}

@@ -138,6 +138,7 @@
           <button id="preset-apply-btn" title="Apply preset to panel and load into form">Apply</button>
           <button id="preset-save-btn"  title="Save current form as preset">💾 Save</button>
           <button id="preset-del-btn"   title="Delete selected preset" class="danger-btn">🗑</button>
+          <button id="preset-clear-btn" title="Delete ALL presets" class="danger-btn">🗑 All</button>
         </div>
       </div>
     </section>
@@ -194,6 +195,38 @@
           No frame yet — waiting for first render…
         </div>
       </div>
+      <div class="preview-actions">
+        <a id="screenshot-btn" href="/api/screenshot" download="panel.jpg" class="btn-link">
+          📷 Download screenshot
+        </a>
+      </div>
+    </section>
+
+    <!-- ── Panel settings ────────────────────────────────────────── -->
+    <section class="card">
+      <h2>Panel Settings</h2>
+      <p class="card-hint">Changes take effect immediately on the next rendered frame.</p>
+      <div class="settings-form">
+        <div class="form-row two-col">
+          <div class="form-group">
+            <label for="set-quality">JPEG Quality <span class="hint-inline" id="set-quality-lbl">—</span></label>
+            <input type="range" id="set-quality" min="1" max="100" value="85" step="1">
+          </div>
+          <div class="form-group">
+            <label for="set-orient">Rotation</label>
+            <select id="set-orient">
+              <option value="0"   selected>0° (normal)</option>
+              <option value="90">90° (clockwise)</option>
+              <option value="180">180° (upside-down)</option>
+              <option value="270">270° (counter-clockwise)</option>
+            </select>
+          </div>
+        </div>
+        <div class="form-actions">
+          <button id="set-apply-btn" class="primary">⚙ Apply Settings</button>
+          <span id="set-status"></span>
+        </div>
+      </div>
     </section>
 
     <!-- ── Live system snapshot ──────────────────────────────────── -->
@@ -242,6 +275,9 @@
     <!-- ── Log ────────────────────────────────────────────────────── -->
     <section class="card log-card">
       <h2>Activity</h2>
+      <div class="log-actions">
+        <button id="log-clear-btn" class="small-btn">🗑 Clear</button>
+      </div>
       <ul id="log"></ul>
     </section>
   </main>
