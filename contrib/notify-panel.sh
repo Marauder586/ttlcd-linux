@@ -266,6 +266,38 @@ print(json.dumps(obj))
     exit 0
 fi
 
+# ── Test pattern: --test [seconds] ───────────────────────────────────────────
+if [[ "${1:-}" == "--test" ]]; then
+    SECS="${2:-5}"
+    curl -sf \
+         -X POST "${DAEMON_URL}/api/test" \
+         -H 'Content-Type: application/json' \
+         -d "{"duration_secs":${SECS}}" \
+         -o /dev/null \
+      && echo "Test pattern: ${SECS}s"
+    exit 0
+fi
+
+# ── Slideshow shuffle: --shuffle ──────────────────────────────────────────────
+if [[ "${1:-}" == "--shuffle" ]]; then
+    result=$(curl -sf -X POST "${DAEMON_URL}/api/slideshow/shuffle")
+    echo "${result}"
+    exit 0
+fi
+
+# ── Slideshow image list: --images ────────────────────────────────────────────
+if [[ "${1:-}" == "--images" ]]; then
+    curl -sf "${DAEMON_URL}/api/slideshow/images" | python3 -c "
+import json, sys
+d = json.load(sys.stdin)
+print(f'Slideshow: {d["count"]} images, current idx={d["current"]}')
+for i, name in enumerate(d['images']):
+    marker = ' ◀' if i == d['current'] else ''
+    print(f'  [{i}] {name}{marker}')
+"
+    exit 0
+fi
+
 # ── Default mode: full custom text ────────────────────────────────────────────
 TITLE="${1:-}"
 SUBTITLE="${2:-}"

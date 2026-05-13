@@ -708,8 +708,48 @@ async function slideshowNav(dir) {
   }
 }
 
-if (ssPrevBtn) ssPrevBtn.addEventListener('click', () => slideshowNav('prev'));
-if (ssNextBtn) ssNextBtn.addEventListener('click', () => slideshowNav('next'));
+if (ssPrevBtn)  ssPrevBtn.addEventListener('click',  () => slideshowNav('prev'));
+if (ssNextBtn)  ssNextBtn.addEventListener('click',  () => slideshowNav('next'));
+
+const ssShuffleBtn = document.getElementById('ss-shuffle-btn');
+if (ssShuffleBtn) {
+  ssShuffleBtn.addEventListener('click', async () => {
+    try {
+      const r = await fetch('/api/slideshow/shuffle', { method: 'POST' });
+      if (r.ok) {
+        ssStatus.textContent = `✓ ${await r.text()}`; ssStatus.className = 'status-ok';
+        logEntry('Slideshow shuffled', 'ok');
+      } else {
+        ssStatus.textContent = `✗ ${await r.text()}`; ssStatus.className = 'status-err';
+      }
+    } catch (e) {
+      ssStatus.textContent = `✗ ${e.message}`; ssStatus.className = 'status-err';
+    }
+  });
+}
+
+// ── Test pattern button ───────────────────────────────────────────────────────
+const testPatternBtn = document.getElementById('test-pattern-btn');
+if (testPatternBtn) {
+  testPatternBtn.addEventListener('click', async () => {
+    testPatternBtn.disabled = true;
+    quickStatus.textContent = '⏳ Showing test pattern…'; quickStatus.className = '';
+    try {
+      const r = await fetch('/api/test', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ duration_secs: 5 }),
+      });
+      if (r.ok) {
+        quickStatus.textContent = '✓ Test pattern: 5s'; quickStatus.className = 'status-ok';
+        logEntry('Test pattern shown (5s)', 'ok'); fetchStatus();
+      } else {
+        quickStatus.textContent = `✗ ${await r.text()}`; quickStatus.className = 'status-err';
+      }
+    } catch (e) {
+      quickStatus.textContent = `✗ ${e.message}`; quickStatus.className = 'status-err';
+    } finally { testPatternBtn.disabled = false; }
+  });
+}
 
 // ── Auto-rotation ─────────────────────────────────────────────────────────────
 rotStartBtn.addEventListener('click', async () => {

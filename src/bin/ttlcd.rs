@@ -828,6 +828,11 @@ async fn run_daemon(
             .route("/api/events",         web::get().to(api_events))
             // MJPEG live stream
             .route("/api/stream",         web::get().to(api_mjpeg_stream))
+            // Test pattern
+            .route("/api/test",           web::post().to(api_test_pattern))
+            // Slideshow extra controls
+            .route("/api/slideshow/images",  web::get().to(api_slideshow_images))
+            .route("/api/slideshow/shuffle", web::post().to(api_slideshow_shuffle))
             // Web UI
             .route("/",                   web::get().to(web_ui_index))
             .route("/static/app.css",     web::get().to(web_ui_css))
@@ -2192,6 +2197,86 @@ async fn api_slideshow_prev(state: web::Data<DaemonState>) -> impl Responder {
         *idx = idx.checked_sub(1).unwrap_or(count - 1);
     }
     HttpResponse::Ok().body(format!("went back to image {}", *state.slideshow_idx.lock().unwrap()))
+}
+
+// ─── Test pattern ─────────────────────────────────────────────────────────────
+
+/// POST /api/test — display a SMPTE-style test card, then auto-return.
+///
+/// Optional body: `{ "duration_secs": 5 }` (default: 5 seconds)
+async fn api_test_pattern(
+    state: web::Data<DaemonState>,
+    body:  web::Json<serde_json::Value>,
+) -> impl Responder {
+    let dur = body.get("duration_secs")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(5)
+        .clamp(1, 60);
+
+    let quality    = *state.quality.lock().unwrap();
+    let rotate_deg = *state.rotate_deg.lock().unwrap();
+
+    let img  = render_test_card();
+    let img  = apply_rotation(img, rotate_deg);
+    let jpeg = match encode_for_panel(&img, quality) {
+        Ok(j)  => j,
+        Err(e) => return HttpResponse::InternalServerError().body(e.to_string()),
+    };
+
+    { let cur = state.mode.lock().unwrap().clone(); if !cur.is_transient() { *state.prev_mode.lock().unwrap() = cur; } }
+    *state.pending_jpeg.lock().unwrap() = Some(jpeg);
+    *state.mode.lock().unwrap()         = DisplayMode::CustomImage;
+
+    // Schedule auto-return
+    let state_clone = state.get_ref().clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(tokio::time::Duration::from_secs(dur)).await;
+        let prev = state_clone.prev_mode.lock().unwrap().clone();
+        *state_clone.mode.lock().unwrap()         = prev;
+        *state_clone.pending_jpeg.lock().unwrap() = None;
+        log::info!("test pattern: auto-returned after {}s", dur);
+    });
+
+    HttpResponse::Ok().body(format!("test pattern: showing for {}s", dur))
+}
+
+// ─── Slideshow image list + shuffle ──────────────────────────────────────────
+
+/// GET /api/slideshow/images — list the paths currently loaded in the slideshow.
+async fn api_slideshow_images(state: web::Data<DaemonState>) -> impl Responder {
+    let paths = state.slideshow_paths.lock().unwrap();
+    let names: Vec<String> = paths.iter()
+        .map(|p| p.file_name().and_then(|n| n.to_str()).unwrap_or("?").to_string())
+        .collect();
+    #[derive(Serialize)]
+    struct SlideshowImageList {
+        count:   usize,
+        current: usize,
+        images:  Vec<String>,
+    }
+    HttpResponse::Ok().json(SlideshowImageList {
+        count:   names.len(),
+        current: *state.slideshow_idx.lock().unwrap(),
+        images:  names,
+    })
+}
+
+/// POST /api/slideshow/shuffle — randomise the slideshow order.
+async fn api_slideshow_shuffle(state: web::Data<DaemonState>) -> impl Responder {
+    let mut paths = state.slideshow_paths.lock().unwrap();
+    if paths.is_empty() { return HttpResponse::BadRequest().body("no slideshow loaded"); }
+    // Fisher-Yates shuffle using SystemTime as entropy
+    let n = paths.len();
+    for i in (1..n).rev() {
+        let ts = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.subsec_nanos() as usize)
+            .unwrap_or(i);
+        let j = ts % (i + 1);
+        paths.swap(i, j);
+    }
+    *state.slideshow_idx.lock().unwrap() = 0;
+    HttpResponse::Ok().body(format!("shuffled {} images", n))
 }
 
 // ─── Embedded web UI ─────────────────────────────────────────────────────────
