@@ -816,6 +816,8 @@ async fn run_daemon(
             .route("/api/presets",        web::delete().to(api_presets_clear))
             // Slideshow & rotation
             .route("/api/slideshow",      web::post().to(api_slideshow))
+            .route("/api/slideshow/next", web::post().to(api_slideshow_next))
+            .route("/api/slideshow/prev", web::post().to(api_slideshow_prev))
             .route("/api/rotation",       web::post().to(api_rotation))
             // Convenience endpoints
             .route("/api/notify",         web::post().to(api_notify))
@@ -824,6 +826,8 @@ async fn run_daemon(
             .route("/api/schedule",       web::post().to(api_schedule))
             // Server-Sent Events
             .route("/api/events",         web::get().to(api_events))
+            // MJPEG live stream
+            .route("/api/stream",         web::get().to(api_mjpeg_stream))
             // Web UI
             .route("/",                   web::get().to(web_ui_index))
             .route("/static/app.css",     web::get().to(web_ui_css))
@@ -2107,6 +2111,87 @@ async fn api_schedule(state: web::Data<DaemonState>, body: web::Json<ScheduleReq
     HttpResponse::Ok().body(format!(
         "scheduled in {fire_at_str}: \"{label}\""
     ))
+}
+
+// ─── MJPEG live stream ────────────────────────────────────────────────────────
+
+/// GET /api/stream — MJPEG live stream of the panel.
+///
+/// Standard Motion JPEG format: browsers and VLC can display it directly.
+/// Stream a new JPEG whenever frame_seq changes, otherwise wait.
+/// Sends at most ~4fps to limit CPU/bandwidth usage.
+///
+/// Usage in HTML: `<img src="/api/stream" style="width:480px">`
+async fn api_mjpeg_stream(state: web::Data<DaemonState>) -> impl Responder {
+    let frame_seq_lock = Arc::clone(&state.frame_seq);
+    let last_frame_lock = Arc::clone(&state.last_frame);
+
+    let stream = futures_util::stream::unfold(
+        (frame_seq_lock, last_frame_lock, u64::MAX),
+        |(seq_lock, frame_lock, last_seq)| async move {
+            loop {
+                tokio::time::sleep(tokio::time::Duration::from_millis(250)).await;
+                let cur = *seq_lock.lock().unwrap();
+                if cur != last_seq {
+                    let maybe_jpeg = frame_lock.lock().unwrap().clone();
+                    if let Some(jpeg) = maybe_jpeg {
+                        let header = format!(
+                            "--frame
+Content-Type: image/jpeg
+Content-Length: {}
+
+",
+                            jpeg.len()
+                        );
+                        let mut part = header.into_bytes();
+                        part.extend_from_slice(&jpeg);
+                        part.extend_from_slice(b"
+");
+                        return Some((
+                            Ok::<_, actix_web::Error>(actix_web::web::Bytes::from(part)),
+                            (seq_lock, frame_lock, cur),
+                        ));
+                    }
+                }
+            }
+        },
+    );
+
+    HttpResponse::Ok()
+        .content_type("multipart/x-mixed-replace; boundary=frame")
+        .insert_header(("Cache-Control", "no-cache, no-store, must-revalidate"))
+        .insert_header(("X-Accel-Buffering", "no"))
+        .streaming(stream)
+}
+
+// ─── Slideshow navigation ─────────────────────────────────────────────────────
+
+/// POST /api/slideshow/next — advance the slideshow to the next image immediately.
+async fn api_slideshow_next(state: web::Data<DaemonState>) -> impl Responder {
+    if *state.mode.lock().unwrap() != DisplayMode::Slideshow {
+        return HttpResponse::Conflict().body("not in slideshow mode");
+    }
+    let count = state.slideshow_paths.lock().unwrap().len();
+    if count == 0 { return HttpResponse::BadRequest().body("no slideshow loaded"); }
+    {
+        let mut idx = state.slideshow_idx.lock().unwrap();
+        *idx = (*idx + 1) % count;
+    }
+    HttpResponse::Ok().body(format!("advanced to image {}", *state.slideshow_idx.lock().unwrap()))
+}
+
+/// POST /api/slideshow/prev — go back to the previous slideshow image.
+async fn api_slideshow_prev(state: web::Data<DaemonState>) -> impl Responder {
+    if *state.mode.lock().unwrap() != DisplayMode::Slideshow {
+        return HttpResponse::Conflict().body("not in slideshow mode");
+    }
+    let count = state.slideshow_paths.lock().unwrap().len();
+    if count == 0 { return HttpResponse::BadRequest().body("no slideshow loaded"); }
+    {
+        let mut idx = state.slideshow_idx.lock().unwrap();
+        *idx = idx.checked_sub(1).unwrap_or(count - 1);
+    }
+    HttpResponse::Ok().body(format!("went back to image {}", *state.slideshow_idx.lock().unwrap()))
 }
 
 // ─── Embedded web UI ─────────────────────────────────────────────────────────

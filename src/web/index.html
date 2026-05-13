@@ -195,6 +195,8 @@
         </div>
         <div class="form-actions">
           <button id="ss-start-btn" class="primary">▶ Start Slideshow</button>
+          <button id="ss-prev-btn">◀ Prev</button>
+          <button id="ss-next-btn">Next ▶</button>
           <span id="ss-status"></span>
         </div>
       </div>
@@ -211,7 +213,10 @@
       </div>
       <div class="preview-actions">
         <a id="screenshot-btn" href="/api/screenshot" download="panel.jpg" class="btn-link">
-          📷 Download screenshot
+          📷 Screenshot
+        </a>
+        <a href="/api/stream" target="_blank" class="btn-link" title="Open live MJPEG stream in new tab">
+          📺 Live stream
         </a>
       </div>
     </section>

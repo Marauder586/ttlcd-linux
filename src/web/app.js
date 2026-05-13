@@ -70,6 +70,8 @@ const quickStatus = document.getElementById('quick-status');
 const ssDir      = document.getElementById('ss-dir');
 const ssInterval = document.getElementById('ss-interval');
 const ssStartBtn = document.getElementById('ss-start-btn');
+const ssPrevBtn  = document.getElementById('ss-prev-btn');
+const ssNextBtn  = document.getElementById('ss-next-btn');
 const ssStatus   = document.getElementById('ss-status');
 
 // Rotation refs
@@ -691,6 +693,23 @@ ssStartBtn.addEventListener('click', async () => {
     logEntry(`Slideshow error: ${e.message}`, 'err');
   } finally { ssStartBtn.disabled = false; }
 });
+
+async function slideshowNav(dir) {
+  try {
+    const r = await fetch(`/api/slideshow/${dir}`, { method: 'POST' });
+    if (r.ok) {
+      ssStatus.textContent = `✓ ${await r.text()}`; ssStatus.className = 'status-ok';
+      logEntry(`Slideshow ${dir}`, 'ok');
+    } else {
+      ssStatus.textContent = `✗ ${await r.text()}`; ssStatus.className = 'status-err';
+    }
+  } catch (e) {
+    ssStatus.textContent = `✗ ${e.message}`; ssStatus.className = 'status-err';
+  }
+}
+
+if (ssPrevBtn) ssPrevBtn.addEventListener('click', () => slideshowNav('prev'));
+if (ssNextBtn) ssNextBtn.addEventListener('click', () => slideshowNav('next'));
 
 // ── Auto-rotation ─────────────────────────────────────────────────────────────
 rotStartBtn.addEventListener('click', async () => {
