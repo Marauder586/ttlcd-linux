@@ -1483,6 +1483,12 @@ line 8";
         assert_panel_size(&img);
     }
 
+    #[test]
+    fn test_uptime_size() {
+        let img = render_uptime();
+        assert_panel_size(&img);
+    }
+
 }
 
 /// Thermal sensor detail — all available temperature components with color-coded bars.
@@ -4679,6 +4685,126 @@ pub fn render_net_connections() -> DynamicImage {
     draw_divider(&mut img, 452);
     let summary = format!("{} listening  {} established", listen_count, estab_count);
     draw_centered(&mut img, &mono, PxScale::from(14.0), 456, SUBTEXT, &summary);
+
+    DynamicImage::ImageRgb8(img)
+}
+
+// ─── Uptime / Boot time display ──────────────────────────────────────────────
+
+/// Render a full-screen uptime/boot time display.
+/// Shows: big uptime counter, boot timestamp, load averages, and a visual progress bar.
+pub fn render_uptime() -> DynamicImage {
+    let mut img = blank();
+    let bold = font_bold();
+    let mono = font_mono();
+
+    // Read uptime from /proc/uptime
+    let uptime_secs = std::fs::read_to_string("/proc/uptime")
+        .ok()
+        .and_then(|s| s.split_whitespace().next().and_then(|v| v.parse::<f64>().ok()))
+        .unwrap_or(0.0) as u64;
+
+    let days    = uptime_secs / 86400;
+    let hours   = (uptime_secs % 86400) / 3600;
+    let minutes = (uptime_secs % 3600) / 60;
+    let seconds = uptime_secs % 60;
+
+    // Read load averages from /proc/loadavg
+    let loadavg = std::fs::read_to_string("/proc/loadavg").unwrap_or_default();
+    let load_parts: Vec<&str> = loadavg.split_whitespace().collect();
+    let load1  = load_parts.first().copied().unwrap_or("0.0");
+    let load5  = load_parts.get(1).copied().unwrap_or("0.0");
+    let load15 = load_parts.get(2).copied().unwrap_or("0.0");
+
+    // Calculate boot time (current time - uptime)
+    let now = Local::now();
+    let boot_time = now - chrono::Duration::seconds(uptime_secs as i64);
+    let boot_str  = boot_time.format("%Y-%m-%d %H:%M:%S").to_string();
+
+    // Header
+    draw_filled_rect_mut(&mut img, Rect::at(0, 0).of_size(480, 52), SURFACE0);
+    draw_centered(&mut img, &bold, PxScale::from(24.0), 12, BLUE, "SYSTEM UPTIME");
+    let now_str = now.format("%H:%M:%S").to_string();
+    draw_centered(&mut img, &mono, PxScale::from(13.0), 36, OVERLAY0, &now_str);
+
+    // Big uptime counter
+    let day_str = if days > 0 { format!("{}d ", days) } else { String::new() };
+    let time_str = format!("{}{:02}:{:02}:{:02}", day_str, hours, minutes, seconds);
+    let big_scale = if time_str.len() <= 8 { 72.0f32 } else if time_str.len() <= 11 { 58.0 } else { 46.0 };
+    draw_centered(&mut img, &bold, PxScale::from(big_scale), 80, TEAL, &time_str);
+
+    // Days / hours / minutes labels
+    if days > 0 {
+        let labels = format!("{} days, {} hours, {} minutes", days, hours, minutes);
+        draw_centered(&mut img, &mono, PxScale::from(15.0), 158, SUBTEXT, &labels);
+    } else {
+        let labels = format!("{} hours, {} minutes, {} seconds", hours, minutes, seconds);
+        draw_centered(&mut img, &mono, PxScale::from(15.0), 158, SUBTEXT, &labels);
+    }
+
+    // Divider
+    draw_divider(&mut img, 184);
+
+    // Boot time
+    draw_centered(&mut img, &mono, PxScale::from(14.0), 190, OVERLAY0, "Boot time");
+    draw_centered(&mut img, &bold, PxScale::from(22.0), 208, TEXT, &boot_str);
+
+    // Progress bar: fraction of a week elapsed
+    let week_secs = 7 * 86400u64;
+    let frac = ((uptime_secs % week_secs) as f32 / week_secs as f32).min(1.0);
+    draw_divider(&mut img, 254);
+    draw_text_mut(&mut img, OVERLAY0, 12, 260, PxScale::from(13.0), &mono, "Week progress");
+    let bar_x = 12;
+    let bar_y = 278;
+    let bar_w = 456;
+    draw_bar(&mut img, bar_x, bar_y, bar_w, 14, frac, BLUE);
+    let frac_pct = format!("{:.1}%", frac * 100.0);
+    let fw = text_width(&mono, PxScale::from(13.0), &frac_pct);
+    draw_text_mut(&mut img, BLUE, bar_x + bar_w - fw - 2, 260, PxScale::from(13.0), &mono, &frac_pct);
+
+    // Load averages
+    draw_divider(&mut img, 306);
+    draw_centered(&mut img, &mono, PxScale::from(14.0), 312, OVERLAY0, "Load averages (1m / 5m / 15m)");
+    let load_str = format!("{} / {} / {}", load1, load5, load15);
+    let load1_f = load1.parse::<f32>().unwrap_or(0.0);
+    let load_color = if load1_f > 4.0 { RED } else if load1_f > 2.0 { YELLOW } else { GREEN };
+    draw_centered(&mut img, &bold, PxScale::from(28.0), 332, load_color, &load_str);
+
+    // CPU count for context
+    let cpu_count = std::fs::read_to_string("/proc/cpuinfo")
+        .unwrap_or_default()
+        .lines()
+        .filter(|l| l.starts_with("processor"))
+        .count();
+    if cpu_count > 0 {
+        let cpu_str = format!("{} CPU cores", cpu_count);
+        draw_text_mut(&mut img, OVERLAY0, 12, 372, PxScale::from(13.0), &mono, &cpu_str);
+    }
+
+    // Memory quick stats
+    if let Ok(meminfo) = std::fs::read_to_string("/proc/meminfo") {
+        let mut total_kb = 0u64;
+        let mut available_kb = 0u64;
+        for line in meminfo.lines() {
+            if let Some(rest) = line.strip_prefix("MemTotal:") {
+                total_kb = rest.split_whitespace().next().and_then(|v| v.parse().ok()).unwrap_or(0);
+            } else if let Some(rest) = line.strip_prefix("MemAvailable:") {
+                available_kb = rest.split_whitespace().next().and_then(|v| v.parse().ok()).unwrap_or(0);
+            }
+        }
+        if total_kb > 0 {
+            let used_kb = total_kb - available_kb;
+            let mem_str = format!("RAM: {:.1}/{:.1} GB", used_kb as f64 / 1_048_576.0, total_kb as f64 / 1_048_576.0);
+            draw_text_mut(&mut img, SUBTEXT, 12, 392, PxScale::from(13.0), &mono, &mem_str);
+        }
+    }
+
+    // Footer
+    let hostname = std::fs::read_to_string("/proc/sys/kernel/hostname")
+        .unwrap_or_default();
+    let hostname = hostname.trim();
+    draw_divider(&mut img, 452);
+    draw_centered(&mut img, &mono, PxScale::from(15.0), 456, SUBTEXT, hostname);
 
     DynamicImage::ImageRgb8(img)
 }

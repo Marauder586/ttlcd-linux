@@ -3251,6 +3251,12 @@ document.addEventListener('keydown', e => {
     case 'V':  // Shift+V = Services
       api('POST', '/api/mode', { mode: 'service_status' }).then(() => fetchStatus()).catch(() => {});
       break;
+    case 'U':  // Shift+U = Uptime Fancy
+      api('POST', '/api/mode', { mode: 'uptime_fancy' }).then(() => fetchStatus()).catch(() => {});
+      break;
+    case 'C':  // Shift+C = Net Connections
+      api('POST', '/api/mode', { mode: 'net_connections' }).then(() => fetchStatus()).catch(() => {});
+      break;
     case 'Escape':
       if (returnBtn.style.display !== 'none') returnBtn.click();
       break;

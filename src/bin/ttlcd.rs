@@ -50,6 +50,7 @@ use ttlcd::{
         render_rss_feed,
         render_service_status,
         render_net_connections,
+        render_uptime,
         HttpMonitorResult,
         PingResult,
         Metric,
@@ -736,6 +737,7 @@ enum DisplayMode {
     RssFeed,
     ServiceStatus,
     NetConnections,
+    UptimeFancy,
     Idle,
     CustomImage,
     CustomText,
@@ -745,7 +747,7 @@ enum DisplayMode {
 impl DisplayMode {
     const ALL_NAMES: &'static [&'static str] = &[
         "clock", "big_clock", "clock_sysinfo", "sysinfo", "cpu_detail",
-        "network", "disk_usage", "process_top", "temperature", "memory_detail", "countdown", "cpu_graph", "net_graph", "recent_alerts", "process_memory", "disk_io", "calendar", "stopwatch", "metrics", "weather", "notes", "qr_code", "pomodoro", "battery", "world_clock", "ticker", "http_status", "shell_cmd", "ping_monitor", "dashboard", "log_tail", "cpu_freq", "hostname_ip", "rss_feed", "service_status", "net_connections", "idle",
+        "network", "disk_usage", "process_top", "temperature", "memory_detail", "countdown", "cpu_graph", "net_graph", "recent_alerts", "process_memory", "disk_io", "calendar", "stopwatch", "metrics", "weather", "notes", "qr_code", "pomodoro", "battery", "world_clock", "ticker", "http_status", "shell_cmd", "ping_monitor", "dashboard", "log_tail", "cpu_freq", "hostname_ip", "rss_feed", "service_status", "net_connections", "uptime_fancy", "idle",
     ];
 
     fn from_str_name(s: &str) -> Option<Self> {
@@ -786,6 +788,7 @@ impl DisplayMode {
             "rss_feed"         => Some(DisplayMode::RssFeed),
             "service_status"   => Some(DisplayMode::ServiceStatus),
             "net_connections"  => Some(DisplayMode::NetConnections),
+            "uptime_fancy"     => Some(DisplayMode::UptimeFancy),
             "idle"             => Some(DisplayMode::Idle),
             "custom_text"   => Some(DisplayMode::CustomText),
             "slideshow"     => Some(DisplayMode::Slideshow),
@@ -831,6 +834,7 @@ impl DisplayMode {
             DisplayMode::RssFeed        => "rss_feed",
             DisplayMode::ServiceStatus  => "service_status",
             DisplayMode::NetConnections => "net_connections",
+            DisplayMode::UptimeFancy    => "uptime_fancy",
             DisplayMode::Idle           => "idle",
             DisplayMode::CustomImage  => "image",
             DisplayMode::CustomText   => "custom_text",
@@ -1192,6 +1196,14 @@ struct PersistedNewSettings {
     service_units:     Vec<String>,
     #[serde(default)]
     service_poll_interval: u64,
+    #[serde(default)]
+    shell_cmd:          String,
+    #[serde(default)]
+    shell_cmd_interval: u64,
+    #[serde(default)]
+    http_monitors:      Vec<HttpMonitorEntry>,
+    #[serde(default)]
+    ping_hosts:         Vec<PingHostEntry>,
 }
 
 fn new_settings_path() -> Option<PathBuf> {
@@ -1222,6 +1234,10 @@ fn save_new_settings(state: &DaemonState) {
         rss_feed_interval: *state.rss_feed_interval.lock().unwrap(),
         service_units:     state.service_units.lock().unwrap().clone(),
         service_poll_interval: *state.service_poll_interval.lock().unwrap(),
+        shell_cmd:          state.shell_cmd_text.lock().unwrap().clone(),
+        shell_cmd_interval: *state.shell_cmd_interval_secs.lock().unwrap(),
+        http_monitors:      state.http_monitors.lock().unwrap().clone(),
+        ping_hosts:         state.ping_hosts.lock().unwrap().clone(),
     };
     if let Ok(text) = serde_json::to_string_pretty(&s) {
         let _ = std::fs::write(&path, text);
@@ -1583,6 +1599,16 @@ async fn run_daemon(
         if !ns.service_units.is_empty() {
             *state.service_units.lock().unwrap()         = ns.service_units;
             *state.service_poll_interval.lock().unwrap() = ns.service_poll_interval.max(5);
+        }
+        if !ns.shell_cmd.is_empty() {
+            *state.shell_cmd_text.lock().unwrap()          = ns.shell_cmd;
+            *state.shell_cmd_interval_secs.lock().unwrap() = ns.shell_cmd_interval.max(1);
+        }
+        if !ns.http_monitors.is_empty() {
+            *state.http_monitors.lock().unwrap() = ns.http_monitors;
+        }
+        if !ns.ping_hosts.is_empty() {
+            *state.ping_hosts.lock().unwrap() = ns.ping_hosts;
         }
     }
 
@@ -2180,6 +2206,7 @@ fn display_loop(panel: Arc<Mutex<Option<Panel>>>, state: DaemonState) {
                     (render_service_status(&units), 5)
                 },
                 DisplayMode::NetConnections => (render_net_connections(), 5),
+                DisplayMode::UptimeFancy    => (render_uptime(), 2),
                 DisplayMode::Idle
                 | DisplayMode::CustomImage
                 | DisplayMode::CustomText
@@ -3345,7 +3372,12 @@ async fn api_modes_list() -> impl Responder {
         ModeInfo { name: "ping_monitor",   description: "ICMP ping latency dashboard — configure hosts via /api/ping_monitor" },
         ModeInfo { name: "dashboard",      description: "Four-quadrant overview: clock, CPU/RAM, network, temperature" },
         ModeInfo { name: "log_tail",       description: "Live log tail viewer — configure file via POST /api/log_tail" },
-        ModeInfo { name: "cpu_freq",       description: "Per-core CPU clock frequency grid (reads /proc/cpuinfo)" },
+        ModeInfo { name: "cpu_freq",        description: "Per-core CPU clock frequency grid (reads /proc/cpuinfo)" },
+        ModeInfo { name: "hostname_ip",    description: "Machine identification: hostname and all network IP addresses" },
+        ModeInfo { name: "rss_feed",       description: "RSS/Atom headline feed — configure URL via POST /api/rss" },
+        ModeInfo { name: "service_status", description: "Systemd unit state monitor — configure units via POST /api/services" },
+        ModeInfo { name: "net_connections",description: "Active TCP/UDP socket viewer: listening ports and established connections" },
+        ModeInfo { name: "uptime_fancy",   description: "Full-screen uptime display: big counter, boot time, load averages, memory" },
         ModeInfo { name: "idle",           description: "Keepalive — no display update, prevents blank" },
     ];
     HttpResponse::Ok().json(modes)
@@ -6723,6 +6755,10 @@ async fn api_settings_export(state: web::Data<DaemonState>) -> impl Responder {
         "shell_cmd":          state.shell_cmd_text.lock().unwrap().clone(),
         "shell_cmd_interval": *state.shell_cmd_interval_secs.lock().unwrap(),
         "metrics_source":     state.metrics_source.lock().unwrap().clone(),
+        "rss_feed_url":       state.rss_feed_url.lock().unwrap().clone(),
+        "rss_feed_interval":  *state.rss_feed_interval.lock().unwrap(),
+        "service_units":      state.service_units.lock().unwrap().clone(),
+        "service_poll_interval": *state.service_poll_interval.lock().unwrap(),
     });
 
     HttpResponse::Ok()
@@ -6901,6 +6937,27 @@ async fn api_settings_import(
             applied.push("metrics_source");
         }
     }
+    // rss feed
+    if let Some(url) = body.get("rss_feed_url").and_then(|v| v.as_str()) {
+        if !url.is_empty() {
+            *state.rss_feed_url.lock().unwrap()      = url.to_string();
+            *state.rss_feed_interval.lock().unwrap() = body.get("rss_feed_interval")
+                .and_then(|v| v.as_u64()).unwrap_or(300).max(30);
+            applied.push("rss_feed");
+        }
+    }
+    // service status
+    if let Some(sv_val) = body.get("service_units") {
+        if let Ok(units) = serde_json::from_value::<Vec<String>>(sv_val.clone()) {
+            if !units.is_empty() {
+                *state.service_units.lock().unwrap()         = units;
+                *state.service_poll_interval.lock().unwrap() = body.get("service_poll_interval")
+                    .and_then(|v| v.as_u64()).unwrap_or(10).max(5);
+                applied.push("service_units");
+            }
+        }
+    }
+    save_new_settings(&state);
 
     log::info!("settings imported: {} section(s) applied", applied.len());
     HttpResponse::Ok().json(serde_json::json!({
@@ -7241,6 +7298,7 @@ async fn api_set_shell_cmd(
     let cmd2 = cmd.clone();
     tokio::spawn(async move { run_shell_cmd_once(&state2, &cmd2).await });
 
+    save_new_settings(&state);
     HttpResponse::Ok().json(serde_json::json!({ "ok": true, "cmd": cmd, "interval_secs": interval }))
 }
 
