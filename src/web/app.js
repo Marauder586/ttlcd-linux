@@ -33,6 +33,18 @@ const statUptime = document.getElementById('stat-uptime');
 const barCpu     = document.getElementById('bar-cpu');
 const barRam     = document.getElementById('bar-ram');
 
+
+// Text form refs
+const txtTitle    = document.getElementById('txt-title');
+const txtSubtitle = document.getElementById('txt-subtitle');
+const txtLines    = document.getElementById('txt-lines');
+const txtProgress = document.getElementById('txt-progress');
+const txtColor    = document.getElementById('txt-color');
+const txtShowTime = document.getElementById('txt-show-time');
+const txtSendBtn  = document.getElementById('txt-send-btn');
+const txtStatus   = document.getElementById('txt-status');
+const progPctLbl  = document.getElementById('prog-pct-label');
+
 // ── Logging ───────────────────────────────────────────────────────────────────
 function logEntry(msg, level = 'info') {
   const now = new Date();
@@ -248,6 +260,67 @@ sendBtn.addEventListener('click', async () => {
 // ── Keyboard: Enter → send ────────────────────────────────────────────────────
 document.addEventListener('keydown', e => {
   if (e.key === 'Enter' && currentFile && !sendBtn.disabled) sendBtn.click();
+});
+
+
+// ── Custom text form ─────────────────────────────────────────────────────────
+
+// Live progress percentage label
+txtProgress.addEventListener('input', () => {
+  const v = parseInt(txtProgress.value, 10);
+  progPctLbl.textContent = v < 0 ? '(off)' : `${v}%`;
+});
+progPctLbl.textContent = '(off)';
+
+txtSendBtn.addEventListener('click', async () => {
+  const title    = txtTitle.value.trim();
+  const subtitle = txtSubtitle.value.trim();
+  const lines    = txtLines.value.split('\n').map(l => l.trim()).filter(Boolean);
+  const progVal  = parseInt(txtProgress.value, 10);
+  const color    = txtColor.value;
+  const showTime = txtShowTime.checked;
+
+  if (!title && !subtitle && lines.length === 0) {
+    txtStatus.textContent = 'Enter at least a title or some lines.';
+    txtStatus.className   = 'status-err';
+    return;
+  }
+
+  const payload = { color, show_time: showTime };
+  if (title)          payload.title    = title;
+  if (subtitle)       payload.subtitle = subtitle;
+  if (lines.length)   payload.lines    = lines;
+  if (progVal >= 0)   payload.progress = progVal / 100;
+
+  txtSendBtn.disabled = true;
+  txtStatus.textContent = '⏳ Sending…';
+  txtStatus.className   = '';
+
+  try {
+    const r = await fetch('/api/text', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    if (r.ok) {
+      txtStatus.textContent = '✓ Text sent to panel';
+      txtStatus.className   = 'status-ok';
+      logEntry(`Text sent: "${title || '(no title)'}"`, 'ok');
+      fetchStatus();
+      setTimeout(fetchPreview, 3000);
+    } else {
+      const err = await r.text();
+      txtStatus.textContent = `✗ ${err}`;
+      txtStatus.className   = 'status-err';
+      logEntry(`Text send failed: ${err}`, 'err');
+    }
+  } catch (e) {
+    txtStatus.textContent = `✗ ${e.message}`;
+    txtStatus.className   = 'status-err';
+    logEntry(`Text send error: ${e.message}`, 'err');
+  } finally {
+    txtSendBtn.disabled = false;
+  }
 });
 
 // ── Init log ──────────────────────────────────────────────────────────────────

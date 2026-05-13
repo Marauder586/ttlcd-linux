@@ -374,3 +374,95 @@ button:not(.primary):not(.mode-btn):hover {
 #log li.ok   .msg { color: var(--green);  }
 #log li.err  .msg { color: var(--red);    }
 #log li.info .msg { color: var(--blue);   }
+
+/* ── Custom text form ────────────────────────────────────────── */
+.text-form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.8rem;
+}
+
+.form-row { display: flex; gap: 0.8rem; }
+.two-col > * { flex: 1; }
+.three-col > * { flex: 1; }
+
+.form-group {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+
+.form-group label {
+  font-size: 0.78rem;
+  color: var(--overlay0);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.hint-inline {
+  color: var(--surface1);
+  text-transform: none;
+  letter-spacing: 0;
+  font-weight: 400;
+}
+
+.form-group input[type="text"],
+.form-group textarea,
+.form-group select {
+  background: var(--mantle);
+  border: 1px solid var(--surface0);
+  border-radius: 6px;
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 0.86rem;
+  padding: 0.45rem 0.65rem;
+  outline: none;
+  transition: border-color 0.15s;
+  resize: vertical;
+}
+
+.form-group input[type="text"]:focus,
+.form-group textarea:focus,
+.form-group select:focus {
+  border-color: var(--blue);
+}
+
+.form-group input[type="range"] {
+  width: 100%;
+  accent-color: var(--blue);
+}
+
+.check-group {
+  justify-content: flex-end;
+  padding-bottom: 0.2rem;
+}
+
+.check-group label {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.86rem;
+  color: var(--subtext);
+  text-transform: none;
+  letter-spacing: 0;
+  font-weight: 400;
+  cursor: pointer;
+}
+
+.check-group input[type="checkbox"] {
+  accent-color: var(--blue);
+  width: 16px;
+  height: 16px;
+}
+
+.form-actions {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+}
+
+#txt-status {
+  font-size: 0.85rem;
+  min-height: 1.2rem;
+}

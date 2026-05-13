@@ -50,6 +50,56 @@
       </div>
     </section>
 
+    <!-- ── Custom text push ───────────────────────────────────────── -->
+    <section class="card">
+      <h2>Custom Text</h2>
+      <div class="text-form">
+        <div class="form-row two-col">
+          <div class="form-group">
+            <label for="txt-title">Title</label>
+            <input type="text" id="txt-title" placeholder="e.g. Build OK" maxlength="22">
+          </div>
+          <div class="form-group">
+            <label for="txt-subtitle">Subtitle</label>
+            <input type="text" id="txt-subtitle" placeholder="optional" maxlength="38">
+          </div>
+        </div>
+        <div class="form-group">
+          <label for="txt-lines">Lines <span class="hint-inline">(one per line, max 10)</span></label>
+          <textarea id="txt-lines" rows="3" placeholder="Line 1&#10;Line 2&#10;Line 3" maxlength="400"></textarea>
+        </div>
+        <div class="form-row three-col">
+          <div class="form-group">
+            <label for="txt-progress">Progress <span class="hint-inline" id="prog-pct-label">—</span></label>
+            <input type="range" id="txt-progress" min="-1" max="100" value="-1" step="1">
+          </div>
+          <div class="form-group">
+            <label for="txt-color">Accent colour</label>
+            <select id="txt-color">
+              <option value="blue"   selected>Blue</option>
+              <option value="green">Green</option>
+              <option value="yellow">Yellow</option>
+              <option value="red">Red</option>
+              <option value="teal">Teal</option>
+              <option value="mauve">Mauve</option>
+              <option value="peach">Peach</option>
+              <option value="white">White</option>
+            </select>
+          </div>
+          <div class="form-group check-group">
+            <label>
+              <input type="checkbox" id="txt-show-time" checked>
+              Show time
+            </label>
+          </div>
+        </div>
+        <div class="form-actions">
+          <button id="txt-send-btn" class="primary">📤 Send to panel</button>
+          <span id="txt-status"></span>
+        </div>
+      </div>
+    </section>
+
     <!-- ── Image upload ───────────────────────────────────────────── -->
     <section class="card">
       <h2>Send Image</h2>
