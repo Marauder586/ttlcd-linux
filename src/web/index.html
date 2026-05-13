@@ -31,6 +31,7 @@
         <button class="mode-btn" data-mode="network"       title="Network Rx/Tx rates">🌐<span>Network</span></button>
         <button class="mode-btn" data-mode="disk_usage"    title="Disk partition usage">💽<span>Disks</span></button>
         <button class="mode-btn" data-mode="process_top"   title="Top processes by CPU">📋<span>Processes</span></button>
+        <button class="mode-btn" data-mode="temperature"   title="Thermal sensor readings">🌡<span>Temps</span></button>
         <button class="mode-btn" data-mode="idle"          title="Keepalive — no display update">💤<span>Idle</span></button>
       </div>
     </section>
@@ -134,7 +135,7 @@
           <select id="preset-select">
             <option value="">— saved presets —</option>
           </select>
-          <button id="preset-apply-btn" title="Apply selected preset">Apply</button>
+          <button id="preset-apply-btn" title="Apply preset to panel and load into form">Apply</button>
           <button id="preset-save-btn"  title="Save current form as preset">💾 Save</button>
           <button id="preset-del-btn"   title="Delete selected preset" class="danger-btn">🗑</button>
         </div>
@@ -232,6 +233,7 @@
         <tr><td class="info-label">Version</td><td id="info-version">—</td></tr>
         <tr><td class="info-label">Mode</td><td id="info-mode">—</td></tr>
         <tr><td class="info-label">Rotation</td><td id="info-rotate">—</td></tr>
+        <tr><td class="info-label">Quality</td><td id="info-quality">—</td></tr>
         <tr><td class="info-label">Headless</td><td id="info-headless">—</td></tr>
         <tr><td class="info-label">Host</td><td id="info-host">—</td></tr>
       </table>

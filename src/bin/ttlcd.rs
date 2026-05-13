@@ -19,6 +19,7 @@ use ttlcd::{
         render_clock, render_clock_sysinfo, render_cpu_detail,
         render_disk_usage, render_network, render_process_top,
         render_custom_text, render_sysinfo, render_solid, render_test_card,
+        render_temperature,
         CustomTextPayload,
     },
     encode_for_panel, letterbox_for_panel, Panel, DEFAULT_JPEG_QUALITY, PANEL_HEIGHT, PANEL_WIDTH,
@@ -568,6 +569,7 @@ enum DisplayMode {
     Network,
     DiskUsage,
     ProcessTop,
+    Temperature,
     Idle,
     CustomImage,
     CustomText,
@@ -577,7 +579,7 @@ enum DisplayMode {
 impl DisplayMode {
     const ALL_NAMES: &'static [&'static str] = &[
         "clock", "clock_sysinfo", "sysinfo", "cpu_detail",
-        "network", "disk_usage", "process_top", "idle",
+        "network", "disk_usage", "process_top", "temperature", "idle",
     ];
 
     fn from_str_name(s: &str) -> Option<Self> {
@@ -589,6 +591,7 @@ impl DisplayMode {
             "network"       => Some(DisplayMode::Network),
             "disk_usage"    => Some(DisplayMode::DiskUsage),
             "process_top"   => Some(DisplayMode::ProcessTop),
+            "temperature"   => Some(DisplayMode::Temperature),
             "idle"          => Some(DisplayMode::Idle),
             "custom_text"   => Some(DisplayMode::CustomText),
             "slideshow"     => Some(DisplayMode::Slideshow),
@@ -605,6 +608,7 @@ impl DisplayMode {
             DisplayMode::Network      => "network",
             DisplayMode::DiskUsage    => "disk_usage",
             DisplayMode::ProcessTop   => "process_top",
+            DisplayMode::Temperature  => "temperature",
             DisplayMode::Idle         => "idle",
             DisplayMode::CustomImage  => "image",
             DisplayMode::CustomText   => "custom_text",
@@ -655,6 +659,7 @@ struct DaemonState {
 }
 
 #[tokio::main]
+#[allow(clippy::too_many_arguments)]
 async fn run_daemon(
     vid: u16, pid: u16, port: u16,
     mode: String, quality: u8,
@@ -754,11 +759,12 @@ async fn run_daemon(
             .route("/api/preview",        web::get().to(api_preview_frame))
             .route("/api/text",           web::post().to(api_text))
             .route("/api/clear",          web::post().to(api_clear))
-            // Presets API
-            .route("/api/presets",        web::get().to(api_presets_list))
-            .route("/api/presets",        web::post().to(api_presets_save))
-            .route("/api/presets/{name}", web::post().to(api_presets_apply))
-            .route("/api/presets/{name}", web::delete().to(api_presets_delete))
+            // Presets API (full CRUD)
+            .route("/api/presets",          web::get().to(api_presets_list))
+            .route("/api/presets",          web::post().to(api_presets_save))
+            .route("/api/presets/{name}",   web::get().to(api_presets_get))
+            .route("/api/presets/{name}",   web::post().to(api_presets_apply))
+            .route("/api/presets/{name}",   web::delete().to(api_presets_delete))
             // Slideshow & rotation
             .route("/api/slideshow",      web::post().to(api_slideshow))
             .route("/api/rotation",       web::post().to(api_rotation))
@@ -868,6 +874,7 @@ fn display_loop(panel: Arc<Mutex<Option<Panel>>>, state: DaemonState) {
                 DisplayMode::Network      => (render_network(),        2),
                 DisplayMode::DiskUsage    => (render_disk_usage(),     8),
                 DisplayMode::ProcessTop   => (render_process_top(),    3),
+                DisplayMode::Temperature  => (render_temperature(),    5),
                 DisplayMode::Idle
                 | DisplayMode::CustomImage
                 | DisplayMode::CustomText
@@ -940,6 +947,7 @@ struct StatusResponse {
     available_modes:   &'static [&'static str],
     headless:          bool,
     rotate_deg:        u16,
+    quality:           u8,
     frame_seq:         u64,
     can_clear:         bool,
     rotation_interval: u64,
@@ -959,6 +967,7 @@ async fn api_status(state: web::Data<DaemonState>) -> impl Responder {
         available_modes:   DisplayMode::ALL_NAMES,
         headless:          state.headless,
         rotate_deg:        state.rotate_deg,
+        quality:           state.quality,
         frame_seq,
         can_clear,
         rotation_interval: rot_interval,
@@ -1041,6 +1050,15 @@ async fn api_presets_list(state: web::Data<DaemonState>) -> impl Responder {
         .collect();
     list.sort_by(|a, b| a.name.cmp(&b.name));
     HttpResponse::Ok().json(list)
+}
+
+/// GET /api/presets/{name} — return a single preset's payload as JSON.
+async fn api_presets_get(state: web::Data<DaemonState>, name: web::Path<String>) -> impl Responder {
+    let payload = state.presets.lock().unwrap().get(name.as_str()).cloned();
+    match payload {
+        Some(p) => HttpResponse::Ok().json(p),
+        None    => HttpResponse::NotFound().body(format!("preset '{}' not found", name)),
+    }
 }
 
 #[derive(Deserialize)]

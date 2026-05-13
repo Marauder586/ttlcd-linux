@@ -987,4 +987,110 @@ mod tests {
         assert_eq!(format_uptime(3661),  "1h 1m");
         assert_eq!(format_uptime(90061), "1d 1h 1m");
     }
+
+    #[test]
+    fn test_temperature_size() {
+        // render_temperature gracefully handles no-sensor environments (VMs)
+        // by rendering a placeholder message; either way it must be 480x480.
+        assert_panel_size(&render_temperature());
+    }
+
+    #[test]
+    fn test_custom_text_size() {
+        use crate::display::{CustomTextPayload, NamedColor};
+        let payload = CustomTextPayload {
+            title:    Some("Hello World".into()),
+            subtitle: Some("subtitle".into()),
+            lines:    vec!["line 1".into(), "line 2".into()],
+            progress: Some(0.75),
+            color:    NamedColor::Green,
+            show_time: true,
+        };
+        assert_panel_size(&render_custom_text(&payload));
+    }
+}
+
+/// Thermal sensor detail — all available temperature components with color-coded bars.
+///
+/// Shows up to 10 sensors. If no sensors are available (VM, no hwmon driver),
+/// a placeholder message is shown.
+pub fn render_temperature() -> DynamicImage {
+    use sysinfo::Components;
+
+    let mut img = blank();
+    let bold = font_bold();
+    let mono = font_mono();
+
+    let now = Local::now();
+    let time_str = now.format("%H:%M:%S").to_string();
+
+    draw_text_mut(&mut img, MAUVE, 20, 14, PxScale::from(28.0), &bold, "Temperatures");
+    let tw = text_width(&mono, PxScale::from(24.0), &time_str);
+    draw_text_mut(&mut img, TEAL, 480 - 20 - tw, 18, PxScale::from(24.0), &mono, &time_str);
+    draw_divider(&mut img, 52);
+
+    let mut comps = Components::new_with_refreshed_list();
+    comps.refresh(false);
+
+    // Collect all valid readings, sorted by label
+    let mut readings: Vec<(String, f32, Option<f32>)> = comps
+        .iter()
+        .filter_map(|c| {
+            let t = c.temperature()?;
+            if t <= 0.0 || t.is_nan() { return None; }
+            let label = c.label().to_string();
+            let crit = c.critical();
+            Some((label, t, crit))
+        })
+        .collect();
+    readings.sort_by(|a, b| a.0.cmp(&b.0));
+
+    if readings.is_empty() {
+        draw_centered(&mut img, &bold, PxScale::from(20.0), 200, OVERLAY0, "No sensors detected");
+        draw_centered(&mut img, &bold, PxScale::from(16.0), 230, SURFACE0,
+            "Load hwmon kernel module or run on bare metal");
+        return DynamicImage::ImageRgb8(img);
+    }
+
+    let mut y: i32 = 62;
+    let lbl_scale = PxScale::from(15.0);
+    let val_scale = PxScale::from(15.0);
+    let bar_scale = PxScale::from(13.0);
+
+    for (label, temp, crit) in readings.iter().take(10) {
+        if y + 44 > 480 { break; }
+
+        // Determine color based on fraction of critical (or 100 °C if unknown)
+        let max_temp = crit.filter(|&c| c > 0.0).unwrap_or(100.0);
+        let frac = (temp / max_temp).clamp(0.0, 1.0);
+        let col = if frac > 0.85 { RED } else if frac > 0.65 { YELLOW } else { GREEN };
+
+        // Label
+        let lbl = if label.len() > 26 { format!("{}…", &label[..25]) } else { label.clone() };
+        draw_text_mut(&mut img, SUBTEXT, 20, y, lbl_scale, &bold, &lbl);
+
+        // Temperature value right-aligned
+        let val_s = format!("{:.1}°C", temp);
+        let vw = text_width(&mono, val_scale, &val_s);
+        draw_text_mut(&mut img, col, 480 - 20 - vw, y, val_scale, &mono, &val_s);
+        y += 18;
+
+        // Bar (350 px wide) + optional critical marker
+        draw_bar(&mut img, 20, y, 350, 10, frac, col);
+        if let Some(c) = crit.filter(|&c| c > 0.0) {
+            let crit_s = format!("crit {:.0}°", c);
+            let cw = text_width(&mono, bar_scale, &crit_s);
+            draw_text_mut(&mut img, OVERLAY0, 480 - 20 - cw, y, bar_scale, &mono, &crit_s);
+        }
+        y += 14;
+
+        draw_divider(&mut img, y); y += 8;
+    }
+
+    if readings.len() > 10 {
+        let more = format!("…and {} more sensors", readings.len() - 10);
+        draw_centered(&mut img, &bold, PxScale::from(15.0), y, OVERLAY0, &more);
+    }
+
+    DynamicImage::ImageRgb8(img)
 }

@@ -21,6 +21,7 @@ const logEl            = document.getElementById('log');
 const infoVersion      = document.getElementById('info-version');
 const infoMode         = document.getElementById('info-mode');
 const infoRotate       = document.getElementById('info-rotate');
+const infoQuality      = document.getElementById('info-quality');
 const infoHeadless     = document.getElementById('info-headless');
 const infoHost         = document.getElementById('info-host');
 const hdrVersion       = document.getElementById('hdr-version');
@@ -122,6 +123,7 @@ async function fetchStatus() {
     infoVersion.textContent    = ver;
     infoMode.textContent       = data.mode ?? '—';
     infoRotate.textContent     = data.rotate_deg != null ? `${data.rotate_deg}°` : '0°';
+    infoQuality.textContent    = data.quality != null ? `${data.quality}%` : '—';
     infoHeadless.textContent   = data.headless ? 'yes (USB skipped)' : 'no';
     hdrVersion.textContent     = `v${ver}`;
 
@@ -154,7 +156,7 @@ function updateRotationIndicator(modes, interval, currentMode) {
     modes.forEach(m => {
       const chip = document.createElement('span');
       chip.className = 'rot-chip' + (m === currentMode ? ' active-rot' : '');
-      chip.textContent = m.replace('_', ' ');
+      chip.textContent = m.replace(/_/g, ' ');
       rotModeList.appendChild(chip);
     });
   } else {
@@ -317,6 +319,31 @@ document.addEventListener('keydown', e => {
   if (e.key === 'Enter' && currentFile && !sendBtn.disabled) sendBtn.click();
 });
 
+// ── Keyboard shortcuts ────────────────────────────────────────────────────────
+// Only fire when focus is NOT inside a text input / textarea / select.
+function isFocusedOnInput() {
+  const tag = document.activeElement?.tagName?.toLowerCase();
+  return tag === 'input' || tag === 'textarea' || tag === 'select';
+}
+
+document.addEventListener('keydown', e => {
+  if (isFocusedOnInput()) return;
+
+  // Escape → return to previous mode (same as the ← Return button)
+  if (e.key === 'Escape' && returnBtn.style.display !== 'none') {
+    e.preventDefault();
+    returnBtn.click();
+    return;
+  }
+
+  // 1–9 → switch to the nth mode button (by DOM order)
+  const num = parseInt(e.key, 10);
+  if (!isNaN(num) && num >= 1 && num <= 9 && !e.ctrlKey && !e.metaKey && !e.altKey) {
+    const btn = [...modeBtns][num - 1];
+    if (btn) { e.preventDefault(); btn.click(); }
+  }
+});
+
 // ── Custom text form ──────────────────────────────────────────────────────────
 txtProgress.addEventListener('input', () => {
   const v = parseInt(txtProgress.value, 10);
@@ -434,6 +461,28 @@ async function refreshPresets() {
   } catch (_) { /* ignore */ }
 }
 
+/** Load preset payload into the text form fields (does not send to panel). */
+function loadPresetIntoForm(p) {
+  txtTitle.value    = p.title    ?? '';
+  txtSubtitle.value = p.subtitle ?? '';
+  txtLines.value    = (p.lines   ?? []).join('\n');
+  if (p.color) {
+    // Match against <select> options (case-insensitive)
+    const lc = p.color.toLowerCase();
+    const opt = [...txtColor.options].find(o => o.value === lc);
+    if (opt) txtColor.value = lc;
+  }
+  txtShowTime.checked = p.show_time !== false;
+  if (p.progress != null) {
+    const pct = Math.round(p.progress * 100);
+    txtProgress.value       = pct;
+    progPctLbl.textContent  = `${pct}%`;
+  } else {
+    txtProgress.value      = -1;
+    progPctLbl.textContent = '(off)';
+  }
+}
+
 presetSaveBtn.addEventListener('click', async () => {
   const name = prompt('Preset name:');
   if (!name?.trim()) return;
@@ -453,6 +502,13 @@ presetApplyBtn.addEventListener('click', async () => {
   const name = presetSelect.value;
   if (!name) return;
   try {
+    // First: fetch the preset data so we can populate the form
+    const gr = await fetch(`/api/presets/${encodeURIComponent(name)}`);
+    if (gr.ok) {
+      const p = await gr.json();
+      loadPresetIntoForm(p);
+    }
+    // Then: apply to panel
     const r = await fetch(`/api/presets/${encodeURIComponent(name)}`, { method: 'POST' });
     if (r.ok) { logEntry(`Applied preset: "${name}"`, 'ok'); fetchStatus(); }
     else       { logEntry(`Apply preset failed: ${await r.text()}`, 'err'); }

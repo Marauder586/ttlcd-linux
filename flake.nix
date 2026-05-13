@@ -26,7 +26,7 @@
       # ── package derivation ───────────────────────────────────────
       ttlcd = pkgs.rustPlatform.buildRustPackage {
         pname = "ttlcd";
-        version = "0.2.0";
+        version = "0.3.0";
         src = ./.;
 
         cargoLock.lockFile = ./Cargo.lock;
@@ -79,24 +79,74 @@
         ...
       }: let
         cfg = config.services.ttlcd;
+
+        # Build the ExecStart argument list
+        modeArgs =
+          lib.optionalString (cfg.rotationModes != [])
+          " --rotation-modes ${lib.concatStringsSep "," cfg.rotationModes}";
+        rotIntervalArgs =
+          lib.optionalString (cfg.rotationInterval > 0)
+          " --rotation-interval ${toString cfg.rotationInterval}";
+        headlessFlag = lib.optionalString cfg.headless " --headless";
+        rotateArgs =
+          lib.optionalString (cfg.rotate != 0)
+          " --rotate ${toString cfg.rotate}";
+        qualityArgs =
+          lib.optionalString (cfg.quality != 85)
+          " --quality ${toString cfg.quality}";
       in {
         options.services.ttlcd = {
           enable = lib.mkEnableOption "ttlcd LCD panel daemon";
+
           port = lib.mkOption {
             type = lib.types.port;
             default = 7070;
             description = "HTTP port for the web UI / API.";
           };
+
           mode = lib.mkOption {
             type = lib.types.str;
             default = "clock_sysinfo";
-            description = "Initial display mode.";
+            description = "Initial display mode on startup.";
           };
+
+          quality = lib.mkOption {
+            type = lib.types.ints.between 1 100;
+            default = 85;
+            description = "JPEG quality sent to panel (1–100).";
+          };
+
+          rotate = lib.mkOption {
+            type = lib.types.enum [0 90 180 270];
+            default = 0;
+            description = "Rotate all output by this many degrees (0/90/180/270).";
+          };
+
+          headless = lib.mkOption {
+            type = lib.types.bool;
+            default = false;
+            description = "Start without opening the USB device (web UI only).";
+          };
+
+          rotationModes = lib.mkOption {
+            type = lib.types.listOf lib.types.str;
+            default = [];
+            example = ["clock" "sysinfo" "cpu_detail" "network"];
+            description = "Ordered list of modes for auto-rotation (empty = disabled).";
+          };
+
+          rotationInterval = lib.mkOption {
+            type = lib.types.ints.unsigned;
+            default = 0;
+            description = "Seconds between auto-rotation advances (0 = disabled).";
+          };
+
           user = lib.mkOption {
             type = lib.types.str;
             default = "marauder";
             description = "User to run the daemon as.";
           };
+
           package = lib.mkOption {
             type = lib.types.package;
             default = ttlcd;
@@ -105,12 +155,28 @@
         };
 
         config = lib.mkIf cfg.enable {
+          # Udev rule: grant seat-local access to the USB panel without root.
+          # TAG+="uaccess" handles loginctl seat sessions; MODE/GROUP covers
+          # non-seat services running as cfg.user.
+          services.udev.extraRules = ''
+            SUBSYSTEM=="usb", ATTRS{idVendor}=="264a", ATTRS{idProduct}=="2343",               TAG+="uaccess", MODE="0660", GROUP="users"
+          '';
+
           systemd.services.ttlcd = {
             description = "ttlcd USB LCD panel daemon";
             wantedBy = ["multi-user.target"];
             after = ["udev.service"];
             serviceConfig = {
-              ExecStart = "${cfg.package}/bin/ttlcd daemon --port ${toString cfg.port} --mode ${cfg.mode}";
+              ExecStart = lib.concatStrings [
+                "${cfg.package}/bin/ttlcd daemon"
+                " --port ${toString cfg.port}"
+                " --mode ${cfg.mode}"
+                qualityArgs
+                rotateArgs
+                headlessFlag
+                modeArgs
+                rotIntervalArgs
+              ];
               User = cfg.user;
               Restart = "on-failure";
               RestartSec = 5;
