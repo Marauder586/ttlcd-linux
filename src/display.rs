@@ -761,6 +761,10 @@ pub struct CustomTextPayload {
     /// If true, show current time in the top-right corner.
     #[serde(default = "bool_true")]
     pub show_time: bool,
+    /// Auto-clear after this many seconds (absent = stay until manually cleared).
+    /// The daemon returns to the previous live mode when the timer expires.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration_secs: Option<u64>,
 }
 
 fn bool_true() -> bool { true }
@@ -1005,6 +1009,7 @@ mod tests {
             progress: Some(0.75),
             color:    NamedColor::Green,
             show_time: true,
+            ..Default::default()
         };
         assert_panel_size(&render_custom_text(&payload));
     }

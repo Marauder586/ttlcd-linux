@@ -666,6 +666,8 @@ struct DaemonState {
     history:    Arc<Mutex<VecDeque<HistoryEntry>>>,
     /// Countdown target (Unix seconds) + total duration + label.
     countdown:  Arc<Mutex<Option<CountdownState>>>,
+    /// Auto-clear: if set, CustomText/CustomImage reverts to prev_mode at this Unix time.
+    auto_clear_at: Arc<Mutex<Option<u64>>>,
 }
 
 #[tokio::main]
@@ -720,6 +722,7 @@ async fn run_daemon(
         rotate_deg: Arc::new(Mutex::new(rotate_deg)),
         history:    Arc::new(Mutex::new(VecDeque::with_capacity(50))),
         countdown:  Arc::new(Mutex::new(None)),
+        auto_clear_at: Arc::new(Mutex::new(None)),
     };
 
     let panel: Arc<Mutex<Option<Panel>>> = if headless {
@@ -792,6 +795,7 @@ async fn run_daemon(
             .route("/api/mode/prev",      web::post().to(api_mode_prev))
             // Notification history
             .route("/api/history",        web::get().to(api_history))
+            .route("/api/history",        web::delete().to(api_history_clear))
             // Runtime quality and orientation
             .route("/api/quality",        web::post().to(api_set_quality))
             .route("/api/orient",         web::post().to(api_set_orient))
@@ -863,6 +867,23 @@ fn display_loop(panel: Arc<Mutex<Option<Panel>>>, state: DaemonState) {
                     return Ok(());
                 }
                 DisplayMode::CustomText => {
+                    // Auto-expiry check
+                    {
+                        let exp = *state.auto_clear_at.lock().unwrap();
+                        if let Some(t) = exp {
+                            let now = std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .map(|d| d.as_secs()).unwrap_or(0);
+                            if now >= t {
+                                *state.auto_clear_at.lock().unwrap() = None;
+                                *state.pending_text.lock().unwrap() = None;
+                                let prev = state.prev_mode.lock().unwrap().clone();
+                                *state.mode.lock().unwrap() = prev;
+                                thread::sleep(Duration::from_millis(100));
+                                return Ok(());
+                            }
+                        }
+                    }
                     let payload = state.pending_text.lock().unwrap().clone();
                     if let Some(p) = payload {
                         let img  = render_custom_text(&p);
@@ -1097,6 +1118,15 @@ async fn api_upload_image(state: web::Data<DaemonState>, mut mp: Multipart) -> i
 async fn api_text(state: web::Data<DaemonState>, body: web::Json<CustomTextPayload>) -> impl Responder {
     let payload = body.into_inner();
     let summary = payload.title.clone().unwrap_or_else(|| "(no title)".into());
+    // Set auto-expiry if duration_secs was provided
+    if let Some(dur) = payload.duration_secs {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs()).unwrap_or(0);
+        *state.auto_clear_at.lock().unwrap() = Some(now + dur);
+    } else {
+        *state.auto_clear_at.lock().unwrap() = None;
+    }
     push_history(&state, HistoryKind::Text, summary);
     { let cur = state.mode.lock().unwrap().clone(); if !cur.is_transient() { *state.prev_mode.lock().unwrap() = cur; } }
     *state.pending_text.lock().unwrap() = Some(payload);
@@ -1109,6 +1139,7 @@ async fn api_clear(state: web::Data<DaemonState>) -> impl Responder {
     *state.mode.lock().unwrap()         = prev;
     *state.pending_text.lock().unwrap() = None;
     *state.pending_jpeg.lock().unwrap() = None;
+    *state.auto_clear_at.lock().unwrap() = None;
     HttpResponse::Ok().body("ok")
 }
 
@@ -1263,6 +1294,7 @@ async fn api_alert(state: web::Data<DaemonState>, body: web::Json<AlertRequest>)
         progress:  req.progress,
         color,
         show_time: true,
+        ..Default::default()
     };
     push_history(&state, HistoryKind::Alert, format!("{} — {}", title, msg_summary));
     { let cur = state.mode.lock().unwrap().clone(); if !cur.is_transient() { *state.prev_mode.lock().unwrap() = cur; } }
@@ -1488,6 +1520,15 @@ async fn api_history(state: web::Data<DaemonState>, query: web::Query<std::colle
     let h = state.history.lock().unwrap();
     let items: Vec<&HistoryEntry> = h.iter().rev().take(limit).collect();
     HttpResponse::Ok().json(items)
+}
+
+/// DELETE /api/history — clear the notification ring-buffer.
+async fn api_history_clear(state: web::Data<DaemonState>) -> impl Responder {
+    let mut h = state.history.lock().unwrap();
+    let count = h.len();
+    h.clear();
+    log::info!("notification history cleared ({} entries removed)", count);
+    HttpResponse::Ok().body(format!("cleared {} notification(s)", count))
 }
 
 // ─── Runtime quality / orient controls ───────────────────────────────────────

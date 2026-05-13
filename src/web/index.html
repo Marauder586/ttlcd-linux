@@ -34,6 +34,7 @@
         <button class="mode-btn" data-mode="process_top"   title="Top processes by CPU">📋<span>Processes</span></button>
         <button class="mode-btn" data-mode="temperature"   title="Thermal sensor readings">🌡<span>Temps</span></button>
         <button class="mode-btn" data-mode="memory_detail" title="Detailed RAM / swap breakdown">🧠<span>Memory</span></button>
+        <button class="mode-btn" data-mode="countdown"       title="Live countdown timer">⏳<span>Countdown</span></button>
         <button class="mode-btn" data-mode="idle"          title="Keepalive — no display update">💤<span>Idle</span></button>
       </div>
     </section>
@@ -124,6 +125,12 @@
               <input type="checkbox" id="txt-show-time" checked>
               Show time
             </label>
+          </div>
+        </div>
+        <div class="form-row two-col">
+          <div class="form-group">
+            <label for="txt-duration">Auto-clear after <span class="hint-inline">(seconds, 0 = keep)</span></label>
+            <input type="number" id="txt-duration" min="0" max="86400" value="0" placeholder="0 = keep until cleared">
           </div>
         </div>
         <div class="form-actions">
@@ -308,6 +315,7 @@
       <p class="card-hint">Last 20 text/alert pushes (most recent first).</p>
       <div class="hist-actions">
         <button id="hist-refresh-btn" class="small-btn">↺ Refresh</button>
+        <button id="hist-clear-btn" class="small-btn danger-btn">🗑 Clear</button>
       </div>
       <ul id="history-list" class="history-list"></ul>
     </section>

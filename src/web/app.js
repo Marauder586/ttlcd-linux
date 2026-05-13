@@ -48,6 +48,7 @@ const txtLines    = document.getElementById('txt-lines');
 const txtProgress = document.getElementById('txt-progress');
 const txtColor    = document.getElementById('txt-color');
 const txtShowTime = document.getElementById('txt-show-time');
+const txtDuration    = document.getElementById('txt-duration');
 const txtSendBtn     = document.getElementById('txt-send-btn');
 const txtPreviewBtn  = document.getElementById('txt-preview-btn');
 const txtPreviewWrap = document.getElementById('txt-preview-wrap');
@@ -414,11 +415,13 @@ function buildTextPayload() {
   const subtitle = txtSubtitle.value.trim();
   const lines    = txtLines.value.split('\n').map(l => l.trim()).filter(Boolean);
   const progVal  = parseInt(txtProgress.value, 10);
+  const durVal   = parseInt(txtDuration ? txtDuration.value : '0', 10);
   const payload  = { color: txtColor.value, show_time: txtShowTime.checked };
   if (title)          payload.title    = title;
   if (subtitle)       payload.subtitle = subtitle;
   if (lines.length)   payload.lines    = lines;
   if (progVal >= 0)   payload.progress = progVal / 100;
+  if (durVal > 0)     payload.duration_secs = durVal;
   return payload;
 }
 
@@ -774,6 +777,7 @@ cdCancelBtn.addEventListener('click', async () => {
 // ── History ───────────────────────────────────────────────────────────────────
 const historyListEl  = document.getElementById('history-list');
 const histRefreshBtn = document.getElementById('hist-refresh-btn');
+const histClearBtn   = document.getElementById('hist-clear-btn');
 
 async function refreshHistory() {
   try {
@@ -803,6 +807,23 @@ async function refreshHistory() {
 
 if (histRefreshBtn) {
   histRefreshBtn.addEventListener('click', refreshHistory);
+}
+
+if (histClearBtn) {
+  histClearBtn.addEventListener('click', async () => {
+    if (!confirm('Clear all notification history?')) return;
+    try {
+      const r = await fetch('/api/history', { method: 'DELETE' });
+      if (r.ok) {
+        logEntry(`History cleared: ${await r.text()}`, 'ok');
+        await refreshHistory();
+      } else {
+        logEntry(`History clear failed: ${await r.text()}`, 'err');
+      }
+    } catch (e) {
+      logEntry(`History clear error: ${e.message}`, 'err');
+    }
+  });
 }
 
 // ── Init ──────────────────────────────────────────────────────────────────────
