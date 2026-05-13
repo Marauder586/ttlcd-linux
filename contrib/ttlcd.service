@@ -1,0 +1,32 @@
+# Systemd user service for the ttlcd daemon.
+#
+# Installation (manual, non-NixOS):
+#   mkdir -p ~/.config/systemd/user
+#   cp contrib/ttlcd.service ~/.config/systemd/user/
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now ttlcd
+#
+# On NixOS use the nixosModules.default flake output instead.
+#
+# Logs:  journalctl --user -u ttlcd -f
+# Web UI: http://localhost:7070
+
+[Unit]
+Description=ttlcd USB LCD panel daemon
+Documentation=https://github.com/marauder/ttlcd-rs
+After=graphical-session.target
+PartOf=graphical-session.target
+
+[Service]
+ExecStart=%h/.cargo/bin/ttlcd daemon --port 7070 --mode clock_sysinfo
+Restart=on-failure
+RestartSec=5s
+# Allow time for udev to settle after login
+ExecStartPre=/bin/sleep 2
+
+Environment=RUST_LOG=info
+# Uncomment to use a release build from a specific path:
+# ExecStart=/usr/local/bin/ttlcd daemon --port 7070 --mode clock_sysinfo
+
+[Install]
+WantedBy=graphical-session.target

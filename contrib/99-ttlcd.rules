@@ -1,0 +1,17 @@
+# udev rules for XinWeiYe / Thermaltake USB LCD panels.
+#
+# Installation (manual, non-NixOS):
+#   sudo cp contrib/99-ttlcd.rules /etc/udev/rules.d/
+#   sudo udevadm control --reload-rules
+#   sudo udevadm trigger
+#
+# On NixOS add to services.udev.extraRules (already done in
+# hosts/mochi-guest/default.nix).
+
+# 3.95" square TFT, 480×480  (0x264a:0x2343)
+SUBSYSTEM=="usb", ATTRS{idVendor}=="264a", ATTRS{idProduct}=="2343", \
+  MODE="0660", GROUP="users", TAG+="uaccess"
+
+# Sibling SKU — 128-height panel  (0x264a:0x233d)
+SUBSYSTEM=="usb", ATTRS{idVendor}=="264a", ATTRS{idProduct}=="233d", \
+  MODE="0660", GROUP="users", TAG+="uaccess"

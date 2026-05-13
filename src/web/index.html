@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ttlcd — LCD Panel Control</title>
+  <link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+  <header>
+    <h1>
+      <span class="icon">🖥</span>
+      ttlcd <span class="version" id="hdr-version"></span>
+    </h1>
+    <div id="status-bar">
+      <span class="label">mode:</span>
+      <span id="current-mode" class="badge">—</span>
+    </div>
+  </header>
+
+  <main>
+    <!-- ── Display modes ──────────────────────────────────────────── -->
+    <section class="card">
+      <h2>Display Mode</h2>
+      <div class="mode-grid">
+        <button class="mode-btn" data-mode="clock" title="Large digital clock with date and load avg">
+          🕐<span>Clock</span>
+        </button>
+        <button class="mode-btn" data-mode="clock_sysinfo" title="Clock + quick stats split screen">
+          🕐📊<span>Clock+Stats</span>
+        </button>
+        <button class="mode-btn" data-mode="sysinfo" title="CPU · RAM · temperature · uptime">
+          📊<span>Sysinfo</span>
+        </button>
+        <button class="mode-btn" data-mode="cpu_detail" title="Per-core CPU usage grid">
+          🔢<span>CPU Cores</span>
+        </button>
+        <button class="mode-btn" data-mode="network" title="Network Rx/Tx rates per interface">
+          🌐<span>Network</span>
+        </button>
+        <button class="mode-btn" data-mode="disk_usage" title="Disk partition usage bars">
+          💽<span>Disks</span>
+        </button>
+        <button class="mode-btn" data-mode="process_top" title="Top processes by CPU usage">
+          📋<span>Processes</span>
+        </button>
+        <button class="mode-btn" data-mode="idle" title="Keepalive — no display update">
+          💤<span>Idle</span>
+        </button>
+      </div>
+    </section>
+
+    <!-- ── Image upload ───────────────────────────────────────────── -->
+    <section class="card">
+      <h2>Send Image</h2>
+      <div id="drop-zone" class="drop-zone">
+        <div class="drop-inner">
+          <span class="drop-icon">🖼</span>
+          <p>Drag &amp; drop an image here<br>or click to browse</p>
+          <p class="hint">Auto-letterboxed to 480×480 · JPEG/PNG/BMP/GIF</p>
+          <input type="file" id="file-input" accept="image/*" hidden>
+        </div>
+      </div>
+      <div id="preview-wrap" class="preview-wrap hidden">
+        <img id="preview" alt="preview">
+        <div class="btn-row">
+          <button id="send-btn" class="primary">⬆ Send to panel</button>
+          <button id="cancel-btn">Cancel</button>
+        </div>
+      </div>
+      <div id="upload-status"></div>
+    </section>
+
+    <!-- ── Panel preview (live render) ───────────────────────────── -->
+    <section class="card" id="panel-preview-card">
+      <h2>Panel Preview <span class="refresh-hint">(refreshes with frame)</span></h2>
+      <div class="panel-preview-wrap">
+        <img id="panel-preview-img" alt="panel preview" class="panel-preview-img">
+        <div id="panel-preview-empty" class="panel-preview-empty">
+          No frame yet — waiting for first render…
+        </div>
+      </div>
+    </section>
+
+    <!-- ── Live system snapshot ──────────────────────────────────── -->
+    <section class="card">
+      <h2>System Snapshot <span class="refresh-hint">(live)</span></h2>
+      <div class="stats-grid">
+        <div class="stat-block">
+          <div class="stat-label">CPU</div>
+          <div class="stat-val" id="stat-cpu">—</div>
+          <div class="mini-bar-track"><div class="mini-bar" id="bar-cpu"></div></div>
+        </div>
+        <div class="stat-block">
+          <div class="stat-label">RAM</div>
+          <div class="stat-val" id="stat-ram">—</div>
+          <div class="mini-bar-track"><div class="mini-bar" id="bar-ram"></div></div>
+        </div>
+        <div class="stat-block">
+          <div class="stat-label">Load avg</div>
+          <div class="stat-val mono" id="stat-load">—</div>
+        </div>
+        <div class="stat-block">
+          <div class="stat-label">Uptime</div>
+          <div class="stat-val mono" id="stat-uptime">—</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ── Panel info ─────────────────────────────────────────────── -->
+    <section class="card info-card">
+      <h2>Panel Info</h2>
+      <table id="info-table">
+        <tr><td class="info-label">Version</td><td id="info-version">—</td></tr>
+        <tr><td class="info-label">Mode</td><td id="info-mode">—</td></tr>
+        <tr><td class="info-label">Rotation</td><td id="info-rotate">—</td></tr>
+        <tr><td class="info-label">Headless</td><td id="info-headless">—</td></tr>
+        <tr><td class="info-label">Host</td><td id="info-host">—</td></tr>
+      </table>
+    </section>
+
+    <!-- ── Log ────────────────────────────────────────────────────── -->
+    <section class="card log-card">
+      <h2>Activity</h2>
+      <ul id="log"></ul>
+    </section>
+  </main>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
