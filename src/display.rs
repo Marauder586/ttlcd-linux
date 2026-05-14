@@ -5996,6 +5996,152 @@ pub fn render_matrix_rain() -> DynamicImage {
 
 
 
+
+// ─── Disk I/O history graph ───────────────────────────────────────────────────
+
+static DISK_READ_HISTORY:  OnceLock<std::sync::Mutex<std::collections::VecDeque<f32>>> = OnceLock::new();
+static DISK_WRITE_HISTORY: OnceLock<std::sync::Mutex<std::collections::VecDeque<f32>>> = OnceLock::new();
+
+fn disk_read_data() -> std::sync::MutexGuard<'static, std::collections::VecDeque<f32>> {
+    DISK_READ_HISTORY.get_or_init(|| {
+        std::sync::Mutex::new(std::collections::VecDeque::with_capacity(120))
+    })
+    .lock()
+    .unwrap()
+}
+
+fn disk_write_data() -> std::sync::MutexGuard<'static, std::collections::VecDeque<f32>> {
+    DISK_WRITE_HISTORY.get_or_init(|| {
+        std::sync::Mutex::new(std::collections::VecDeque::with_capacity(120))
+    })
+    .lock()
+    .unwrap()
+}
+
+/// Append one disk I/O sample to the ring-buffers.
+/// `read_bps` and `write_bps` are in bytes per second.
+pub fn push_disk_io_history(read_bps: f32, write_bps: f32) {
+    {
+        let mut r = disk_read_data();
+        if r.len() >= 120 { r.pop_front(); }
+        r.push_back(read_bps);
+    }
+    {
+        let mut w = disk_write_data();
+        if w.len() >= 120 { w.pop_front(); }
+        w.push_back(write_bps);
+    }
+}
+
+/// Render a disk I/O history graph (480×480).
+///
+/// Shows total disk read and write throughput as two overlaid line charts,
+/// alongside current total read/write rates and peak values.
+pub fn render_disk_io_graph() -> DynamicImage {
+    use sysinfo::{DiskRefreshKind, Disks};
+
+    // Sample disk I/O (two refreshes, 500ms apart)
+    let mut disks = Disks::new_with_refreshed_list();
+    std::thread::sleep(std::time::Duration::from_millis(200));
+    disks.refresh_specifics(false, DiskRefreshKind::everything());
+
+    let mut total_read_bps:  u64 = 0;
+    let mut total_write_bps: u64 = 0;
+    for d in disks.iter() {
+        if d.total_space() == 0 { continue; }
+        let io = d.usage();
+        total_read_bps  += io.read_bytes * 5;   // ~200ms window → ×5 for per-second
+        total_write_bps += io.written_bytes * 5;
+    }
+
+    push_disk_io_history(total_read_bps as f32, total_write_bps as f32);
+
+    let read_history:  Vec<f32> = disk_read_data().iter().cloned().collect();
+    let write_history: Vec<f32> = disk_write_data().iter().cloned().collect();
+
+    // Peaks
+    let peak_read  = read_history.iter().cloned().fold(0.0_f32, f32::max);
+    let peak_write = write_history.iter().cloned().fold(0.0_f32, f32::max);
+    let max_val    = (peak_read.max(peak_write) * 1.1).max(1024.0 * 1024.0); // at least 1 MB/s
+
+    let mut img  = blank();
+    let bold = font_bold();
+    let mono = font_mono();
+
+    // ── Header ────────────────────────────────────────────────────────────
+    let now = Local::now();
+    draw_text_mut(&mut img, OVERLAY0, 20, 18, PxScale::from(19.0), &bold, "DISK I/O GRAPH");
+    let ts = now.format("%H:%M:%S").to_string();
+    let tw = text_width(&mono, PxScale::from(22.0), &ts);
+    draw_text_mut(&mut img, OVERLAY0, 480 - 20 - tw, 18, PxScale::from(22.0), &mono, &ts);
+
+    // ── Current R/W display ───────────────────────────────────────────────
+    let read_str  = format!("R {}", format_bps(total_read_bps));
+    let write_str = format!("W {}", format_bps(total_write_bps));
+    draw_text_mut(&mut img, BLUE, 20,  52, PxScale::from(32.0), &bold, &read_str);
+    draw_text_mut(&mut img, PEACH, 250, 52, PxScale::from(32.0), &bold, &write_str);
+
+    // ── Peak row ─────────────────────────────────────────────────────────
+    let peak_str = format!("peak R {} / W {}", format_bps(peak_read as u64), format_bps(peak_write as u64));
+    let pw = text_width(&mono, PxScale::from(14.0), &peak_str);
+    draw_text_mut(&mut img, OVERLAY0, ((480 - pw) / 2).max(4), 96, PxScale::from(14.0), &mono, &peak_str);
+
+    // ── Chart area ────────────────────────────────────────────────────────
+    let chart_x = 0i32;
+    let chart_y = 120i32;
+    let chart_w = 480i32;
+    let chart_h = 320i32;
+
+    // Grid lines at 25%, 50%, 75% of max_val
+    for (pct, _label) in &[(0.25f32, "25%"), (0.5, "50%"), (0.75, "75%")] {
+        let ly = chart_y + chart_h - (chart_h as f32 * pct) as i32;
+        for x in (chart_x..(chart_x + chart_w)).step_by(8) {
+            if x >= 0 && (x as u32) < img.width() && ly >= 0 && (ly as u32) < img.height() {
+                img.put_pixel(x as u32, ly as u32, SURFACE0);
+            }
+        }
+        let val_at_pct = format_bps((max_val * pct) as u64);
+        draw_text_mut(&mut img, OVERLAY0, 2, (ly - 10).max(chart_y), PxScale::from(11.0), &mono, &val_at_pct);
+    }
+
+    // Read chart (blue fill)
+    let fill_read  = Rgb([BLUE.0[0] / 8,  BLUE.0[1] / 8,  BLUE.0[2] / 8]);
+    let fill_write = Rgb([PEACH.0[0] / 8, PEACH.0[1] / 8, PEACH.0[2] / 8]);
+    draw_line_chart(&mut img, &write_history, max_val, chart_x, chart_y, chart_w, chart_h, PEACH, fill_write);
+    draw_line_chart(&mut img, &read_history,  max_val, chart_x, chart_y, chart_w, chart_h, BLUE,  fill_read);
+
+    // Chart border
+    draw_filled_rect_mut(&mut img, Rect::at(chart_x, chart_y + chart_h).of_size(chart_w as u32, 2), SURFACE0);
+
+    // Legend
+    draw_filled_rect_mut(&mut img, Rect::at(20, 445).of_size(16, 10), BLUE);
+    draw_text_mut(&mut img, SUBTEXT, 42, 443, PxScale::from(14.0), &mono, "Read");
+    draw_filled_rect_mut(&mut img, Rect::at(100, 445).of_size(16, 10), PEACH);
+    draw_text_mut(&mut img, SUBTEXT, 122, 443, PxScale::from(14.0), &mono, "Write");
+    draw_centered(&mut img, &mono, PxScale::from(13.0), 463, OVERLAY0, "← 2 min ago                      now →");
+
+    DynamicImage::ImageRgb8(img)
+}
+
+#[cfg(test)]
+mod disk_io_graph_tests {
+    use super::*;
+
+    #[test]
+    fn test_push_disk_io_history() {
+        push_disk_io_history(1_000_000.0, 500_000.0);
+        let r: Vec<f32> = disk_read_data().iter().cloned().collect();
+        assert!(!r.is_empty());
+    }
+
+    #[test]
+    fn test_render_disk_io_graph_size() {
+        let img = render_disk_io_graph();
+        assert_eq!(img.width(), 480);
+        assert_eq!(img.height(), 480);
+    }
+}
+
 // ─── Temperature history graph ────────────────────────────────────────────────
 
 static TEMP_HISTORY: OnceLock<std::sync::Mutex<std::collections::VecDeque<f32>>> = OnceLock::new();

@@ -63,6 +63,8 @@ use ttlcd::{
         push_mem_history,
         push_temp_history,
         render_temp_graph,
+        push_disk_io_history,
+        render_disk_io_graph,
         read_docker_containers,
         read_user_sessions,
         HttpMonitorResult,
@@ -760,6 +762,7 @@ enum DisplayMode {
     Progress,
     MatrixRain,
     TempGraph,
+    DiskIoGraph,
     Idle,
     CustomImage,
     CustomText,
@@ -769,7 +772,7 @@ enum DisplayMode {
 impl DisplayMode {
     const ALL_NAMES: &'static [&'static str] = &[
         "clock", "big_clock", "clock_sysinfo", "sysinfo", "cpu_detail",
-        "network", "disk_usage", "process_top", "temperature", "memory_detail", "countdown", "cpu_graph", "net_graph", "recent_alerts", "process_memory", "disk_io", "calendar", "stopwatch", "metrics", "weather", "notes", "qr_code", "pomodoro", "battery", "world_clock", "ticker", "http_status", "shell_cmd", "ping_monitor", "dashboard", "log_tail", "cpu_freq", "hostname_ip", "rss_feed", "service_status", "net_connections", "uptime_fancy", "os_info", "docker_status", "logged_in_users", "load_graph", "mem_graph", "progress", "matrix_rain", "temp_graph", "idle",
+        "network", "disk_usage", "process_top", "temperature", "memory_detail", "countdown", "cpu_graph", "net_graph", "recent_alerts", "process_memory", "disk_io", "calendar", "stopwatch", "metrics", "weather", "notes", "qr_code", "pomodoro", "battery", "world_clock", "ticker", "http_status", "shell_cmd", "ping_monitor", "dashboard", "log_tail", "cpu_freq", "hostname_ip", "rss_feed", "service_status", "net_connections", "uptime_fancy", "os_info", "docker_status", "logged_in_users", "load_graph", "mem_graph", "progress", "matrix_rain", "temp_graph", "disk_io_graph", "idle",
     ];
 
     fn from_str_name(s: &str) -> Option<Self> {
@@ -872,6 +875,7 @@ impl DisplayMode {
             DisplayMode::Progress       => "progress",
             DisplayMode::MatrixRain     => "matrix_rain",
             DisplayMode::TempGraph      => "temp_graph",
+            DisplayMode::DiskIoGraph   => "disk_io_graph",
             DisplayMode::Idle           => "idle",
             DisplayMode::CustomImage  => "image",
             DisplayMode::CustomText   => "custom_text",
@@ -2360,6 +2364,7 @@ fn display_loop(panel: Arc<Mutex<Option<Panel>>>, state: DaemonState) {
                     (render_progress(&ps), 2)
                 },
                 DisplayMode::TempGraph    => (render_temp_graph(), 5),
+                DisplayMode::DiskIoGraph  => (render_disk_io_graph(), 5),
                 DisplayMode::MatrixRain => (render_matrix_rain(), 0),
                 DisplayMode::Idle
                 | DisplayMode::CustomImage
@@ -2371,7 +2376,8 @@ fn display_loop(panel: Arc<Mutex<Option<Panel>>>, state: DaemonState) {
             if matches!(mode, DisplayMode::Clock | DisplayMode::BigClock | DisplayMode::ClockSysinfo | DisplayMode::Sysinfo
                 | DisplayMode::CpuDetail | DisplayMode::Network | DisplayMode::DiskUsage
                 | DisplayMode::ProcessTop | DisplayMode::Temperature | DisplayMode::MemoryDetail
-                | DisplayMode::NetGraph | DisplayMode::LoadGraph | DisplayMode::MemGraph | DisplayMode::TempGraph) {
+                | DisplayMode::NetGraph | DisplayMode::LoadGraph | DisplayMode::MemGraph | DisplayMode::TempGraph
+                | DisplayMode::DiskIoGraph) {
                 use sysinfo::System;
                 let mut s = System::new_all();
                 s.refresh_cpu_usage();
@@ -2392,6 +2398,22 @@ fn display_loop(panel: Arc<Mutex<Option<Panel>>>, state: DaemonState) {
                         .filter(|t| t.is_finite() && *t > 0.0)
                         .fold(0.0_f32, f32::max);
                     if hot > 0.0 { push_temp_history(hot); }
+                }
+                // Disk I/O history (used by DiskIoGraph mode) - lightweight sample
+                {
+                    use sysinfo::{DiskRefreshKind, Disks};
+                    let mut disks = Disks::new_with_refreshed_list();
+                    disks.refresh_specifics(false, DiskRefreshKind::everything());
+                    let mut r: u64 = 0;
+                    let mut w: u64 = 0;
+                    for d in disks.iter() {
+                        if d.total_space() > 0 {
+                            let io = d.usage();
+                            r += io.read_bytes;
+                            w += io.written_bytes;
+                        }
+                    }
+                    push_disk_io_history(r as f32, w as f32);
                 }
             }
             let img  = apply_rotation(img, rotate_deg);
@@ -3708,6 +3730,7 @@ async fn api_modes_list() -> impl Responder {
         ModeInfo { name: "progress",       description: "Full-screen progress bar — configure via POST /api/progress with value/total/label" },
         ModeInfo { name: "matrix_rain",    description: "Matrix digital rain screensaver — animated falling characters" },
         ModeInfo { name: "temp_graph",     description: "CPU/component temperature history graph with thermal thresholds" },
+        ModeInfo { name: "disk_io_graph",  description: "Disk I/O history graph: total read and write throughput over time" },
         ModeInfo { name: "idle",           description: "Keepalive — no display update, prevents blank" },
     ];
     HttpResponse::Ok().json(modes)
@@ -5666,6 +5689,7 @@ async fn api_status_badge(state: web::Data<DaemonState>) -> impl Responder {
         "disk_usage" | "disk_io"                => "#f9e2af",  // yellow
         "process_top" | "process_memory"        => "#a6e3a1",  // green
         "temperature" | "temp_graph"            => "#fab387",  // peach
+        "disk_io_graph"                         => "#f9e2af",  // yellow
         "countdown"                             => "#eba0ac",  // maroon
         "recent_alerts"                         => "#f38ba8",  // red
         "idle"                                  => "#585b70",  // surface2
@@ -8627,6 +8651,7 @@ async fn api_render_mode_preview(
             DisplayMode::LoadGraph    => render_load_graph(),
             DisplayMode::MemGraph     => render_mem_graph(),
             DisplayMode::TempGraph    => render_temp_graph(),
+            DisplayMode::DiskIoGraph  => render_disk_io_graph(),
             DisplayMode::MatrixRain   => render_matrix_rain(),
             DisplayMode::Progress     => {
                 let ps = state_clone.progress_state.lock().unwrap().clone();
