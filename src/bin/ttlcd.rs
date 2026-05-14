@@ -1736,6 +1736,7 @@ async fn run_daemon(
             .route("/api/disks",          web::get().to(api_disks_json))
             .route("/api/preview",        web::get().to(api_preview_frame))
             .route("/api/preview.png",    web::get().to(api_preview_frame_png))
+            .route("/api/render/{mode}",  web::get().to(api_render_mode_preview))
             .route("/api/text",           web::post().to(api_text))
             .route("/api/clear",          web::post().to(api_clear))
             // Presets API (full CRUD)
@@ -6976,6 +6977,42 @@ async fn api_docs() -> HttpResponse {
     <tr><td>/api/services</td><td class="badge-delete">DELETE</td><td>Clear service monitor</td></tr>
   </tbody></table>
 
+  <h2>System Info (New)</h2>
+  <table><thead><tr><th>Endpoint</th><th>Method</th><th>Description</th></tr></thead><tbody>
+    <tr><td>/api/sys/os</td><td class="badge-get">GET</td><td>OS name, kernel, CPU, memory, uptime, arch</td></tr>
+    <tr><td>/api/sys/net</td><td class="badge-get">GET</td><td>Detailed network interfaces: addresses, counters, errors</td></tr>
+    <tr><td>/api/sys/snapshot</td><td class="badge-get">GET</td><td>All system stats in one call</td></tr>
+    <tr><td>/api/docker</td><td class="badge-get">GET</td><td>Docker containers list (running/stopped)</td></tr>
+    <tr><td>/api/sessions</td><td class="badge-get">GET</td><td>Active user sessions from <code>who -u</code></td></tr>
+  </tbody></table>
+
+  <h2>Progress Display</h2>
+  <table><thead><tr><th>Endpoint</th><th>Method</th><th>Description</th></tr></thead><tbody>
+    <tr><td>/api/progress</td><td class="badge-get">GET</td><td>Get current progress state</td></tr>
+    <tr><td>/api/progress</td><td class="badge-post">POST</td><td>Update progress <code>&#123;"label":"…","value":47,"total":200,"color":"blue","start_timer":true&#125;</code> — auto-switches to Progress mode</td></tr>
+    <tr><td>/api/progress</td><td class="badge-delete">DELETE</td><td>Clear progress and return to previous mode</td></tr>
+  </tbody></table>
+
+  <h2>Authentication</h2>
+  <table><thead><tr><th>Endpoint</th><th>Method</th><th>Description</th></tr></thead><tbody>
+    <tr><td>/api/auth/status</td><td class="badge-get">GET</td><td>Check if API key auth is active</td></tr>
+    <tr><td>/api/auth/key</td><td class="badge-post">POST</td><td>Enable Bearer token auth <code>&#123;"key":"secret"&#125;</code></td></tr>
+    <tr><td>/api/auth/key</td><td class="badge-delete">DELETE</td><td>Disable auth (clears key)</td></tr>
+  </tbody></table>
+
+  <h2>Push Notifications (ntfy.sh)</h2>
+  <table><thead><tr><th>Endpoint</th><th>Method</th><th>Description</th></tr></thead><tbody>
+    <tr><td>/api/ntfy/config</td><td class="badge-get">GET</td><td>Get ntfy.sh topic URL</td></tr>
+    <tr><td>/api/ntfy/config</td><td class="badge-post">POST</td><td>Set topic <code>&#123;"url":"https://ntfy.sh/my-topic"&#125;</code></td></tr>
+    <tr><td>/api/ntfy/config</td><td class="badge-delete">DELETE</td><td>Disable ntfy notifications</td></tr>
+    <tr><td>/api/ntfy/test</td><td class="badge-post">POST</td><td>Send test notification to configured topic</td></tr>
+  </tbody></table>
+
+  <h2>On-Demand Render</h2>
+  <table><thead><tr><th>Endpoint</th><th>Method</th><th>Description</th></tr></thead><tbody>
+    <tr><td>/api/render/&#123;mode&#125;</td><td class="badge-get">GET</td><td>Render any mode to JPEG without updating the panel. Query: <code>quality=85&amp;rotate=0</code></td></tr>
+  </tbody></table>
+
   <h2>Settings</h2>
   <table><thead><tr><th>Endpoint</th><th>Method</th><th>Description</th></tr></thead><tbody>
     <tr><td>/api/settings/export</td><td class="badge-get">GET</td><td>Export all settings as JSON</td></tr>
@@ -8370,4 +8407,128 @@ async fn api_clear_progress(state: web::Data<DaemonState>) -> impl Responder {
         *state.mode.lock().unwrap() = prev;
     }
     HttpResponse::Ok().body("progress cleared")
+}
+
+// ─── On-demand mode preview rendering ────────────────────────────────────────
+
+/// GET /api/render/{mode} — render any display mode to a JPEG on demand.
+///
+/// The panel is NOT updated. This is purely a preview/screenshot endpoint.
+/// Useful for generating thumbnails or testing what a mode looks like.
+///
+/// Returns: JPEG image (Content-Type: image/jpeg)
+/// Query params:
+///   `quality=N` — JPEG quality (default: current daemon quality, 1-100)
+///   `rotate=N`  — Rotation in degrees: 0, 90, 180, 270 (default: 0)
+///
+/// Example:
+///   curl "http://localhost:7070/api/render/sysinfo" > sysinfo.jpg
+///   curl "http://localhost:7070/api/render/matrix_rain?quality=90" > rain.jpg
+async fn api_render_mode_preview(
+    state:  web::Data<DaemonState>,
+    path:   web::Path<String>,
+    query:  web::Query<std::collections::HashMap<String, String>>,
+) -> impl Responder {
+    let mode_name = path.into_inner();
+    let Some(mode) = DisplayMode::from_str_name(&mode_name) else {
+        return HttpResponse::BadRequest()
+            .json(serde_json::json!({
+                "error": "unknown mode",
+                "available": DisplayMode::ALL_NAMES,
+            }));
+    };
+
+    // Quality and rotation from query params
+    let quality   = query.get("quality")
+        .and_then(|v| v.parse::<u8>().ok())
+        .unwrap_or(*state.quality.lock().unwrap())
+        .clamp(1, 100);
+    let rotate_deg = query.get("rotate")
+        .and_then(|v| v.parse::<u16>().ok())
+        .unwrap_or(0);
+
+    // Render the requested mode in a blocking task
+    let state_clone = state.clone();
+    let img_result = tokio::task::spawn_blocking(move || -> anyhow::Result<image::DynamicImage> {
+        use ttlcd::display::*;
+        let img: image::DynamicImage = match mode {
+            DisplayMode::Clock        => render_clock(),
+            DisplayMode::BigClock     => render_big_clock(),
+            DisplayMode::ClockSysinfo => render_clock_sysinfo(),
+            DisplayMode::Sysinfo      => render_sysinfo(),
+            DisplayMode::CpuDetail    => render_cpu_detail(),
+            DisplayMode::Network      => render_network(),
+            DisplayMode::DiskUsage    => render_disk_usage(),
+            DisplayMode::ProcessTop   => render_process_top(),
+            DisplayMode::Temperature  => render_temperature(),
+            DisplayMode::MemoryDetail => render_memory_detail(),
+            DisplayMode::CpuGraph     => render_cpu_graph(),
+            DisplayMode::NetGraph     => render_net_graph(),
+            DisplayMode::ProcessMemory => render_process_memory(),
+            DisplayMode::DiskIo       => render_disk_io(),
+            DisplayMode::Calendar     => render_calendar(),
+            DisplayMode::Stopwatch    => {
+                let (elapsed_ms, laps, running) = {
+                    let sw = state_clone.stopwatch.lock().unwrap();
+                    (sw.current_elapsed_ms(), sw.laps.clone(), sw.running)
+                };
+                render_stopwatch(elapsed_ms, &laps, running)
+            },
+            DisplayMode::Battery      => render_battery(),
+            DisplayMode::Dashboard    => render_dashboard(),
+            DisplayMode::CpuFreq      => render_cpu_freq(),
+            DisplayMode::HostnameIp   => render_hostname_ip(),
+            DisplayMode::NetConnections => render_net_connections(),
+            DisplayMode::UptimeFancy  => render_uptime(),
+            DisplayMode::OsInfo       => render_os_info(),
+            DisplayMode::DockerStatus => {
+                let containers = read_docker_containers();
+                render_docker_status(&containers)
+            },
+            DisplayMode::LoggedInUsers => {
+                let sessions = read_user_sessions();
+                render_logged_in_users(&sessions)
+            },
+            DisplayMode::LoadGraph    => render_load_graph(),
+            DisplayMode::MemGraph     => render_mem_graph(),
+            DisplayMode::MatrixRain   => render_matrix_rain(),
+            DisplayMode::Progress     => {
+                let ps = state_clone.progress_state.lock().unwrap().clone();
+                render_progress(&ps)
+            },
+            DisplayMode::RssFeed => {
+                let title = state_clone.rss_feed_title.lock().unwrap().clone();
+                let items = state_clone.rss_feed_items.lock().unwrap().clone();
+                let ok    = *state_clone.rss_feed_ok.lock().unwrap();
+                render_rss_feed(&title, &items, ok)
+            },
+            DisplayMode::ServiceStatus => {
+                let units = state_clone.service_statuses.lock().unwrap().clone();
+                render_service_status(&units)
+            },
+            // Modes that require special context — return a blank with label
+            _ => {
+                let mut blank = image::RgbImage::new(480, 480);
+                for pix in blank.pixels_mut() { *pix = image::Rgb([30, 30, 46]); }
+                image::DynamicImage::ImageRgb8(blank)
+            }
+        };
+        Ok(img)
+    }).await;
+
+    let img = match img_result {
+        Ok(Ok(i))  => i,
+        Ok(Err(e)) => return HttpResponse::InternalServerError().body(format!("render error: {e}")),
+        Err(e)     => return HttpResponse::InternalServerError().body(format!("task error: {e}")),
+    };
+
+    let img = apply_rotation(img, rotate_deg);
+    match encode_for_panel(&img, quality) {
+        Ok(jpeg) => HttpResponse::Ok()
+            .content_type("image/jpeg")
+            .insert_header(("X-Mode", mode_name.as_str()))
+            .insert_header(("X-Quality", quality.to_string().as_str()))
+            .body(jpeg),
+        Err(e) => HttpResponse::InternalServerError().body(format!("encode error: {e}")),
+    }
 }
