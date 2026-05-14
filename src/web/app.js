@@ -3266,6 +3266,9 @@ document.addEventListener('keydown', e => {
     case 'W':  // Shift+W = Logged-in Users
       api('POST', '/api/mode', { mode: 'logged_in_users' }).then(() => fetchStatus()).catch(() => {});
       break;
+    case 'T':  // Shift+T = Temp Graph
+      api('POST', '/api/mode', { mode: 'temp_graph' }).then(() => fetchStatus()).catch(() => {});
+      break;
     case 'Escape':
       if (returnBtn.style.display !== 'none') returnBtn.click();
       break;
@@ -3625,6 +3628,85 @@ async function fetchAuthStatus() {
   }
 
   fetchAuthStatus();
+})();
+
+
+// ─── Screensaver / idle timeout section ──────────────────────────────────────
+
+async function fetchScreensaverStatus() {
+  try {
+    const data = await api('GET', '/api/screensaver');
+    const line = document.getElementById('screensaver-status-line');
+    if (!line) return;
+    if (data.enabled) {
+      const since = data.seconds_since_activity;
+      const remaining = Math.max(0, data.timeout_secs - since);
+      if (data.active) {
+        line.innerHTML = `💤 <strong>Screensaver active</strong> — showing <em>${data.mode}</em>. Any API call wakes the display.`;
+        line.style.color = 'var(--blue)';
+      } else {
+        line.innerHTML = `✅ Screensaver enabled — activates after <strong>${data.timeout_secs}s</strong> of inactivity `
+          + `(mode: <em>${data.mode}</em>, ${remaining}s remaining).`;
+        line.style.color = 'var(--green)';
+      }
+    } else {
+      line.innerHTML = '⚪ Screensaver is <em>disabled</em>.';
+      line.style.color = 'var(--overlay0)';
+    }
+    // Update form fields
+    const timeoutInput = document.getElementById('ss-timeout-input');
+    const modeSelect   = document.getElementById('ss-mode-select');
+    if (timeoutInput) timeoutInput.value = data.timeout_secs;
+    if (modeSelect) modeSelect.value = data.mode;
+  } catch (_) {}
+}
+
+(function injectScreensaverSection() {
+  const saveBtn    = document.getElementById('ss-save-btn');
+  const wakeBtn    = document.getElementById('ss-wake-btn');
+  const disableBtn = document.getElementById('ss-disable-btn');
+  const statusEl   = document.getElementById('ss-action-status');
+
+  if (saveBtn) {
+    saveBtn.addEventListener('click', async () => {
+      const timeout = parseInt(document.getElementById('ss-timeout-input')?.value || '0', 10);
+      const mode    = document.getElementById('ss-mode-select')?.value || 'matrix_rain';
+      try {
+        await api('POST', '/api/screensaver', { timeout_secs: timeout, mode });
+        if (statusEl) statusEl.textContent = timeout > 0 ? `Saved — activates after ${timeout}s idle` : 'Disabled';
+        await fetchScreensaverStatus();
+      } catch (e) {
+        if (statusEl) statusEl.textContent = `Error: ${e.message}`;
+      }
+    });
+  }
+
+  if (wakeBtn) {
+    wakeBtn.addEventListener('click', async () => {
+      try {
+        const r = await api('POST', '/api/screensaver/wake');
+        if (statusEl) statusEl.textContent = r.was_active ? 'Woke from screensaver' : 'Not in screensaver';
+        await fetchScreensaverStatus();
+      } catch (e) {
+        if (statusEl) statusEl.textContent = `Error: ${e.message}`;
+      }
+    });
+  }
+
+  if (disableBtn) {
+    disableBtn.addEventListener('click', async () => {
+      try {
+        await api('DELETE', '/api/screensaver');
+        if (statusEl) statusEl.textContent = 'Screensaver disabled';
+        await fetchScreensaverStatus();
+      } catch (e) {
+        if (statusEl) statusEl.textContent = `Error: ${e.message}`;
+      }
+    });
+  }
+
+  fetchScreensaverStatus();
+  setInterval(fetchScreensaverStatus, 15000);  // refresh status every 15s
 })();
 
 // ─── Boot ─────────────────────────────────────────────────────────────────────

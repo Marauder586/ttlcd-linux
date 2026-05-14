@@ -61,6 +61,8 @@ use ttlcd::{
         ProgressState,
         push_load_history,
         push_mem_history,
+        push_temp_history,
+        render_temp_graph,
         read_docker_containers,
         read_user_sessions,
         HttpMonitorResult,
@@ -757,6 +759,7 @@ enum DisplayMode {
     MemGraph,
     Progress,
     MatrixRain,
+    TempGraph,
     Idle,
     CustomImage,
     CustomText,
@@ -766,7 +769,7 @@ enum DisplayMode {
 impl DisplayMode {
     const ALL_NAMES: &'static [&'static str] = &[
         "clock", "big_clock", "clock_sysinfo", "sysinfo", "cpu_detail",
-        "network", "disk_usage", "process_top", "temperature", "memory_detail", "countdown", "cpu_graph", "net_graph", "recent_alerts", "process_memory", "disk_io", "calendar", "stopwatch", "metrics", "weather", "notes", "qr_code", "pomodoro", "battery", "world_clock", "ticker", "http_status", "shell_cmd", "ping_monitor", "dashboard", "log_tail", "cpu_freq", "hostname_ip", "rss_feed", "service_status", "net_connections", "uptime_fancy", "os_info", "docker_status", "logged_in_users", "load_graph", "mem_graph", "progress", "matrix_rain", "idle",
+        "network", "disk_usage", "process_top", "temperature", "memory_detail", "countdown", "cpu_graph", "net_graph", "recent_alerts", "process_memory", "disk_io", "calendar", "stopwatch", "metrics", "weather", "notes", "qr_code", "pomodoro", "battery", "world_clock", "ticker", "http_status", "shell_cmd", "ping_monitor", "dashboard", "log_tail", "cpu_freq", "hostname_ip", "rss_feed", "service_status", "net_connections", "uptime_fancy", "os_info", "docker_status", "logged_in_users", "load_graph", "mem_graph", "progress", "matrix_rain", "temp_graph", "idle",
     ];
 
     fn from_str_name(s: &str) -> Option<Self> {
@@ -868,6 +871,7 @@ impl DisplayMode {
             DisplayMode::MemGraph       => "mem_graph",
             DisplayMode::Progress       => "progress",
             DisplayMode::MatrixRain     => "matrix_rain",
+            DisplayMode::TempGraph      => "temp_graph",
             DisplayMode::Idle           => "idle",
             DisplayMode::CustomImage  => "image",
             DisplayMode::CustomText   => "custom_text",
@@ -1105,6 +1109,15 @@ struct DaemonState {
     ntfy_url: Arc<Mutex<Option<String>>>,
     /// Progress bar display state for the Progress mode.
     progress_state: Arc<Mutex<ttlcd::display::ProgressState>>,
+    /// Unix-second timestamp of the last non-static API activity.
+    /// Updated by the activity middleware on every API request.
+    last_activity_secs: Arc<Mutex<u64>>,
+    /// If > 0, auto-switch to `screensaver_mode_name` after this many seconds of inactivity.
+    screensaver_timeout_secs: Arc<Mutex<u64>>,
+    /// Which display mode to use as screensaver (default: "matrix_rain").
+    screensaver_mode_name: Arc<Mutex<String>>,
+    /// True while the screensaver mode is currently active due to inactivity.
+    screensaver_active: Arc<Mutex<bool>>,
 }
 
 /// A single entry in the display-mode schedule.
@@ -1539,6 +1552,10 @@ async fn run_daemon(
         api_key:               Arc::new(Mutex::new(None)),
         ntfy_url:              Arc::new(Mutex::new(None)),
         progress_state:        Arc::new(Mutex::new(ttlcd::display::ProgressState::default())),
+        last_activity_secs:    Arc::new(Mutex::new(0u64)),
+        screensaver_timeout_secs: Arc::new(Mutex::new(0u64)),
+        screensaver_mode_name:    Arc::new(Mutex::new("matrix_rain".to_string())),
+        screensaver_active:       Arc::new(Mutex::new(false)),
     };
 
     let panel: Arc<Mutex<Option<Panel>>> = if headless {
@@ -1709,6 +1726,17 @@ async fn run_daemon(
     {
         let state_svc = state.clone();
         tokio::spawn(async move { service_status_loop(state_svc).await });
+    }
+
+    // ── Screensaver idle-detection thread ────────────────────────────────
+    {
+        // Seed last_activity_secs so screensaver doesn't fire immediately on startup
+        *state.last_activity_secs.lock().unwrap() = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let state_ss = state.clone();
+        thread::spawn(move || screensaver_loop(state_ss));
     }
 
     // ── HTTP server ────────────────────────────────────────────────────────
@@ -1945,6 +1973,11 @@ async fn run_daemon(
             .route("/api/ntfy/config",              web::post().to(api_set_ntfy_config))
             .route("/api/ntfy/config",              web::delete().to(api_clear_ntfy_config))
             .route("/api/ntfy/test",                web::post().to(api_ntfy_test))
+            // Screensaver
+            .route("/api/screensaver",       web::get().to(api_get_screensaver))
+            .route("/api/screensaver",       web::post().to(api_set_screensaver))
+            .route("/api/screensaver",       web::delete().to(api_clear_screensaver))
+            .route("/api/screensaver/wake",  web::post().to(api_screensaver_wake))
             // API docs
             .route("/api/docs",           web::get().to(api_docs))
             // Web UI
@@ -2294,6 +2327,7 @@ fn display_loop(panel: Arc<Mutex<Option<Panel>>>, state: DaemonState) {
                     let ps = state.progress_state.lock().unwrap().clone();
                     (render_progress(&ps), 2)
                 },
+                DisplayMode::TempGraph    => (render_temp_graph(), 5),
                 DisplayMode::MatrixRain => (render_matrix_rain(), 0),
                 DisplayMode::Idle
                 | DisplayMode::CustomImage
@@ -2305,7 +2339,7 @@ fn display_loop(panel: Arc<Mutex<Option<Panel>>>, state: DaemonState) {
             if matches!(mode, DisplayMode::Clock | DisplayMode::BigClock | DisplayMode::ClockSysinfo | DisplayMode::Sysinfo
                 | DisplayMode::CpuDetail | DisplayMode::Network | DisplayMode::DiskUsage
                 | DisplayMode::ProcessTop | DisplayMode::Temperature | DisplayMode::MemoryDetail
-                | DisplayMode::NetGraph | DisplayMode::LoadGraph | DisplayMode::MemGraph) {
+                | DisplayMode::NetGraph | DisplayMode::LoadGraph | DisplayMode::MemGraph | DisplayMode::TempGraph) {
                 use sysinfo::System;
                 let mut s = System::new_all();
                 s.refresh_cpu_usage();
@@ -2316,6 +2350,16 @@ fn display_loop(panel: Arc<Mutex<Option<Panel>>>, state: DaemonState) {
                 let total = s.total_memory();
                 if total > 0 {
                     push_mem_history(s.used_memory() as f32 / total as f32 * 100.0);
+                }
+                // Temperature history (used by TempGraph mode)
+                {
+                    use sysinfo::Components;
+                    let comps = Components::new_with_refreshed_list();
+                    let hot = comps.iter()
+                        .filter_map(|c| c.temperature())
+                        .filter(|t| t.is_finite() && *t > 0.0)
+                        .fold(0.0_f32, f32::max);
+                    if hot > 0.0 { push_temp_history(hot); }
                 }
             }
             let img  = apply_rotation(img, rotate_deg);
@@ -3298,6 +3342,33 @@ async fn auth_middleware(
         }
     }
 
+    // Update last-activity timestamp for screensaver idle detection.
+    // Skip updates for pure-static or SSE/stream paths.
+    {
+        let path = req.path();
+        let is_static = path == "/" || path.starts_with("/static/")
+            || path.starts_with("/api/events") || path.starts_with("/api/stream")
+            || path == "/api/stream.mjpeg" || path == "/metrics";
+        if !is_static {
+            if let Some(s) = req.app_data::<web::Data<DaemonState>>() {
+                let now_secs = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0);
+                *s.last_activity_secs.lock().unwrap() = now_secs;
+                // If screensaver was active, deactivate it and restore the previous mode
+                let was_active = {
+                    let mut a = s.screensaver_active.lock().unwrap();
+                    if *a { *a = false; true } else { false }
+                };
+                if was_active {
+                    let prev = s.prev_mode.lock().unwrap().clone();
+                    *s.mode.lock().unwrap() = prev;
+                }
+            }
+        }
+    }
+
     next.call(req).await
 }
 
@@ -3604,6 +3675,7 @@ async fn api_modes_list() -> impl Responder {
         ModeInfo { name: "mem_graph",      description: "Memory usage history graph: RAM % over time as a filled line chart" },
         ModeInfo { name: "progress",       description: "Full-screen progress bar — configure via POST /api/progress with value/total/label" },
         ModeInfo { name: "matrix_rain",    description: "Matrix digital rain screensaver — animated falling characters" },
+        ModeInfo { name: "temp_graph",     description: "CPU/component temperature history graph with thermal thresholds" },
         ModeInfo { name: "idle",           description: "Keepalive — no display update, prevents blank" },
     ];
     HttpResponse::Ok().json(modes)
@@ -5543,7 +5615,7 @@ async fn api_status_badge(state: web::Data<DaemonState>) -> impl Responder {
         "network" | "net_graph"                 => "#94e2d5",  // teal
         "disk_usage" | "disk_io"                => "#f9e2af",  // yellow
         "process_top" | "process_memory"        => "#a6e3a1",  // green
-        "temperature"                           => "#fab387",  // peach
+        "temperature" | "temp_graph"            => "#fab387",  // peach
         "countdown"                             => "#eba0ac",  // maroon
         "recent_alerts"                         => "#f38ba8",  // red
         "idle"                                  => "#585b70",  // surface2
@@ -6991,6 +7063,14 @@ async fn api_docs() -> HttpResponse {
     <tr><td>/api/progress</td><td class="badge-get">GET</td><td>Get current progress state</td></tr>
     <tr><td>/api/progress</td><td class="badge-post">POST</td><td>Update progress <code>&#123;"label":"…","value":47,"total":200,"color":"blue","start_timer":true&#125;</code> — auto-switches to Progress mode</td></tr>
     <tr><td>/api/progress</td><td class="badge-delete">DELETE</td><td>Clear progress and return to previous mode</td></tr>
+  </tbody></table>
+
+  <h2>Screensaver / Idle Timeout</h2>
+  <table><thead><tr><th>Endpoint</th><th>Method</th><th>Description</th></tr></thead><tbody>
+    <tr><td>/api/screensaver</td><td class="badge-get">GET</td><td>Get screensaver config: timeout, mode, active status, seconds since activity</td></tr>
+    <tr><td>/api/screensaver</td><td class="badge-post">POST</td><td>Configure screensaver <code>&#123;"timeout_secs":300,"mode":"matrix_rain"&#125;</code> — 0 to disable</td></tr>
+    <tr><td>/api/screensaver</td><td class="badge-delete">DELETE</td><td>Disable screensaver</td></tr>
+    <tr><td>/api/screensaver/wake</td><td class="badge-post">POST</td><td>Immediately deactivate screensaver and restore previous mode</td></tr>
   </tbody></table>
 
   <h2>Authentication</h2>
@@ -8491,6 +8571,7 @@ async fn api_render_mode_preview(
             },
             DisplayMode::LoadGraph    => render_load_graph(),
             DisplayMode::MemGraph     => render_mem_graph(),
+            DisplayMode::TempGraph    => render_temp_graph(),
             DisplayMode::MatrixRain   => render_matrix_rain(),
             DisplayMode::Progress     => {
                 let ps = state_clone.progress_state.lock().unwrap().clone();
@@ -8531,4 +8612,178 @@ async fn api_render_mode_preview(
             .body(jpeg),
         Err(e) => HttpResponse::InternalServerError().body(format!("encode error: {e}")),
     }
+}
+
+
+// ─── Auto-screensaver idle detection ─────────────────────────────────────────
+
+/// Background thread: monitors user inactivity and activates/deactivates
+/// the screensaver mode.
+///
+/// When `screensaver_timeout_secs` is > 0 and the time since `last_activity_secs`
+/// exceeds the timeout, the daemon switches to `screensaver_mode_name`.
+///
+/// The screensaver is deactivated automatically when the next API call arrives
+/// (handled in `auth_middleware`).
+fn screensaver_loop(state: DaemonState) {
+    loop {
+        thread::sleep(std::time::Duration::from_secs(10));
+
+        let timeout = *state.screensaver_timeout_secs.lock().unwrap();
+        if timeout == 0 {
+            continue; // screensaver disabled
+        }
+
+        let last = *state.last_activity_secs.lock().unwrap();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+
+        let already_active = *state.screensaver_active.lock().unwrap();
+
+        if !already_active && now.saturating_sub(last) >= timeout {
+            // Activate screensaver
+            let ss_name = state.screensaver_mode_name.lock().unwrap().clone();
+            if let Some(ss_mode) = DisplayMode::from_str_name(&ss_name) {
+                let cur = state.mode.lock().unwrap().clone();
+                if !cur.is_transient() && cur.as_str() != ss_name.as_str() {
+                    log::info!(
+                        "screensaver: activating {} after {}s of inactivity",
+                        ss_name, timeout
+                    );
+                    *state.prev_mode.lock().unwrap() = cur;
+                    *state.mode.lock().unwrap()       = ss_mode;
+                    *state.screensaver_active.lock().unwrap() = true;
+                }
+            }
+        }
+    }
+}
+
+// ─── Screensaver API handlers ─────────────────────────────────────────────────
+
+/// GET /api/screensaver — get current screensaver configuration and status.
+///
+/// Response:
+/// ```json
+/// {
+///   "enabled": true,
+///   "timeout_secs": 300,
+///   "mode": "matrix_rain",
+///   "active": false,
+///   "seconds_since_activity": 42
+/// }
+/// ```
+async fn api_get_screensaver(state: web::Data<DaemonState>) -> impl Responder {
+    let timeout = *state.screensaver_timeout_secs.lock().unwrap();
+    let mode    = state.screensaver_mode_name.lock().unwrap().clone();
+    let active  = *state.screensaver_active.lock().unwrap();
+    let last    = *state.last_activity_secs.lock().unwrap();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let since_activity = now.saturating_sub(last);
+
+    HttpResponse::Ok().json(serde_json::json!({
+        "enabled": timeout > 0,
+        "timeout_secs": timeout,
+        "mode": mode,
+        "active": active,
+        "seconds_since_activity": since_activity,
+    }))
+}
+
+#[derive(Deserialize)]
+struct ScreensaverConfig {
+    /// Timeout in seconds before screensaver activates. Set to 0 to disable.
+    #[serde(default)]
+    timeout_secs: Option<u64>,
+    /// Display mode name to use as screensaver (e.g. "matrix_rain", "idle").
+    #[serde(default)]
+    mode: Option<String>,
+}
+
+/// POST /api/screensaver — configure the screensaver.
+///
+/// Body (JSON):
+/// ```json
+/// { "timeout_secs": 300, "mode": "matrix_rain" }
+/// ```
+///
+/// Set `timeout_secs` to 0 (or DELETE) to disable. Omit either field to keep
+/// its current value.
+async fn api_set_screensaver(
+    state: web::Data<DaemonState>,
+    body:  web::Json<ScreensaverConfig>,
+) -> impl Responder {
+    let req = body.into_inner();
+
+    if let Some(timeout) = req.timeout_secs {
+        *state.screensaver_timeout_secs.lock().unwrap() = timeout;
+        if timeout == 0 {
+            // Also deactivate if currently active
+            let was_active = {
+                let mut a = state.screensaver_active.lock().unwrap();
+                if *a { *a = false; true } else { false }
+            };
+            if was_active {
+                let prev = state.prev_mode.lock().unwrap().clone();
+                *state.mode.lock().unwrap() = prev;
+            }
+        }
+    }
+
+    if let Some(ref mode_name) = req.mode {
+        if DisplayMode::from_str_name(mode_name).is_none() {
+            return HttpResponse::BadRequest().json(serde_json::json!({
+                "error": "unknown mode",
+                "available": DisplayMode::ALL_NAMES,
+            }));
+        }
+        *state.screensaver_mode_name.lock().unwrap() = mode_name.clone();
+    }
+
+    let timeout = *state.screensaver_timeout_secs.lock().unwrap();
+    HttpResponse::Ok().json(serde_json::json!({
+        "ok": true,
+        "enabled": timeout > 0,
+        "timeout_secs": timeout,
+        "mode": *state.screensaver_mode_name.lock().unwrap(),
+    }))
+}
+
+/// DELETE /api/screensaver — disable the screensaver.
+async fn api_clear_screensaver(state: web::Data<DaemonState>) -> impl Responder {
+    *state.screensaver_timeout_secs.lock().unwrap() = 0;
+    // Deactivate if currently running
+    let was_active = {
+        let mut a = state.screensaver_active.lock().unwrap();
+        if *a { *a = false; true } else { false }
+    };
+    if was_active {
+        let prev = state.prev_mode.lock().unwrap().clone();
+        *state.mode.lock().unwrap() = prev;
+    }
+    HttpResponse::Ok().body("screensaver disabled")
+}
+
+/// POST /api/screensaver/wake — immediately deactivate the screensaver
+/// and restore the previous mode (useful for hardware button integrations).
+async fn api_screensaver_wake(state: web::Data<DaemonState>) -> impl Responder {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    *state.last_activity_secs.lock().unwrap() = now;
+    let was_active = {
+        let mut a = state.screensaver_active.lock().unwrap();
+        if *a { *a = false; true } else { false }
+    };
+    if was_active {
+        let prev = state.prev_mode.lock().unwrap().clone();
+        *state.mode.lock().unwrap() = prev;
+    }
+    HttpResponse::Ok().json(serde_json::json!({ "ok": true, "was_active": was_active }))
 }

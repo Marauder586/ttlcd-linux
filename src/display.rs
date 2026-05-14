@@ -5903,6 +5903,144 @@ pub fn render_matrix_rain() -> DynamicImage {
     DynamicImage::ImageRgb8(img_ref.clone())
 }
 
+
+
+
+// ─── Temperature history graph ────────────────────────────────────────────────
+
+static TEMP_HISTORY: OnceLock<std::sync::Mutex<std::collections::VecDeque<f32>>> = OnceLock::new();
+
+fn temp_graph_data() -> std::sync::MutexGuard<'static, std::collections::VecDeque<f32>> {
+    TEMP_HISTORY.get_or_init(|| {
+        std::sync::Mutex::new(std::collections::VecDeque::with_capacity(120))
+    })
+    .lock()
+    .unwrap()
+}
+
+/// Append one temperature sample (°C) to the temperature history ring-buffer.
+pub fn push_temp_history(temp_c: f32) {
+    let mut buf = temp_graph_data();
+    if buf.len() >= 120 { buf.pop_front(); }
+    buf.push_back(temp_c);
+}
+
+/// Returns the hottest component temperature in degrees Celsius, or 0.0 if unavailable.
+pub fn hottest_component_temp() -> f32 {
+    use sysinfo::Components;
+    let comps = Components::new_with_refreshed_list();
+    comps.iter()
+        .filter_map(|c| c.temperature())
+        .filter(|t| t.is_finite() && *t > 0.0)
+        .fold(0.0_f32, f32::max)
+}
+
+/// Render a CPU/component temperature history graph (480×480).
+///
+/// Shows the hottest component temperature as a filled line chart over the
+/// last ~2 minutes, with current/peak/average values and thermal thresholds.
+pub fn render_temp_graph() -> DynamicImage {
+    use sysinfo::Components;
+
+    // Refresh and sample the hottest sensor
+    let comps = Components::new_with_refreshed_list();
+    let temps: Vec<f32> = comps.iter()
+        .filter_map(|c| c.temperature())
+        .filter(|t| t.is_finite() && *t > 0.0)
+        .collect();
+
+    let current_temp = temps.iter().cloned().fold(0.0_f32, f32::max);
+    push_temp_history(current_temp);
+
+    let history: Vec<f32> = temp_graph_data().iter().cloned().collect();
+
+    // Stats
+    let peak_temp = history.iter().cloned().fold(0.0_f32, f32::max);
+    let avg_temp  = if history.is_empty() { 0.0 }
+                    else { history.iter().sum::<f32>() / history.len() as f32 };
+
+    let max_display = (peak_temp.max(current_temp) * 1.1).max(100.0);
+
+    let mut img  = blank();
+    let bold = font_bold();
+    let mono = font_mono();
+
+    // ── Header ────────────────────────────────────────────────────────────
+    let now = Local::now();
+    draw_text_mut(&mut img, OVERLAY0, 20, 18, PxScale::from(19.0), &bold, "TEMP GRAPH");
+    let ts = now.format("%H:%M:%S").to_string();
+    let tw = text_width(&mono, PxScale::from(22.0), &ts);
+    draw_text_mut(&mut img, OVERLAY0, 480 - 20 - tw, 18, PxScale::from(22.0), &mono, &ts);
+
+    // ── Current temperature — large ───────────────────────────────────────
+    let accent = if current_temp >= 85.0 { RED }
+                 else if current_temp >= 70.0 { PEACH }
+                 else if current_temp >= 55.0 { YELLOW }
+                 else { GREEN };
+
+    let temp_str = format!("{:.1}°C", current_temp);
+    draw_centered(&mut img, &bold, PxScale::from(80.0), 42, accent, &temp_str);
+
+    // ── Stats row ─────────────────────────────────────────────────────────
+    let stats_str = format!(
+        "peak {:.1}°   avg {:.1}°   sensors: {}",
+        peak_temp, avg_temp, temps.len()
+    );
+    let sw = text_width(&mono, PxScale::from(15.0), &stats_str);
+    draw_text_mut(&mut img, SUBTEXT, ((480 - sw) / 2).max(0), 148, PxScale::from(15.0), &mono, &stats_str);
+
+    // ── Chart area ────────────────────────────────────────────────────────
+    let chart_x = 0i32;
+    let chart_y = 170i32;
+    let chart_w = 480i32;
+    let chart_h = 280i32;
+
+    // Thermal threshold guide lines
+    for (threshold, label, color) in &[(55.0f32, "55°", YELLOW), (70.0, "70°", PEACH), (85.0, "85°", RED)] {
+        if *threshold > max_display { continue; }
+        let ly = chart_y + chart_h - (chart_h as f32 * threshold / max_display) as i32;
+        if ly < chart_y { continue; }
+        // Dashed line
+        for x in (chart_x..(chart_x + chart_w)).step_by(8) {
+            if x >= 0 && (x as u32) < img.width() && ly >= 0 && (ly as u32) < img.height() {
+                img.put_pixel(x as u32, ly as u32, *color);
+            }
+        }
+        draw_text_mut(&mut img, *color, chart_x + 4, (ly - 14).max(chart_y), PxScale::from(12.0), &mono, label);
+    }
+
+    // Fill + line chart
+    let fill_color = Rgb([accent.0[0] / 6, accent.0[1] / 6, accent.0[2] / 6]);
+    draw_line_chart(&mut img, &history, max_display, chart_x, chart_y, chart_w, chart_h, accent, fill_color);
+
+    // Bottom border + time axis label
+    draw_filled_rect_mut(&mut img, Rect::at(chart_x, chart_y + chart_h).of_size(chart_w as u32, 2), SURFACE0);
+    draw_centered(&mut img, &mono, PxScale::from(14.0), chart_y + chart_h + 6, OVERLAY0, "← 2 min ago                      now →");
+
+    DynamicImage::ImageRgb8(img)
+}
+
+#[cfg(test)]
+mod temp_graph_tests {
+    use super::*;
+
+    #[test]
+    fn test_push_temp_history() {
+        push_temp_history(65.0);
+        push_temp_history(72.0);
+        let buf: Vec<f32> = temp_graph_data().iter().cloned().collect();
+        assert!(!buf.is_empty());
+        assert!(buf.contains(&65.0) || buf.contains(&72.0));
+    }
+
+    #[test]
+    fn test_render_temp_graph_size() {
+        let img = render_temp_graph();
+        assert_eq!(img.width(), 480);
+        assert_eq!(img.height(), 480);
+    }
+}
+
 #[cfg(test)]
 mod matrix_tests {
     use super::*;

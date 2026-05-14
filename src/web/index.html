@@ -71,6 +71,7 @@
         <button class="mode-btn" data-mode="load_graph"        title="Load average history: 1m/5m/15m load avg as a filled line chart">📈<span>Load Graph</span></button>
         <button class="mode-btn" data-mode="mem_graph"         title="Memory usage history: RAM % over time as a filled line chart">📊<span>Mem Graph</span></button>
         <button class="mode-btn" data-mode="matrix_rain"      title="Matrix digital rain screensaver — animated falling green characters">🟩<span>Matrix</span></button>
+        <button class="mode-btn" data-mode="temp_graph"        title="Temperature history graph — CPU/component temperature over time with thermal thresholds">🌡<span>Temp Graph</span></button>
         <button class="mode-btn" data-mode="idle"              title="Keepalive — no display update">💤<span>Idle</span></button>
       </div>
     </section>
@@ -599,6 +600,33 @@
       </div>
     </details>
 
+    <!-- ── Screensaver / Idle Timeout ──────────────────────────────── -->
+    <details class="card" id="screensaver-section">
+      <summary>💤 Screensaver / Idle Timeout</summary>
+      <p class="card-hint">Automatically switch to a screensaver mode (e.g. Matrix Rain or Idle) after a period of inactivity. Any API call wakes the display and restores the previous mode.</p>
+      <div id="screensaver-status-line" class="hint-inline" style="display:block;margin-bottom:0.5rem"></div>
+      <div class="form-row two-col">
+        <div class="form-group">
+          <label for="ss-timeout-input">Timeout (seconds) <span class="hint-inline">0 = disabled</span></label>
+          <input type="number" id="ss-timeout-input" min="0" max="86400" value="0" placeholder="e.g. 300">
+        </div>
+        <div class="form-group">
+          <label for="ss-mode-select">Screensaver Mode</label>
+          <select id="ss-mode-select">
+            <option value="matrix_rain">🟩 Matrix Rain</option>
+            <option value="idle">💤 Idle (blank)</option>
+            <option value="clock">🕐 Clock</option>
+          </select>
+        </div>
+      </div>
+      <div class="form-actions">
+        <button id="ss-save-btn" class="primary">💾 Save</button>
+        <button id="ss-wake-btn">☀️ Wake Now</button>
+        <button id="ss-disable-btn" class="danger-btn">🗑 Disable</button>
+        <span id="ss-action-status"></span>
+      </div>
+    </details>
+
     <!-- ── API Authentication ─────────────────────────────────────────── -->
     <details class="card" id="auth-section">
       <summary>🔐 API Authentication</summary>
@@ -643,6 +671,7 @@
         <tr><td><kbd>Shift</kbd>+<kbd>O</kbd></td><td>Switch to OS Info mode</td></tr>
         <tr><td><kbd>Shift</kbd>+<kbd>K</kbd></td><td>Switch to Docker Status mode</td></tr>
         <tr><td><kbd>Shift</kbd>+<kbd>W</kbd></td><td>Switch to Logged-in Users mode</td></tr>
+        <tr><td><kbd>Shift</kbd>+<kbd>T</kbd></td><td>Switch to Temp Graph mode</td></tr>
       </table>
       <p class="card-hint" style="margin-top:0.5rem">Shortcuts are disabled while a text input is focused.</p>
     </details>
