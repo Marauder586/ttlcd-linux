@@ -11400,3 +11400,305 @@ pub fn render_gravity() -> DynamicImage {
 
     DynamicImage::ImageRgb8(img)
 }
+
+// ─── Voronoi Art ──────────────────────────────────────────────────────────────
+
+#[derive(Clone)]
+struct VoronoiSeed { x: f32, y: f32, vx: f32, vy: f32 }
+
+static VORONOI_STATE: std::sync::OnceLock<std::sync::Mutex<Vec<VoronoiSeed>>> =
+    std::sync::OnceLock::new();
+
+/// Animated Voronoi diagram — 20 seeds bouncing around, each region coloured
+/// differently with a subtle edge-darkening effect.  2×2 px cells.
+pub fn render_voronoi() -> DynamicImage {
+    const N:    usize = 20;
+    const CELL: u32   = 2;
+    const GRID: u32   = 240;
+
+    let m = VORONOI_STATE.get_or_init(|| {
+        let mut s = 0xC0FFEE42u32;
+        let lcg = |r: &mut u32| -> f32 {
+            *r = r.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            (*r as f32) / u32::MAX as f32
+        };
+        let seeds: Vec<VoronoiSeed> = (0..N).map(|_| VoronoiSeed {
+            x:  lcg(&mut s) * 480.0,
+            y:  lcg(&mut s) * 480.0,
+            vx: (lcg(&mut s) - 0.5) * 3.0,
+            vy: (lcg(&mut s) - 0.5) * 3.0,
+        }).collect();
+        std::sync::Mutex::new(seeds)
+    });
+    let mut seeds = m.lock().unwrap();
+
+    // Move seeds, bounce off walls
+    for sd in seeds.iter_mut() {
+        sd.x += sd.vx; sd.y += sd.vy;
+        if sd.x < 0.0   { sd.x = 0.0;   sd.vx =  sd.vx.abs(); }
+        if sd.x > 480.0 { sd.x = 480.0; sd.vx = -sd.vx.abs(); }
+        if sd.y < 0.0   { sd.y = 0.0;   sd.vy =  sd.vy.abs(); }
+        if sd.y > 480.0 { sd.y = 480.0; sd.vy = -sd.vy.abs(); }
+    }
+
+    // Palette: 7 distinct Catppuccin colours (cycle through N seeds)
+    let pal: [Rgb<u8>; 7] = [BLUE, GREEN, MAUVE, TEAL, PEACH, RED, YELLOW];
+
+    let mut img = RgbImage::new(480, 480);
+
+    for cy in 0..GRID {
+        for cx in 0..GRID {
+            let pcx = (cx as f32 + 0.5) * CELL as f32;
+            let pcy = (cy as f32 + 0.5) * CELL as f32;
+
+            let mut best_d  = f32::MAX;
+            let mut best2_d = f32::MAX;
+            let mut best_i  = 0usize;
+
+            for (i, sd) in seeds.iter().enumerate() {
+                let dx = pcx - sd.x;
+                let dy = pcy - sd.y;
+                let d  = dx * dx + dy * dy;
+                if d < best_d {
+                    best2_d = best_d;
+                    best_d  = d;
+                    best_i  = i;
+                } else if d < best2_d {
+                    best2_d = d;
+                }
+            }
+
+            // Edge darkening: ratio of nearest to second-nearest distance
+            let edge = (best_d.sqrt() / best2_d.sqrt().max(1.0)).min(1.0);
+            let br   = 0.55 + 0.45 * edge;    // darker near borders
+
+            let base = pal[best_i % pal.len()];
+            let col  = Rgb([
+                (base[0] as f32 * br) as u8,
+                (base[1] as f32 * br) as u8,
+                (base[2] as f32 * br) as u8,
+            ]);
+
+            let px = cx * CELL; let py = cy * CELL;
+            img.put_pixel(px,     py,     col);
+            img.put_pixel(px + 1, py,     col);
+            img.put_pixel(px,     py + 1, col);
+            img.put_pixel(px + 1, py + 1, col);
+        }
+    }
+    DynamicImage::ImageRgb8(img)
+}
+
+// ─── Reaction-Diffusion (Gray-Scott) ──────────────────────────────────────────
+
+struct GsState {
+    u: Vec<f32>,   // 160×160
+    v: Vec<f32>,
+    tick: u64,
+}
+
+static GS_STATE: std::sync::OnceLock<std::sync::Mutex<GsState>> =
+    std::sync::OnceLock::new();
+
+/// Gray-Scott reaction-diffusion — creates organic spot/maze patterns.
+/// 160×160 simulation cells (3×3 px each); 8 iterations per render call.
+pub fn render_reaction_diffusion() -> DynamicImage {
+    const W:   usize = 160;
+    const H:   usize = 160;
+    const CELL: u32  = 3;   // 160 × 3 = 480
+    const DU:  f32   = 0.16;
+    const DV:  f32   = 0.08;
+    const F:   f32   = 0.035;
+    const K:   f32   = 0.065;
+    const DT:  f32   = 1.0;
+    const ITERS: usize = 8;
+
+    let m = GS_STATE.get_or_init(|| {
+        let mut u = vec![1.0f32; W * H];
+        let mut v = vec![0.0f32; W * H];
+        // Seed a few random patches with v=1
+        let mut seed = 0xABCD1234u32;
+        let lcg = |s: &mut u32| -> u32 {
+            *s = s.wrapping_mul(1_664_525).wrapping_add(1_013_904_223); *s
+        };
+        for _ in 0..15 {
+            let cx = (lcg(&mut seed) % W as u32) as usize;
+            let cy = (lcg(&mut seed) % H as u32) as usize;
+            for dy in 0..5usize {
+                for dx in 0..5usize {
+                    let xi = (cx + dx).min(W - 1);
+                    let yi = (cy + dy).min(H - 1);
+                    u[yi * W + xi] = 0.5;
+                    v[yi * W + xi] = 0.25;
+                }
+            }
+        }
+        std::sync::Mutex::new(GsState { u, v, tick: 0 })
+    });
+
+    let mut st = m.lock().unwrap();
+    st.tick += 1;
+
+    let mut nu = st.u.clone();
+    let mut nv = st.v.clone();
+
+    for _ in 0..ITERS {
+        for y in 0..H {
+            for x in 0..W {
+                let i  = y * W + x;
+                let up = if y > 0     { st.u[(y-1)*W+x] } else { st.u[(H-1)*W+x] };
+                let dn = if y < H-1   { st.u[(y+1)*W+x] } else { st.u[0*W+x] };
+                let lt = if x > 0     { st.u[y*W+x-1]   } else { st.u[y*W+W-1] };
+                let rt = if x < W-1   { st.u[y*W+x+1]   } else { st.u[y*W+0] };
+                let lap_u = up + dn + lt + rt - 4.0 * st.u[i];
+
+                let vp = if y > 0     { st.v[(y-1)*W+x] } else { st.v[(H-1)*W+x] };
+                let vn = if y < H-1   { st.v[(y+1)*W+x] } else { st.v[0*W+x] };
+                let vl = if x > 0     { st.v[y*W+x-1]   } else { st.v[y*W+W-1] };
+                let vr = if x < W-1   { st.v[y*W+x+1]   } else { st.v[y*W+0] };
+                let lap_v = vp + vn + vl + vr - 4.0 * st.v[i];
+
+                let uvv = st.u[i] * st.v[i] * st.v[i];
+                nu[i] = (st.u[i] + DT * (DU * lap_u - uvv + F * (1.0 - st.u[i]))).clamp(0.0, 1.0);
+                nv[i] = (st.v[i] + DT * (DV * lap_v + uvv - (F + K) * st.v[i])).clamp(0.0, 1.0);
+            }
+        }
+        std::mem::swap(&mut st.u, &mut nu);
+        std::mem::swap(&mut st.v, &mut nv);
+    }
+
+    // Render: colour by V concentration
+    //   0   → background (BG)
+    //   0.4 → BLUE midtone
+    //   1.0 → bright TEAL
+    let mut img = RgbImage::new(480, 480);
+    for cy in 0..H {
+        for cx in 0..W {
+            let vv  = st.v[cy * W + cx];
+            let col = if vv < 0.02 {
+                BG
+            } else {
+                let t  = (vv * 3.0).min(1.0);   // 0..1 ramp over v 0..0.33
+                let t2 = (vv * 1.5 - 0.5).clamp(0.0, 1.0); // 1.0 for v>1
+                Rgb([
+                    ((BLUE[0]  as f32 * (1.0 - t2) + TEAL[0]  as f32 * t2) * t) as u8,
+                    ((BLUE[1]  as f32 * (1.0 - t2) + TEAL[1]  as f32 * t2) * t) as u8,
+                    ((BLUE[2]  as f32 * (1.0 - t2) + TEAL[2]  as f32 * t2) * t) as u8,
+                ])
+            };
+            let px0 = cx as u32 * CELL;
+            let py0 = cy as u32 * CELL;
+            for dy in 0..CELL { for dx in 0..CELL { img.put_pixel(px0+dx, py0+dy, col); } }
+        }
+    }
+    DynamicImage::ImageRgb8(img)
+}
+
+// ─── Snowfall ─────────────────────────────────────────────────────────────────
+
+#[derive(Clone)]
+struct Snowflake { x: f32, y: f32, vx: f32, vy: f32, size: u32, alpha: f32, wobble_phase: f32 }
+
+struct SnowState {
+    flakes: Vec<Snowflake>,
+    seed:   u32,
+    tick:   u64,
+    wind:   f32,   // horizontal wind component
+}
+
+static SNOW_STATE: std::sync::OnceLock<std::sync::Mutex<SnowState>> =
+    std::sync::OnceLock::new();
+
+/// Snowfall screensaver — 180 flakes drifting with sinusoidal wobble and wind.
+pub fn render_snowfall() -> DynamicImage {
+    const N_FLAKES: usize = 180;
+
+    let m = SNOW_STATE.get_or_init(|| {
+        let mut seed = 0x5110_CAFE_u32;
+        let lcg = |s: &mut u32| -> f32 {
+            *s = s.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            (*s as f32) / u32::MAX as f32
+        };
+        let flakes = (0..N_FLAKES).map(|_| Snowflake {
+            x:            lcg(&mut seed) * 480.0,
+            y:            lcg(&mut seed) * 480.0,  // start anywhere
+            vx:           (lcg(&mut seed) - 0.5) * 0.6,
+            vy:           0.8 + lcg(&mut seed) * 2.0,
+            size:         1 + (lcg(&mut seed) * 3.0) as u32,
+            alpha:        0.5 + lcg(&mut seed) * 0.5,
+            wobble_phase: lcg(&mut seed) * std::f32::consts::TAU,
+        }).collect();
+        std::sync::Mutex::new(SnowState { flakes, seed: 0xFACE_C0DEu32, tick: 0, wind: 0.0 })
+    });
+
+    let mut st = m.lock().unwrap();
+    st.tick += 1;
+    let tf = st.tick as f32;
+
+    // Slowly changing wind
+    st.wind = (tf * 0.005).sin() * 1.2;
+
+    let lcg = |s: &mut u32| -> f32 {
+        *s = s.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+        (*s as f32) / u32::MAX as f32
+    };
+
+    // Update flakes — extract fields to satisfy borrow checker
+    let wind_snap = st.wind;
+    let mut seed_snap = st.seed;
+    for flake in st.flakes.iter_mut() {
+        flake.wobble_phase += 0.04;
+        flake.x += flake.vx + wind_snap + flake.wobble_phase.sin() * 0.4;
+        flake.y += flake.vy;
+
+        // Wrap horizontally
+        if flake.x < -5.0  { flake.x += 490.0; }
+        if flake.x > 485.0 { flake.x -= 490.0; }
+
+        // Respawn when it hits the bottom
+        if flake.y > 488.0 {
+            flake.y = -5.0;
+            flake.x = lcg(&mut seed_snap) * 480.0;
+            flake.vy = 0.8 + lcg(&mut seed_snap) * 2.0;
+            flake.size = 1 + (lcg(&mut seed_snap) * 3.0) as u32;
+        }
+    }
+    st.seed = seed_snap;
+
+    // Background: dark winter sky gradient
+    let mut img = RgbImage::new(480, 480);
+    for py in 0..480u32 {
+        let frac = py as f32 / 480.0;
+        let r = (8.0  + frac * 12.0) as u8;
+        let g = (10.0 + frac * 15.0) as u8;
+        let b = (24.0 + frac * 28.0) as u8;
+        for px in 0..480u32 { img.put_pixel(px, py, Rgb([r, g, b])); }
+    }
+
+    // Draw flakes
+    for flake in st.flakes.iter() {
+        let fx = flake.x as i32; let fy = flake.y as i32;
+        let sz = flake.size as i32;
+        let br = (flake.alpha * 255.0) as u8;
+        // Core pixel(s)
+        for dy in -(sz as i32)..=(sz as i32) {
+            for dx in -(sz as i32)..=(sz as i32) {
+                // Circle approximation
+                if dx*dx + dy*dy > sz*sz + sz { continue; }
+                let px = fx + dx; let py = fy + dy;
+                if px >= 0 && px < 480 && py >= 0 && py < 480 {
+                    // Additive blending with existing pixel
+                    let existing = img.get_pixel(px as u32, py as u32);
+                    let dist_frac = ((dx*dx + dy*dy) as f32).sqrt() / sz as f32;
+                    let alpha = (1.0 - dist_frac).max(0.0) * flake.alpha;
+                    let nr = (existing[0] as f32 + br as f32 * alpha).min(255.0) as u8;
+                    let ng = (existing[1] as f32 + br as f32 * alpha).min(255.0) as u8;
+                    let nb = (existing[2] as f32 + br as f32 * alpha * 0.9 + 15.0 * alpha).min(255.0) as u8;
+                    img.put_pixel(px as u32, py as u32, Rgb([nr, ng, nb]));
+                }
+            }
+        }
+    }
+
+    DynamicImage::ImageRgb8(img)
+}
