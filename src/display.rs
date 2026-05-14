@@ -8475,6 +8475,216 @@ pub fn render_cpu_heatmap() -> DynamicImage {
 
 
 
+// ─── Starfield Screensaver ────────────────────────────────────────────────────
+
+#[derive(Clone)]
+struct Star {
+    x: f32, // -1..1 in projected space
+    y: f32,
+    z: f32, // 0..1, 0=far, 1=close
+    speed: f32,
+}
+
+static STARFIELD: std::sync::OnceLock<std::sync::Mutex<Vec<Star>>> = std::sync::OnceLock::new();
+static STARFIELD_TICK: std::sync::OnceLock<std::sync::Mutex<u64>> = std::sync::OnceLock::new();
+
+const N_STARS: usize = 200;
+
+/// Animated starfield screensaver — stars fly towards the viewer from a central vanishing point.
+pub fn render_starfield() -> DynamicImage {
+    let tick = {
+        let m = STARFIELD_TICK.get_or_init(|| std::sync::Mutex::new(0));
+        let mut t = m.lock().unwrap();
+        let v = *t;
+        *t = t.wrapping_add(1);
+        v
+    };
+
+    let lcg = |s: u64| s.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+
+    let mut stars = STARFIELD.get_or_init(|| {
+        let mut seed = 12345_u64;
+        let mut v = Vec::with_capacity(N_STARS);
+        for _ in 0..N_STARS {
+            seed = lcg(seed);
+            let x = (seed % 2001) as f32 / 1000.0 - 1.0;
+            seed = lcg(seed);
+            let y = (seed % 2001) as f32 / 1000.0 - 1.0;
+            seed = lcg(seed);
+            let z = (seed % 1000) as f32 / 1000.0;
+            seed = lcg(seed);
+            let spd = 0.006 + (seed % 10) as f32 * 0.0015;
+            v.push(Star { x, y, z, speed: spd });
+        }
+        std::sync::Mutex::new(v)
+    }).lock().unwrap();
+
+    let mut img = RgbImage::new(480, 480);
+    for p in img.pixels_mut() { *p = BG; }
+
+    let cx = 240.0_f32;
+    let cy = 240.0_f32;
+    let fov = 200.0_f32;
+
+    let mut seed = tick.wrapping_mul(1337);
+
+    for star in stars.iter_mut() {
+        // Advance Z (move towards viewer)
+        star.z += star.speed;
+        if star.z >= 1.0 {
+            // Respawn at random position far away
+            seed = lcg(seed);
+            star.x = (seed % 2001) as f32 / 1000.0 - 1.0;
+            seed = lcg(seed);
+            star.y = (seed % 2001) as f32 / 1000.0 - 1.0;
+            star.z = 0.01;
+        }
+
+        // Project from 3D to screen
+        let perspective = fov / (1.0 - star.z + 0.001);
+        let sx = cx + star.x * perspective;
+        let sy = cy + star.y * perspective;
+
+        if sx < 0.0 || sy < 0.0 || sx >= 480.0 || sy >= 480.0 { continue; }
+
+        // Brightness based on closeness
+        let bright = (star.z * 255.0).min(255.0) as u8;
+        // Size based on closeness
+        let size = if star.z > 0.7 { 2_i32 } else { 1_i32 };
+
+        // Color: far = dim blue, close = bright white/yellow
+        let r = bright;
+        let g = bright;
+        let b = if star.z < 0.5 { bright } else { (bright as f32 * 0.8) as u8 };
+        let col = Rgb([r, g, b]);
+
+        for dy in -size..=size {
+            for dx in -size..=size {
+                let px = sx as i32 + dx;
+                let py = sy as i32 + dy;
+                if px >= 0 && py >= 0 && (px as u32) < 480 && (py as u32) < 480 {
+                    img.put_pixel(px as u32, py as u32, col);
+                }
+            }
+        }
+    }
+
+    // Subtle time overlay
+    let font = font_bold();
+    let now = chrono::Local::now();
+    let ts = format!("{:02}:{:02}:{:02}", now.hour(), now.minute(), now.second());
+    let tw = text_width(&font, PxScale::from(22.0), &ts);
+    draw_text_mut(&mut img, Rgb([0,0,0]), (480-tw)/2+1, 453, PxScale::from(22.0), &font, &ts);
+    draw_text_mut(&mut img, SUBTEXT,    (480-tw)/2,   452, PxScale::from(22.0), &font, &ts);
+
+    DynamicImage::ImageRgb8(img)
+}
+
+// ─── Ambient Pulse ────────────────────────────────────────────────────────────
+
+static PULSE_TICK: std::sync::OnceLock<std::sync::Mutex<u64>> = std::sync::OnceLock::new();
+
+/// Ambient CPU pulse display — concentric expanding rings whose speed and
+/// colour reflect the current CPU load. Blue=idle, yellow=moderate, red=high.
+pub fn render_pulse() -> DynamicImage {
+    use std::f64::consts::PI;
+    use sysinfo::{System, CpuRefreshKind};
+
+    let tick = {
+        let m = PULSE_TICK.get_or_init(|| std::sync::Mutex::new(0));
+        let mut t = m.lock().unwrap();
+        let v = *t;
+        *t = t.wrapping_add(1);
+        v
+    };
+
+    let mut sys = System::new();
+    sys.refresh_cpu_specifics(CpuRefreshKind::everything());
+    let cpu_pct = sys.global_cpu_usage() as f64;
+
+    // Speed and colour depend on CPU load
+    let speed_mult = 0.5 + cpu_pct / 100.0 * 2.5; // 0.5x at 0%, 3x at 100%
+    let t = tick as f64 * 0.05 * speed_mult;
+
+    let font = font_bold();
+    let mut img = RgbImage::new(480, 480);
+    for p in img.pixels_mut() { *p = BG; }
+
+    let cx = 240.0_f64;
+    let cy = 240.0_f64;
+
+    // Draw 5 concentric pulse rings
+    for ring in 0..5_i32 {
+        let phase = ring as f64 * (2.0 * PI / 5.0);
+        // Each ring expands outward with time
+        let r = ((t + phase) % (2.0 * PI) / (2.0 * PI)) * 230.0; // 0..230px
+        let alpha = 1.0 - (r / 230.0); // fade as it expands
+
+        // Color based on cpu_pct: low=blue, mid=mauve, high=red
+        let (cr, cg, cb) = if cpu_pct < 30.0 {
+            (137.0_f64 * alpha, 180.0 * alpha, 250.0 * alpha)  // BLUE
+        } else if cpu_pct < 60.0 {
+            let t2 = (cpu_pct - 30.0) / 30.0;
+            ((137.0 + (203.0-137.0)*t2) * alpha,
+             (180.0 + (166.0-180.0)*t2) * alpha,
+             (250.0 + (247.0-250.0)*t2) * alpha)  // BLUE→MAUVE
+        } else if cpu_pct < 85.0 {
+            let t2 = (cpu_pct - 60.0) / 25.0;
+            ((203.0 + (249.0-203.0)*t2) * alpha,
+             (166.0 + (226.0-166.0)*t2) * alpha,
+             (247.0 + (175.0-247.0)*t2) * alpha)  // MAUVE→YELLOW
+        } else {
+            ((249.0 + (243.0-249.0) * ((cpu_pct-85.0)/15.0)) * alpha,
+             (226.0 + (139.0-226.0) * ((cpu_pct-85.0)/15.0)) * alpha,
+             (175.0 + (168.0-175.0) * ((cpu_pct-85.0)/15.0)) * alpha)  // YELLOW→RED
+        };
+
+        // Draw ring as a band of pixels
+        let r_f = r as f32;
+        let inner_r = (r_f - 3.0).max(0.0);
+        let outer_r = r_f + 3.0;
+
+        for dy in (-(outer_r as i32) - 1)..=(outer_r as i32 + 1) {
+            for dx in (-(outer_r as i32) - 1)..=(outer_r as i32 + 1) {
+                let dist = ((dx*dx + dy*dy) as f32).sqrt();
+                if dist >= inner_r && dist <= outer_r {
+                    let px = cx as i32 + dx;
+                    let py = cy as i32 + dy;
+                    if px >= 0 && py >= 0 && (px as u32) < 480 && (py as u32) < 480 {
+                        // Blend with existing pixel
+                        let existing = *img.get_pixel(px as u32, py as u32);
+                        let nr = (existing.0[0] as f64 + cr).min(255.0) as u8;
+                        let ng = (existing.0[1] as f64 + cg).min(255.0) as u8;
+                        let nb = (existing.0[2] as f64 + cb).min(255.0) as u8;
+                        img.put_pixel(px as u32, py as u32, Rgb([nr, ng, nb]));
+                    }
+                }
+            }
+        }
+    }
+
+    // Center: CPU percentage
+    let cpu_str = format!("{:.0}%", cpu_pct);
+    let cw = text_width(&font, PxScale::from(48.0), &cpu_str);
+    draw_text_mut(&mut img, Rgb([0,0,0]), (480-cw)/2+2, 208, PxScale::from(48.0), &font, &cpu_str);
+    let col = if cpu_pct < 30.0 { BLUE } else if cpu_pct < 70.0 { MAUVE } else if cpu_pct < 85.0 { YELLOW } else { RED };
+    draw_text_mut(&mut img, col, (480-cw)/2, 206, PxScale::from(48.0), &font, &cpu_str);
+
+    let lbl = "CPU";
+    let lw = text_width(&font, PxScale::from(20.0), lbl);
+    draw_text_mut(&mut img, OVERLAY0, (480-lw)/2, 258, PxScale::from(20.0), &font, lbl);
+
+    // Time
+    let now = chrono::Local::now();
+    let ts = format!("{:02}:{:02}:{:02}", now.hour(), now.minute(), now.second());
+    let tw2 = text_width(&font, PxScale::from(18.0), &ts);
+    draw_text_mut(&mut img, OVERLAY0, (480-tw2)/2, 280, PxScale::from(18.0), &font, &ts);
+
+    DynamicImage::ImageRgb8(img)
+}
+
+
+
 #[cfg(test)]
 mod bounce_ball_tests {
     use super::*;

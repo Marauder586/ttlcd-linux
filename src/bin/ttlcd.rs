@@ -81,7 +81,8 @@ use ttlcd::{
         render_plasma,
         render_fireworks,
         render_cpu_heatmap,
-        push_cpu_core_history,
+        render_starfield,
+        render_pulse,
         read_docker_containers,
         read_user_sessions,
         HttpMonitorResult,
@@ -796,6 +797,8 @@ enum DisplayMode {
     Plasma,
     Fireworks,
     CpuHeatmap,
+    Starfield,
+    Pulse,
     Idle,
     CustomImage,
     CustomText,
@@ -805,7 +808,7 @@ enum DisplayMode {
 impl DisplayMode {
     const ALL_NAMES: &'static [&'static str] = &[
         "clock", "big_clock", "clock_sysinfo", "sysinfo", "cpu_detail",
-        "network", "disk_usage", "process_top", "temperature", "memory_detail", "countdown", "cpu_graph", "net_graph", "recent_alerts", "process_memory", "disk_io", "calendar", "stopwatch", "metrics", "weather", "notes", "qr_code", "pomodoro", "battery", "world_clock", "ticker", "http_status", "shell_cmd", "ping_monitor", "dashboard", "log_tail", "cpu_freq", "hostname_ip", "rss_feed", "service_status", "net_connections", "uptime_fancy", "os_info", "docker_status", "logged_in_users", "load_graph", "mem_graph", "progress", "matrix_rain", "temp_graph", "disk_io_graph", "graphs_overview", "analog_clock", "ping_graph", "status_overview", "game_of_life", "led_clock", "bounce_ball", "net_speed_graph", "cpu_core_bars", "speedometer_gauge", "disk_pie", "thermal_dashboard", "plasma", "fireworks", "cpu_heatmap", "idle",
+        "network", "disk_usage", "process_top", "temperature", "memory_detail", "countdown", "cpu_graph", "net_graph", "recent_alerts", "process_memory", "disk_io", "calendar", "stopwatch", "metrics", "weather", "notes", "qr_code", "pomodoro", "battery", "world_clock", "ticker", "http_status", "shell_cmd", "ping_monitor", "dashboard", "log_tail", "cpu_freq", "hostname_ip", "rss_feed", "service_status", "net_connections", "uptime_fancy", "os_info", "docker_status", "logged_in_users", "load_graph", "mem_graph", "progress", "matrix_rain", "temp_graph", "disk_io_graph", "graphs_overview", "analog_clock", "ping_graph", "status_overview", "game_of_life", "led_clock", "bounce_ball", "net_speed_graph", "cpu_core_bars", "speedometer_gauge", "disk_pie", "thermal_dashboard", "plasma", "fireworks", "cpu_heatmap", "starfield", "pulse", "idle",
     ];
 
     fn from_str_name(s: &str) -> Option<Self> {
@@ -868,6 +871,8 @@ impl DisplayMode {
             "plasma"              => Some(DisplayMode::Plasma),
             "fireworks"           => Some(DisplayMode::Fireworks),
             "cpu_heatmap"         => Some(DisplayMode::CpuHeatmap),
+            "starfield"           => Some(DisplayMode::Starfield),
+            "pulse"               => Some(DisplayMode::Pulse),
             "idle"             => Some(DisplayMode::Idle),
             "custom_text"   => Some(DisplayMode::CustomText),
             "slideshow"     => Some(DisplayMode::Slideshow),
@@ -938,6 +943,8 @@ impl DisplayMode {
     DisplayMode::Plasma        => "plasma",
     DisplayMode::Fireworks     => "fireworks",
     DisplayMode::CpuHeatmap    => "cpu_heatmap",
+    DisplayMode::Starfield     => "starfield",
+    DisplayMode::Pulse         => "pulse",
             DisplayMode::Idle           => "idle",
             DisplayMode::CustomImage  => "image",
             DisplayMode::CustomText   => "custom_text",
@@ -2535,6 +2542,8 @@ fn display_loop(panel: Arc<Mutex<Option<Panel>>>, state: DaemonState) {
                 DisplayMode::Plasma        => (render_plasma(), 0),
                 DisplayMode::Fireworks     => (render_fireworks(), 0),
                 DisplayMode::CpuHeatmap    => (render_cpu_heatmap(), 2),
+                DisplayMode::Starfield     => (render_starfield(), 0),
+                DisplayMode::Pulse         => (render_pulse(), 0),
                 DisplayMode::MatrixRain => (render_matrix_rain(), 0),
                 DisplayMode::Idle
                 | DisplayMode::CustomImage
@@ -3952,6 +3961,11 @@ async fn api_modes_list() -> impl Responder {
         ModeInfo { name: "temp_graph",     description: "CPU/component temperature history graph with thermal thresholds" },
         ModeInfo { name: "disk_io_graph",  description: "Disk I/O history graph: total read and write throughput over time" },
         ModeInfo { name: "graphs_overview",description: "4-panel mini-charts: CPU, Load, Memory, Temperature at a glance" },
+        ModeInfo { name: "plasma",          description: "Plasma screensaver — animated multi-sine colour field in Catppuccin palette" },
+        ModeInfo { name: "fireworks",       description: "Fireworks screensaver — rockets launch and explode with particle trails" },
+        ModeInfo { name: "cpu_heatmap",     description: "Per-core CPU utilization heat map — cores on Y axis, time samples on X axis" },
+        ModeInfo { name: "starfield",       description: "Starfield screensaver — animated stars flying towards the viewer" },
+        ModeInfo { name: "pulse",           description: "Ambient CPU pulse — concentric expanding rings, speed and color reflect CPU load" },
         ModeInfo { name: "idle",           description: "Keepalive — no display update, prevents blank" },
     ];
     HttpResponse::Ok().json(modes)
@@ -5948,6 +5962,8 @@ async fn api_status_badge(state: web::Data<DaemonState>) -> impl Responder {
         "plasma"                               => "#cba6f7",  // mauve
         "fireworks"                            => "#f38ba8",  // red
         "cpu_heatmap"                          => "#a6e3a1",  // green
+        "starfield"                            => "#89b4fa",  // blue
+        "pulse"                                => "#cba6f7",  // mauve
         "status_overview"                      => "#89dceb",  // sky
         "analog_clock"                         => "#cba6f7",  // mauve
         "net_speed_graph"                      => "#a6e3a1",  // green
@@ -8954,6 +8970,8 @@ async fn api_render_mode_preview(
             DisplayMode::Plasma        => render_plasma(),
             DisplayMode::Fireworks     => render_fireworks(),
             DisplayMode::CpuHeatmap    => render_cpu_heatmap(),
+            DisplayMode::Starfield     => render_starfield(),
+            DisplayMode::Pulse         => render_pulse(),
             DisplayMode::MatrixRain       => render_matrix_rain(),
             DisplayMode::Progress     => {
                 let ps = state_clone.progress_state.lock().unwrap().clone();
