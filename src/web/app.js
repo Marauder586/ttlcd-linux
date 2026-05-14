@@ -4719,6 +4719,8 @@ log('ttlcd web UI connected');
             <tr><td><kbd>/</kbd></td><td>Focus mode search</td></tr>
             <tr><td><kbd>Esc</kbd></td><td>Clear search / close overlay</td></tr>
             <tr><td><kbd>?</kbd></td><td>Toggle shortcuts overlay</td></tr>
+            <tr><td><kbd>Ctrl</kbd>+<kbd>K</kbd></td><td>Open command palette (quick mode switch)</td></tr>
+            <tr><td><kbd>/</kbd></td><td>Focus mode search</td></tr>
             <tr><td><kbd>F</kbd></td><td>Freeze / unfreeze display</td></tr>
             <tr><td><kbd>Shift+R</kbd></td><td>Random mode</td></tr>
             <tr><td><kbd>Shift+V</kbd></td><td>Speedometer gauge</td></tr>
@@ -4809,4 +4811,189 @@ log('ttlcd web UI connected');
   // Load on open
   section.addEventListener('toggle', () => { if (section.open) loadNightMode(); });
   loadNightMode();
+})();
+
+// ─── Command Palette (Ctrl+K) ─────────────────────────────────────────────────
+(function initCommandPalette() {
+  // Build overlay DOM once
+  const overlay = document.createElement('div');
+  overlay.id = 'cmd-palette-overlay';
+  overlay.style.cssText = [
+    'position:fixed','top:0','left:0','width:100%','height:100%',
+    'background:rgba(0,0,0,0.7)','z-index:10000','display:none',
+    'align-items:flex-start','justify-content:center','padding-top:80px',
+  ].join(';');
+
+  overlay.innerHTML = `
+    <div id="cmd-palette-box" style="
+      background:var(--surface0);border:1px solid var(--overlay0);
+      border-radius:12px;width:min(560px,92vw);max-height:70vh;
+      overflow:hidden;display:flex;flex-direction:column;
+      box-shadow:0 8px 40px rgba(0,0,0,0.6)">
+      <div style="padding:12px 16px;border-bottom:1px solid var(--surface1);display:flex;align-items:center;gap:8px">
+        <span style="color:var(--overlay0);font-size:1.1rem">⌕</span>
+        <input id="cmd-palette-input" type="text" placeholder="Switch mode…"
+          autocomplete="off" autocorrect="off" spellcheck="false"
+          style="flex:1;background:transparent;border:none;outline:none;
+                 color:var(--text);font-size:1rem;font-family:var(--font)">
+        <kbd style="font-size:0.75rem;color:var(--overlay0)">Esc</kbd>
+      </div>
+      <div id="cmd-palette-list" style="
+        overflow-y:auto;max-height:calc(70vh - 56px);padding:6px 0">
+      </div>
+    </div>`;
+
+  document.body.appendChild(overlay);
+
+  const input    = document.getElementById('cmd-palette-input');
+  const list     = document.getElementById('cmd-palette-list');
+  let selectedIdx = 0;
+  let items = [];
+
+  function getItems(q) {
+    const qL = q.toLowerCase();
+    const allBtns = Array.from(document.querySelectorAll('#mode-grid .mode-btn[data-mode]'));
+    const all = allBtns.map(btn => ({
+      mode:  btn.dataset.mode,
+      label: btn.querySelector('span')?.textContent || btn.dataset.mode,
+      desc:  btn.title || '',
+      emoji: btn.childNodes[0]?.textContent?.trim() || '▶',
+    }));
+    if (!qL) return all;
+    return all.filter(it =>
+      it.mode.includes(qL) || it.label.toLowerCase().includes(qL) ||
+      it.desc.toLowerCase().includes(qL)
+    );
+  }
+
+  function renderList(q) {
+    items = getItems(q);
+    selectedIdx = 0;
+    list.innerHTML = '';
+    if (items.length === 0) {
+      list.innerHTML = '<div style="padding:20px;text-align:center;color:var(--overlay0)">No modes match</div>';
+      return;
+    }
+    items.forEach((it, i) => {
+      const row = document.createElement('div');
+      row.className = 'cmd-palette-row';
+      row.dataset.idx = i;
+      row.style.cssText = [
+        'padding:10px 16px','cursor:pointer','display:flex',
+        'align-items:center','gap:12px','transition:background 0.1s',
+      ].join(';');
+      row.innerHTML = `
+        <span style="font-size:1.3rem;width:24px;text-align:center">${it.emoji}</span>
+        <span style="flex:1">
+          <span style="color:var(--text);font-size:0.95rem">${it.label}</span>
+          <span style="display:block;color:var(--overlay0);font-size:0.73rem;margin-top:1px">${it.mode.replace(/_/g,' ')}</span>
+        </span>
+        <span style="color:var(--overlay0);font-size:0.73rem">Enter</span>`;
+
+      row.addEventListener('mouseenter', () => {
+        setSelected(parseInt(row.dataset.idx));
+      });
+      row.addEventListener('click', () => activateItem(it.mode));
+      list.appendChild(row);
+    });
+    setSelected(0);
+  }
+
+  function setSelected(idx) {
+    selectedIdx = Math.max(0, Math.min(items.length - 1, idx));
+    document.querySelectorAll('.cmd-palette-row').forEach((row, i) => {
+      if (i === selectedIdx) {
+        row.style.background = 'var(--surface1)';
+        row.scrollIntoView({ block: 'nearest' });
+      } else {
+        row.style.background = '';
+      }
+    });
+  }
+
+  async function activateItem(mode) {
+    close();
+    try {
+      await api('POST', '/api/mode', { mode });
+      await fetchStatus();
+      log(`Switched to ${mode} via command palette`);
+    } catch (e) {
+      log(`Error switching mode: ${e.message}`, true);
+    }
+  }
+
+  function open() {
+    overlay.style.display = 'flex';
+    input.value = '';
+    renderList('');
+    requestAnimationFrame(() => input.focus());
+  }
+
+  function close() {
+    overlay.style.display = 'none';
+    input.value = '';
+  }
+
+  // Input events
+  input.addEventListener('input', () => renderList(input.value));
+
+  input.addEventListener('keydown', e => {
+    if (e.key === 'ArrowDown')  { e.preventDefault(); setSelected(selectedIdx + 1); }
+    if (e.key === 'ArrowUp')    { e.preventDefault(); setSelected(selectedIdx - 1); }
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      if (items[selectedIdx]) activateItem(items[selectedIdx].mode);
+    }
+    if (e.key === 'Escape') close();
+  });
+
+  // Clicking outside closes
+  overlay.addEventListener('click', e => {
+    if (!document.getElementById('cmd-palette-box').contains(e.target)) close();
+  });
+
+  // Global keyboard trigger (Ctrl+K or /)
+  document.addEventListener('keydown', e => {
+    const tag = document.activeElement.tagName;
+    if (e.key === 'k' && (e.ctrlKey || e.metaKey)) {
+      e.preventDefault();
+      overlay.style.display === 'none' ? open() : close();
+    }
+  });
+
+  // Expose for the shortcuts overlay listing
+  window.openCmdPalette = open;
+})();
+
+// ─── Touch swipe gestures ─────────────────────────────────────────────────────
+(function initSwipeGestures() {
+  let touchStartX = 0, touchStartY = 0;
+  const SWIPE_MIN = 60;     // px
+  const SWIPE_RATIO = 2.0;  // must be at least 2× wider than tall
+
+  document.addEventListener('touchstart', e => {
+    touchStartX = e.changedTouches[0].clientX;
+    touchStartY = e.changedTouches[0].clientY;
+  }, { passive: true });
+
+  document.addEventListener('touchend', e => {
+    const dx = e.changedTouches[0].clientX - touchStartX;
+    const dy = e.changedTouches[0].clientY - touchStartY;
+    const absDx = Math.abs(dx), absDy = Math.abs(dy);
+    if (absDx < SWIPE_MIN || absDx < absDy * SWIPE_RATIO) return;
+
+    // Ignore swipes that start on interactive elements
+    const target = e.target.closest('input,textarea,select,button,.mode-btn,a');
+    if (target) return;
+
+    if (dx > 0) {
+      // Swipe right → previous mode
+      api('POST', '/api/mode/prev', {}).then(fetchStatus).catch(() => {});
+      showToast('◀ Previous mode', 'info', 1800);
+    } else {
+      // Swipe left → next mode
+      api('POST', '/api/mode/next', {}).then(fetchStatus).catch(() => {});
+      showToast('Next mode ▶', 'info', 1800);
+    }
+  }, { passive: true });
 })();

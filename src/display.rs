@@ -11702,3 +11702,225 @@ pub fn render_snowfall() -> DynamicImage {
 
     DynamicImage::ImageRgb8(img)
 }
+
+// ─── CPU Hex Grid ─────────────────────────────────────────────────────────────
+
+/// Per-core CPU-load visualised as a hexagonal grid.
+/// Each hexagon's fill level = core load; colour = load category
+/// (green → yellow → orange → red).
+pub fn render_hex_grid() -> DynamicImage {
+    let mut sys = System::new();
+    sys.refresh_cpu_all();
+    let cpus = sys.cpus();
+    let n_cores = cpus.len().max(1);
+
+    let font  = font_bold();
+    let mut img = RgbImage::new(480, 480);
+    for p in img.pixels_mut() { *p = BG; }
+
+    // Layout: determine hex size so all cores fit in a grid
+    // Hex flat-top layout: hex width=2r, height=sqrt(3)*r
+    // Try to fit in roughly square grid
+    let cols = ((n_cores as f32).sqrt().ceil() as usize).max(1);
+    let rows = (n_cores + cols - 1) / cols;
+
+    let pad   = 6.0f32;
+    let hex_r = ((480.0 - pad * (cols + 1) as f32) / (cols as f32 * 2.0))
+                .min((480.0 - pad * (rows + 1) as f32) / (rows as f32 * 1.732))
+                .min(48.0);
+    let hex_w = hex_r * 2.0;
+    let hex_h = hex_r * 1.732;
+
+    let total_w = cols as f32 * hex_w + (cols + 1) as f32 * pad;
+    let total_h = rows as f32 * hex_h + (rows + 1) as f32 * pad;
+    let ox = (480.0 - total_w) / 2.0 + pad;
+    let oy = (480.0 - total_h) / 2.0 + pad + 30.0; // +30 for title
+
+    for (i, cpu) in cpus.iter().enumerate() {
+        let load  = cpu.cpu_usage() / 100.0;
+        let col   = i % cols;
+        let row   = i / cols;
+
+        let cx = ox + col as f32 * (hex_w + pad) + hex_r;
+        let cy = oy + row as f32 * (hex_h + pad) + hex_r;
+
+        // Flat-top hexagon: 6 vertices at angles 0°, 60°, 120°, 180°, 240°, 300°
+        let verts: Vec<(f32, f32)> = (0..6).map(|k| {
+            let angle = (k as f32 * 60.0 - 30.0).to_radians();
+            (cx + hex_r * angle.cos(), cy + hex_r * angle.sin())
+        }).collect();
+
+        // Fill colour based on load
+        let fill_col = if load < 0.4 { GREEN }
+                        else if load < 0.7 { YELLOW }
+                        else if load < 0.9 { PEACH }
+                        else               { RED };
+
+        // Draw filled hexagon by scanning bounding box
+        let min_x = verts.iter().map(|v| v.0).fold(f32::MAX, f32::min).max(0.0) as u32;
+        let max_x = verts.iter().map(|v| v.0).fold(f32::MIN, f32::max).min(479.0) as u32;
+        let min_y = verts.iter().map(|v| v.1).fold(f32::MAX, f32::min).max(0.0) as u32;
+        let max_y = verts.iter().map(|v| v.1).fold(f32::MIN, f32::max).min(479.0) as u32;
+
+        for py in min_y..=max_y {
+            for px in min_x..=max_x {
+                let fx = px as f32 + 0.5; let fy = py as f32 + 0.5;
+                // Point-in-polygon test
+                let inside = verts.windows(2).chain(std::iter::once(
+                    [verts[5], verts[0]].as_slice()
+                )).fold(false, |inside, pair| {
+                    let (ax, ay) = (pair[0].0, pair[0].1);
+                    let (bx, by) = (pair[1].0, pair[1].1);
+                    if (ay > fy) != (by > fy) &&
+                       fx < (bx - ax) * (fy - ay) / (by - ay) + ax {
+                        !inside
+                    } else { inside }
+                });
+                if inside {
+                    // Fill based on load: bottom portion lit, top dimmer
+                    let rel_y = (fy - (cy - hex_r)) / (hex_r * 2.0); // 0=top, 1=bottom
+                    let lit   = rel_y >= (1.0 - load);
+                    let col   = if lit { fill_col } else { SURFACE0 };
+                    img.put_pixel(px, py, col);
+                }
+            }
+        }
+
+        // Hexagon outline
+        for k in 0..6 {
+            let (x0, y0) = verts[k];
+            let (x1, y1) = verts[(k + 1) % 6];
+            draw_antialiased_line_segment_mut(
+                &mut img,
+                (x0 as i32, y0 as i32),
+                (x1 as i32, y1 as i32),
+                OVERLAY0, interpolate
+            );
+        }
+
+        // Core number (small)
+        if hex_r > 18.0 {
+            let lbl = format!("{}", i);
+            let lw  = text_width(&font, PxScale::from(11.0), &lbl);
+            draw_text_mut(&mut img, TEXT, cx as i32 - lw / 2, cy as i32 - 6,
+                          PxScale::from(11.0), &font, &lbl);
+        }
+    }
+
+    // Title
+    let avg_load: f32 = cpus.iter().map(|c| c.cpu_usage()).sum::<f32>() / n_cores as f32;
+    let title = format!("CPU Hex Grid — {} cores  avg {:.0}%", n_cores, avg_load);
+    let tw = text_width(&font, PxScale::from(18.0), &title);
+    draw_text_mut(&mut img, TEXT, (480 - tw) / 2, 8, PxScale::from(18.0), &font, &title);
+
+    DynamicImage::ImageRgb8(img)
+}
+
+// ─── Process Bubble Chart ─────────────────────────────────────────────────────
+
+/// Top processes by CPU usage visualised as bubbles.
+/// Bubble area ∝ CPU%, colour = hash of process name.
+pub fn render_bubble_chart() -> DynamicImage {
+    use sysinfo::ProcessesToUpdate;
+
+    let mut sys = System::new();
+    sys.refresh_processes(ProcessesToUpdate::All, true);
+
+    let font  = font_bold();
+    let mut img = RgbImage::new(480, 480);
+    for p in img.pixels_mut() { *p = BG; }
+
+    // Collect top-N processes by CPU%
+    let mut procs: Vec<(String, f32)> = sys.processes().values()
+        .filter(|p| p.cpu_usage() > 0.1)
+        .map(|p| (p.name().to_string_lossy().to_string(), p.cpu_usage()))
+        .collect();
+    procs.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+    procs.truncate(20);
+
+    if procs.is_empty() {
+        draw_centered(&mut img, &font, PxScale::from(22.0), 220, OVERLAY0, "No active processes");
+        return DynamicImage::ImageRgb8(img);
+    }
+
+    let max_cpu  = procs[0].1.max(1.0);
+    let pal: [Rgb<u8>; 7] = [BLUE, GREEN, MAUVE, TEAL, PEACH, RED, YELLOW];
+
+    // Pack bubbles using a simple grid layout with radius ∝ sqrt(cpu)
+    let title_h = 30i32;
+    let area_y  = title_h;
+    let _area_h = 480 - title_h - 10;
+
+    // Scale max bubble to ~80px radius
+    let scale = 80.0f32 / max_cpu.sqrt();
+
+    // Sort and place bubbles left-to-right, top-to-bottom
+    let mut x_cursor = 0i32;
+    let mut y_cursor = area_y;
+    let mut row_max_r = 0i32;
+
+    for (idx, (name, cpu)) in procs.iter().enumerate() {
+        let r  = ((cpu.sqrt() * scale) as i32).max(10);
+        if x_cursor + r * 2 > 480 {
+            x_cursor  = 0;
+            y_cursor += row_max_r * 2 + 8;
+            row_max_r = 0;
+        }
+        if y_cursor + r * 2 > 480 { break; }
+
+        let cx = (x_cursor + r) as f32;
+        let cy = (y_cursor + r) as f32;
+        x_cursor  += r * 2 + 6;
+        row_max_r  = row_max_r.max(r);
+
+        // Colour by name hash
+        let hash: usize = name.bytes().fold(0usize, |a, b| a.wrapping_mul(31).wrapping_add(b as usize));
+        let fill = pal[hash % pal.len()];
+
+        // Draw filled circle
+        let r2 = r * r;
+        for dy in -r..=r {
+            for dx in -r..=r {
+                if dx*dx + dy*dy > r2 { continue; }
+                let px = cx as i32 + dx;
+                let py = cy as i32 + dy;
+                if px < 0 || px >= 480 || py < 0 || py >= 480 { continue; }
+                // Radial brightness: centre bright, edge dim
+                let dist_frac = ((dx*dx + dy*dy) as f32).sqrt() / r as f32;
+                let br = 1.0 - dist_frac * 0.35;
+                img.put_pixel(px as u32, py as u32, Rgb([
+                    (fill[0] as f32 * br) as u8,
+                    (fill[1] as f32 * br) as u8,
+                    (fill[2] as f32 * br) as u8,
+                ]));
+            }
+        }
+
+        // Label inside large bubbles
+        if r >= 24 {
+            let short = if name.len() > 8 { &name[..8] } else { name.as_str() };
+            let lw    = text_width(&font, PxScale::from(11.0), short);
+            draw_text_mut(&mut img, BG, cx as i32 - lw / 2, cy as i32 - 12,
+                          PxScale::from(11.0), &font, short);
+            let pct = format!("{:.0}%", cpu);
+            let pw  = text_width(&font, PxScale::from(11.0), &pct);
+            draw_text_mut(&mut img, BG, cx as i32 - pw / 2, cy as i32 + 2,
+                          PxScale::from(11.0), &font, &pct);
+        }
+
+        // Rank badge top-left if idx < 3
+        if idx < 3 {
+            let badge = ["①", "②", "③"][idx];
+            draw_text_mut(&mut img, TEXT, cx as i32 - r + 2, cy as i32 - r + 2,
+                          PxScale::from(12.0), &font, badge);
+        }
+    }
+
+    // Title bar
+    draw_filled_rect_mut(&mut img, Rect::at(0, 0).of_size(480, title_h as u32), SURFACE0);
+    draw_text_mut(&mut img, TEXT, 8, 6, PxScale::from(18.0), &font, "Process CPU Bubbles");
+    draw_text_mut(&mut img, OVERLAY0, 320, 8, PxScale::from(14.0), &font,
+                  &format!("{} procs", procs.len()));
+
+    DynamicImage::ImageRgb8(img)
+}

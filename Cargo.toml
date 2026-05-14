@@ -1,6 +1,6 @@
 [package]
 name = "ttlcd-rs"
-version = "0.19.0"
+version = "0.20.0"
 edition = "2021"
 description = "Driver and display suite for XinWeiYe/Thermaltake USB LCD panels (480×480)"
 

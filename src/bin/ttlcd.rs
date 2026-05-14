@@ -99,7 +99,7 @@ use ttlcd::{
         render_word_clock,
         render_breakout,
         render_spectrum, render_doom_fire, render_boids, render_tunnel, render_aurora, render_metaballs, render_sand, render_gravity,
-        render_voronoi, render_reaction_diffusion, render_snowfall,
+        render_voronoi, render_reaction_diffusion, render_snowfall, render_hex_grid, render_bubble_chart,
         read_docker_containers,
         read_user_sessions,
         HttpMonitorResult,
@@ -841,6 +841,8 @@ enum DisplayMode {
     Voronoi,
     ReactionDiffusion,
     Snowfall,
+    HexGrid,
+    BubbleChart,
     Idle,
     CustomImage,
     CustomText,
@@ -850,7 +852,7 @@ enum DisplayMode {
 impl DisplayMode {
     const ALL_NAMES: &'static [&'static str] = &[
         "clock", "big_clock", "clock_sysinfo", "sysinfo", "cpu_detail",
-        "network", "disk_usage", "process_top", "temperature", "memory_detail", "countdown", "cpu_graph", "net_graph", "recent_alerts", "process_memory", "disk_io", "calendar", "stopwatch", "metrics", "weather", "notes", "qr_code", "pomodoro", "battery", "world_clock", "ticker", "http_status", "shell_cmd", "ping_monitor", "dashboard", "log_tail", "cpu_freq", "hostname_ip", "rss_feed", "service_status", "net_connections", "uptime_fancy", "os_info", "docker_status", "logged_in_users", "load_graph", "mem_graph", "progress", "matrix_rain", "temp_graph", "disk_io_graph", "graphs_overview", "analog_clock", "ping_graph", "status_overview", "game_of_life", "led_clock", "bounce_ball", "net_speed_graph", "cpu_core_bars", "speedometer_gauge", "disk_pie", "thermal_dashboard", "plasma", "fireworks", "cpu_heatmap", "starfield", "pulse", "minimal_clock", "particle_clock", "snake", "cube_3d", "dvd_bounce", "binary_clock", "radar", "oscilloscope", "lissajous", "pong", "neon_clock", "net_heatmap", "word_clock", "breakout", "spectrum", "doom_fire", "boids", "tunnel", "aurora", "metaballs", "sand", "gravity", "voronoi", "reaction_diffusion", "snowfall", "idle",
+        "network", "disk_usage", "process_top", "temperature", "memory_detail", "countdown", "cpu_graph", "net_graph", "recent_alerts", "process_memory", "disk_io", "calendar", "stopwatch", "metrics", "weather", "notes", "qr_code", "pomodoro", "battery", "world_clock", "ticker", "http_status", "shell_cmd", "ping_monitor", "dashboard", "log_tail", "cpu_freq", "hostname_ip", "rss_feed", "service_status", "net_connections", "uptime_fancy", "os_info", "docker_status", "logged_in_users", "load_graph", "mem_graph", "progress", "matrix_rain", "temp_graph", "disk_io_graph", "graphs_overview", "analog_clock", "ping_graph", "status_overview", "game_of_life", "led_clock", "bounce_ball", "net_speed_graph", "cpu_core_bars", "speedometer_gauge", "disk_pie", "thermal_dashboard", "plasma", "fireworks", "cpu_heatmap", "starfield", "pulse", "minimal_clock", "particle_clock", "snake", "cube_3d", "dvd_bounce", "binary_clock", "radar", "oscilloscope", "lissajous", "pong", "neon_clock", "net_heatmap", "word_clock", "breakout", "spectrum", "doom_fire", "boids", "tunnel", "aurora", "metaballs", "sand", "gravity", "voronoi", "reaction_diffusion", "snowfall", "hex_grid", "bubble_chart", "idle",
     ];
 
     fn from_str_name(s: &str) -> Option<Self> {
@@ -940,6 +942,8 @@ impl DisplayMode {
             "voronoi"              => Some(DisplayMode::Voronoi),
             "reaction_diffusion"   => Some(DisplayMode::ReactionDiffusion),
             "snowfall"             => Some(DisplayMode::Snowfall),
+            "hex_grid"             => Some(DisplayMode::HexGrid),
+            "bubble_chart"         => Some(DisplayMode::BubbleChart),
             "idle"             => Some(DisplayMode::Idle),
             "custom_text"   => Some(DisplayMode::CustomText),
             "slideshow"     => Some(DisplayMode::Slideshow),
@@ -1037,6 +1041,8 @@ impl DisplayMode {
     DisplayMode::Voronoi       => "voronoi",
     DisplayMode::ReactionDiffusion => "reaction_diffusion",
     DisplayMode::Snowfall      => "snowfall",
+    DisplayMode::HexGrid       => "hex_grid",
+    DisplayMode::BubbleChart   => "bubble_chart",
             DisplayMode::Idle           => "idle",
             DisplayMode::CustomImage  => "image",
             DisplayMode::CustomText   => "custom_text",
@@ -2727,6 +2733,8 @@ fn display_loop(panel: Arc<Mutex<Option<Panel>>>, state: DaemonState) {
                 DisplayMode::Voronoi       => (render_voronoi(), 0),
                 DisplayMode::ReactionDiffusion => (render_reaction_diffusion(), 0),
                 DisplayMode::Snowfall      => (render_snowfall(), 0),
+                DisplayMode::HexGrid       => (render_hex_grid(), 1),
+                DisplayMode::BubbleChart   => (render_bubble_chart(), 1),
                 DisplayMode::MatrixRain => (render_matrix_rain(), 0),
                 DisplayMode::Idle
                 | DisplayMode::CustomImage
@@ -4174,6 +4182,8 @@ async fn api_modes_list() -> impl Responder {
         ModeInfo { name: "voronoi",         description: "Animated Voronoi diagram — 20 bouncing seeds, edge-darkened colour regions" },
         ModeInfo { name: "reaction_diffusion", description: "Gray-Scott reaction-diffusion — organic spot/maze patterns at 160x160 cells" },
         ModeInfo { name: "snowfall",         description: "Snowfall screensaver — 180 flakes drifting with wind, wobble, and soft glow" },
+        ModeInfo { name: "hex_grid",         description: "Per-core CPU hex grid — each hexagon fill level = core load; colour = load category" },
+        ModeInfo { name: "bubble_chart",     description: "Process CPU bubble chart — top processes as circles scaled by CPU%, colour by process name" },
         ModeInfo { name: "idle",           description: "Keepalive — no display update, prevents blank" },
     ];
     HttpResponse::Ok().json(modes)
@@ -6227,6 +6237,8 @@ async fn api_status_badge(state: web::Data<DaemonState>) -> impl Responder {
         "voronoi"                              => "#a6e3a1",  // green
         "reaction_diffusion"                   => "#74c7ec",  // sapphire
         "snowfall"                             => "#cdd6f4",  // text/white
+        "hex_grid"                             => "#a6e3a1",  // green
+        "bubble_chart"                         => "#89b4fa",  // blue
         "status_overview"                      => "#89dceb",  // sky
         "analog_clock"                         => "#cba6f7",  // mauve
         "net_speed_graph"                      => "#a6e3a1",  // green
@@ -6532,6 +6544,7 @@ async fn api_modes_catalog(_state: web::Data<DaemonState>) -> impl Responder {
             "notes"|"battery"|"world_clock" => "info",
             "matrix_rain"|"game_of_life"|"bounce_ball"|"plasma"|"fireworks"|"starfield"|
             "snake"|"cube_3d"|"dvd_bounce"|"lissajous"|"pong"|"breakout"|"doom_fire"|"boids"|"tunnel"|"aurora"|"metaballs"|"sand"|"gravity"|"voronoi"|"reaction_diffusion"|"snowfall" => "fun",
+            "hex_grid"|"bubble_chart" => "system",
             _ => "other",
         }
     }
@@ -9430,6 +9443,8 @@ async fn api_render_mode_preview(
             DisplayMode::Spectrum      => render_spectrum(),
             DisplayMode::DoomFire      => render_doom_fire(),
             DisplayMode::Voronoi       => render_voronoi(),
+            DisplayMode::HexGrid       => render_hex_grid(),
+            DisplayMode::BubbleChart   => render_bubble_chart(),
             DisplayMode::ReactionDiffusion => render_reaction_diffusion(),
             DisplayMode::Snowfall      => render_snowfall(),
             DisplayMode::Metaballs     => render_metaballs(),
