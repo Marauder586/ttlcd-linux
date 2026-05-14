@@ -2288,22 +2288,30 @@ function drawLineSparkline(canvas, data, color) {
   if (dimSection) dimSection.insertAdjacentElement('afterend', sec);
   else document.body.appendChild(sec);
 
-  // Populate mode select
-  var modeSelect = document.getElementById('sched-mode');
-  if (modeSelect) {
-    var modes = [
-      'clock','big_clock','clock_sysinfo','sysinfo','cpu_detail','network','disk_usage',
-      'process_top','temperature','memory_detail','cpu_graph','net_graph','recent_alerts',
-      'process_memory','disk_io','calendar','stopwatch','metrics','weather','notes',
-      'qr_code','idle'
-    ];
-    modes.forEach(function(m) {
-      var opt = document.createElement('option');
-      opt.value = m;
-      opt.textContent = m.replace(/_/g,' ');
-      modeSelect.appendChild(opt);
-    });
-  }
+  // Populate mode select from /api/modes (all available modes)
+  (async function() {
+    var modeSelect = document.getElementById('sched-mode');
+    if (!modeSelect) return;
+    try {
+      var data = await apiJson('GET', '/api/modes');
+      var modes = Array.isArray(data) ? data.map(m => m.name || m) : [];
+      if (modes.length === 0) modes = ['clock','sysinfo','cpu_detail','network','idle'];
+      modes.forEach(function(m) {
+        var opt = document.createElement('option');
+        opt.value = m;
+        opt.textContent = m.replace(/_/g, ' ');
+        modeSelect.appendChild(opt);
+      });
+    } catch (_) {
+      // Fallback minimal list
+      ['clock','sysinfo','cpu_detail','network','idle'].forEach(function(m) {
+        var opt = document.createElement('option');
+        opt.value = m;
+        opt.textContent = m.replace(/_/g, ' ');
+        modeSelect.appendChild(opt);
+      });
+    }
+  })();
 
   document.getElementById('sched-add-btn').addEventListener('click', async function() {
     var hour   = parseInt(document.getElementById('sched-hour')?.value || 0, 10);
@@ -3865,6 +3873,107 @@ async function fetchScreensaverStatus() {
   setInterval(fetchScreensaverStatus, 15000);  // refresh status every 15s
 })();
 
+
+
+// ─── Recently Used Modes tracking ────────────────────────────────────────────
+(function initRecentModes() {
+  const STORAGE_KEY = 'ttlcd-recent-modes';
+  const MAX_RECENT  = 6;
+
+  function loadRecent() {
+    try { return JSON.parse(localStorage.getItem(STORAGE_KEY) || '[]'); }
+    catch (_) { return []; }
+  }
+
+  function saveRecent(list) {
+    try { localStorage.setItem(STORAGE_KEY, JSON.stringify(list.slice(0, MAX_RECENT))); }
+    catch (_) {}
+  }
+
+  function pushRecent(mode) {
+    let list = loadRecent().filter(m => m !== mode);
+    list.unshift(mode);
+    saveRecent(list);
+    renderRecentBand();
+  }
+
+  // Create the "Recent" band above the mode grid
+  const modeGrid = document.getElementById('mode-grid');
+  if (!modeGrid) return;
+  let recentBand = document.getElementById('recent-modes-band');
+  if (!recentBand) {
+    recentBand = document.createElement('div');
+    recentBand.id = 'recent-modes-band';
+    recentBand.className = 'recent-band';
+    const favBand = document.getElementById('fav-modes-band');
+    if (favBand) favBand.after(recentBand);
+    else {
+      const header = modeGrid.closest('.card')?.querySelector('.section-header-row');
+      if (header) header.after(recentBand);
+      else modeGrid.before(recentBand);
+    }
+  }
+
+  function renderRecentBand() {
+    const list = loadRecent();
+    if (list.length === 0) {
+      recentBand.innerHTML = '';
+      recentBand.style.display = 'none';
+      return;
+    }
+    recentBand.style.display = 'flex';
+    recentBand.innerHTML = '<span class="recent-band-label">⏱ Recent:</span>';
+    list.forEach(mode => {
+      const orig = document.querySelector(`[data-mode="${mode}"]`);
+      if (!orig) return;
+      const btn = document.createElement('button');
+      btn.className = 'mode-btn recent-btn';
+      btn.dataset.mode = mode;
+      btn.title = orig.title || mode;
+      // Simplified label - just the text span content
+      const span = orig.querySelector('span');
+      const emoji = orig.textContent.replace(span?.textContent || '', '').trim().replace(/★|☆/g, '');
+      btn.innerHTML = `${emoji}<span>${span?.textContent || mode}</span>`;
+      btn.addEventListener('click', async () => {
+        try {
+          await api('POST', '/api/mode', { mode });
+          log(`Mode → ${mode}`);
+          updateActiveModeButton(mode);
+          pushRecent(mode);
+        } catch (e) { log(`Mode change failed: ${e.message}`, 'err'); }
+      });
+      recentBand.appendChild(btn);
+    });
+
+    // Clear button
+    const clearBtn = document.createElement('button');
+    clearBtn.className = 'recent-clear-btn';
+    clearBtn.title = 'Clear recently used list';
+    clearBtn.textContent = '✕';
+    clearBtn.addEventListener('click', e => {
+      e.stopPropagation();
+      saveRecent([]);
+      renderRecentBand();
+    });
+    recentBand.appendChild(clearBtn);
+  }
+
+  // Track mode switches: patch the modeBtns click handlers by listening globally
+  document.addEventListener('click', e => {
+    const btn = e.target.closest('.mode-btn[data-mode]');
+    if (btn && !btn.classList.contains('recent-btn')) {
+      pushRecent(btn.dataset.mode);
+    }
+  });
+
+  // Also track API mode switches from fetchStatus
+  const _origUpdateActiveModeButton = window.updateActiveModeButton;
+  // Intercept mode changes from status polling
+  const _origFetchStatus = window.fetchStatus;
+
+  renderRecentBand();
+})();
+
 // ─── Boot ─────────────────────────────────────────────────────────────────────
 initSSE();
 startPolling();
@@ -3885,6 +3994,9 @@ log('ttlcd web UI connected');
     switch (e.key) {
       case 'A':
         api('POST', '/api/mode', { mode: 'analog_clock' }).then(() => fetchStatus()).catch(() => {});
+        break;
+      case 'Z':
+        api('POST', '/api/mode', { mode: 'status_overview' }).then(() => fetchStatus()).catch(() => {});
         break;
       case 'G':
         api('POST', '/api/mode', { mode: 'ping_graph' }).then(() => fetchStatus()).catch(() => {});

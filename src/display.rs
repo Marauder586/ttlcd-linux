@@ -10,7 +10,8 @@ use std::time::Duration;
 use ab_glyph::{Font as AbFont, FontRef, PxScale, ScaleFont};
 use chrono::{Datelike, Local, Timelike};
 use image::{DynamicImage, Rgb, RgbImage};
-use imageproc::drawing::{draw_filled_rect_mut, draw_hollow_rect_mut, draw_text_mut};
+use imageproc::drawing::{draw_filled_rect_mut, draw_hollow_rect_mut, draw_text_mut, draw_antialiased_line_segment_mut};
+use imageproc::pixelops::interpolate;
 use imageproc::rect::Rect;
 use qrcode::QrCode;
 use sysinfo::System;
@@ -6797,23 +6798,22 @@ pub fn render_analog_clock() -> DynamicImage {
         let _ = outer; // suppress warning
     }
 
-    // ── Helper: draw thick hand ────────────────────────────────────────────
+    // ── Helper: draw clock hand using anti-aliased lines ─────────────────────────
+    // Each hand is drawn as a bundle of parallel anti-aliased line segments for thickness
     let draw_hand = |img: &mut image::RgbImage, angle: f64, length: f64, thickness: i32, color: Rgb<u8>| {
         let (sin_a, cos_a) = (angle.sin(), angle.cos());
-        for d in 0..(length as i32) {
-            let t = d as f64;
-            let hx = cx + (t * sin_a) as i32;
-            let hy = cy - (t * cos_a) as i32;
-            // Draw a cross of pixels for thickness
-            for tx in -(thickness / 2)..(thickness / 2 + 1) {
-                for ty in -(thickness / 2)..(thickness / 2 + 1) {
-                    let px = hx + tx;
-                    let py = hy + ty;
-                    if px >= 0 && py >= 0 && (px as u32) < img.width() && (py as u32) < img.height() {
-                        img.put_pixel(px as u32, py as u32, color);
-                    }
-                }
-            }
+        let perp_sin = cos_a;  // perpendicular to hand direction
+        let perp_cos = -sin_a;
+        let ex = cx as f32 + (length * sin_a) as f32;
+        let ey = cy as f32 - (length * cos_a) as f32;
+        let half = (thickness as f64 - 1.0) / 2.0;
+        for t_idx in 0..thickness {
+            let offset = t_idx as f64 - half;
+            let sx = cx as f32 + (offset * perp_sin) as f32;
+            let sy = cy as f32 - (offset * perp_cos) as f32;
+            let lx = ex + (offset * perp_sin) as f32;
+            let ly = ey - (offset * perp_cos) as f32;
+            draw_antialiased_line_segment_mut(img, (sx as i32, sy as i32), (lx as i32, ly as i32), color, interpolate);
         }
     };
 
@@ -7066,5 +7066,153 @@ mod ping_graph_tests {
         push_ping_history(&results);
         let img = render_ping_graph(&results);
         assert_eq!(img.width(), 480);
+    }
+}
+
+
+// ─── Status Overview (4-quadrant live status) ────────────────────────────────
+
+/// Render a 4-quadrant live status overview (480×480).
+///
+/// Top-left: Clock + date.  Top-right: CPU % + Memory.
+/// Bottom-left: Network Rx/Tx.  Bottom-right: Temp + Uptime.
+pub fn render_status_overview() -> DynamicImage {
+    use sysinfo::{Components, CpuRefreshKind, RefreshKind, System};
+
+    let refresh = RefreshKind::nothing()
+        .with_cpu(CpuRefreshKind::everything())
+        .with_memory(sysinfo::MemoryRefreshKind::everything());
+    let mut sys = System::new_with_specifics(refresh);
+    std::thread::sleep(std::time::Duration::from_millis(200));
+    sys.refresh_specifics(refresh);
+
+    let now    = Local::now();
+    let cpu    = sys.global_cpu_usage();
+    let used   = sys.used_memory();
+    let total  = sys.total_memory();
+    let mem_pct = if total > 0 { used as f32 / total as f32 * 100.0 } else { 0.0 };
+    let load   = System::load_average();
+    let uptime = System::uptime();
+
+    // Network
+    use sysinfo::Networks;
+    let mut nets = Networks::new_with_refreshed_list();
+    std::thread::sleep(std::time::Duration::from_millis(100));
+    nets.refresh(true);
+    let (rx_bps, tx_bps) = nets.iter()
+        .fold((0u64, 0u64), |(rx, tx), (_, d)| {
+            (rx + d.received() * 10, tx + d.transmitted() * 10)  // ~100ms × 10 = /s
+        });
+
+    // Temperature
+    let comps = Components::new_with_refreshed_list();
+    let hot_temp = comps.iter()
+        .filter_map(|c| c.temperature())
+        .filter(|t| t.is_finite() && *t > 0.0)
+        .fold(0.0_f32, f32::max);
+
+    let mut img  = blank();
+    let bold = font_bold();
+    let mono = font_mono();
+
+    let mid = 240i32;
+
+    // ── Quadrant background tint ──────────────────────────────────────────
+    // All 4 quads use the same base background with subtle dividers
+
+    // Divider lines
+    for x in 0..480u32 { img.put_pixel(x, mid as u32, SURFACE0); }
+    for y in 0..480u32 { img.put_pixel(mid as u32, y, SURFACE0); }
+
+    // ── TL: Clock ─────────────────────────────────────────────────────────
+    let time_str = now.format("%H:%M:%S").to_string();
+    let date_str = now.format("%a %b %-e").to_string();
+    let wday_str = now.format("%Y").to_string();
+    draw_centered_in(&mut img, &mono, PxScale::from(40.0), 0, 0, mid, mid - 10, TEAL,    &time_str);
+    draw_centered_in(&mut img, &bold, PxScale::from(17.0), 0, 0, mid, mid + 60, TEXT,    &date_str);
+    draw_centered_in(&mut img, &bold, PxScale::from(14.0), 0, 0, mid, mid + 85, SUBTEXT, &wday_str);
+    draw_text_mut(&mut img, OVERLAY0, 8, 8, PxScale::from(12.0), &mono, "CLOCK");
+
+    // ── TR: CPU + Memory ──────────────────────────────────────────────────
+    let cpu_color = if cpu > 80.0 { RED } else if cpu > 50.0 { YELLOW } else { MAUVE };
+    let mem_color = if mem_pct > 90.0 { RED } else if mem_pct > 75.0 { YELLOW } else { BLUE };
+    let cpu_str = format!("{:.0}%", cpu);
+    let mem_str = format!("{:.0}%", mem_pct);
+
+    draw_text_mut(&mut img, OVERLAY0, mid + 8, 8, PxScale::from(12.0), &mono, "CPU / MEM");
+    draw_centered_in(&mut img, &bold, PxScale::from(34.0), mid, 0, mid, mid - 60, cpu_color, &cpu_str);
+
+    // CPU bar
+    let bar_x = mid + 12;
+    let bar_y = mid / 2 - 5;
+    let bar_w = mid - 24;
+    draw_bar(&mut img, bar_x, bar_y, bar_w, 10, cpu / 100.0, cpu_color);
+    draw_text_mut(&mut img, SUBTEXT, mid + 8, mid / 2 + 10, PxScale::from(13.0), &mono, "CPU");
+
+    draw_centered_in(&mut img, &bold, PxScale::from(34.0), mid, 0, mid, mid + 30, mem_color, &mem_str);
+    draw_bar(&mut img, bar_x, mid - 35, bar_w, 10, mem_pct / 100.0, mem_color);
+    draw_text_mut(&mut img, SUBTEXT, mid + 8, mid - 20, PxScale::from(13.0), &mono, "MEM");
+
+    let load_str = format!("load {:.2}", load.one);
+    let lw = text_width(&mono, PxScale::from(13.0), &load_str);
+    draw_text_mut(&mut img, OVERLAY0, 480 - lw - 8, mid - 6, PxScale::from(13.0), &mono, &load_str);
+
+    // ── BL: Network ───────────────────────────────────────────────────────
+    draw_text_mut(&mut img, OVERLAY0, 8, mid + 8, PxScale::from(12.0), &mono, "NETWORK");
+    let rx_str = format!("↓ {}", format_bps(rx_bps));
+    let tx_str = format!("↑ {}", format_bps(tx_bps));
+    draw_centered_in(&mut img, &bold, PxScale::from(28.0), 0, mid, mid, mid + 60, GREEN, &rx_str);
+    draw_centered_in(&mut img, &bold, PxScale::from(28.0), 0, mid, mid, mid + 100, PEACH, &tx_str);
+    // Tiny history sparkline
+    let rx_hist: Vec<f32> = net_rx_history().iter().map(|&v| v as f32).collect();
+    let tx_hist: Vec<f32> = net_tx_history().iter().map(|&v| v as f32).collect();
+    let net_max = rx_hist.iter().chain(tx_hist.iter()).cloned().fold(0.0f32, f32::max).max(1024.0);
+    let fill_rx = Rgb([GREEN.0[0] / 10, GREEN.0[1] / 10, GREEN.0[2] / 10]);
+    let fill_tx = Rgb([PEACH.0[0] / 10, PEACH.0[1] / 10, PEACH.0[2] / 10]);
+    draw_line_chart(&mut img, &tx_hist, net_max, 0, mid + 145, mid, 84, PEACH, fill_tx);
+    draw_line_chart(&mut img, &rx_hist, net_max, 0, mid + 145, mid, 84, GREEN, fill_rx);
+
+    // ── BR: Temp + Uptime ─────────────────────────────────────────────────
+    draw_text_mut(&mut img, OVERLAY0, mid + 8, mid + 8, PxScale::from(12.0), &mono, "TEMP / UPTIME");
+    let temp_color = if hot_temp >= 85.0 { RED } else if hot_temp >= 70.0 { PEACH } else { GREEN };
+    let temp_str = if hot_temp > 0.0 { format!("{:.0}°C", hot_temp) } else { "—".to_string() };
+    draw_centered_in(&mut img, &bold, PxScale::from(40.0), mid, mid, mid, mid + 60, temp_color, &temp_str);
+
+    // Uptime
+    let up_str = format_uptime(uptime);
+    draw_centered_in(&mut img, &mono, PxScale::from(18.0), mid, mid, mid, mid + 115, TEAL, &up_str);
+    draw_text_mut(&mut img, OVERLAY0, mid + 8, 473, PxScale::from(12.0), &mono, "up");
+
+    // ── Timestamp (bottom center) ─────────────────────────────────────────
+    let ts = now.format("%H:%M:%S").to_string();
+    let tsw = text_width(&mono, PxScale::from(11.0), &ts);
+    draw_filled_rect_mut(&mut img, Rect::at((480 - tsw as i32) / 2 - 2, mid - 7).of_size(tsw as u32 + 4, 14), SURFACE0);
+    draw_text_mut(&mut img, OVERLAY0, (480 - tsw as i32) / 2, mid - 7, PxScale::from(11.0), &mono, &ts);
+
+    DynamicImage::ImageRgb8(img)
+}
+
+/// Draw text centered horizontally within a sub-rectangle [ox, ox+pw] and
+/// at a given absolute y coordinate.
+fn draw_centered_in(img: &mut RgbImage,
+                    font: &ab_glyph::FontRef<'_>,
+                    scale: PxScale,
+                    ox: i32, _oy: i32, pw: i32, y: i32,
+                    color: Rgb<u8>,
+                    text: &str) {
+    let w = text_width(font, scale, text);
+    let x = ox + (pw - w) / 2;
+    draw_text_mut(img, color, x.max(ox), y, scale, font, text);
+}
+
+#[cfg(test)]
+mod status_overview_tests {
+    use super::*;
+
+    #[test]
+    fn test_render_status_overview_size() {
+        let img = render_status_overview();
+        assert_eq!(img.width(), 480);
+        assert_eq!(img.height(), 480);
     }
 }
