@@ -6889,3 +6889,182 @@ mod analog_clock_tests {
         assert_eq!(img.height(), 480);
     }
 }
+
+
+// ─── Ping Latency History Graph ───────────────────────────────────────────────
+
+// Up to 4 hosts, 120 samples each
+static PING_HISTORY: OnceLock<std::sync::Mutex<Vec<std::collections::VecDeque<(f32, bool)>>>> = OnceLock::new();
+
+fn ping_history_data() -> std::sync::MutexGuard<'static, Vec<std::collections::VecDeque<(f32, bool)>>> {
+    PING_HISTORY.get_or_init(|| {
+        // Pre-allocate for up to 4 hosts × 120 samples
+        let v: Vec<std::collections::VecDeque<(f32, bool)>> =
+            (0..4).map(|_| std::collections::VecDeque::with_capacity(120)).collect();
+        std::sync::Mutex::new(v)
+    })
+    .lock()
+    .unwrap()
+}
+
+/// Record the latest ping results into the history ring-buffers.
+///
+/// Called by the ping_monitor_loop each time a fresh set of results arrives.
+/// Only the first 4 hosts are tracked.
+pub fn push_ping_history(results: &[PingResult]) {
+    let mut hist = ping_history_data();
+    for (idx, res) in results.iter().enumerate().take(4) {
+        while hist.len() <= idx {
+            hist.push(std::collections::VecDeque::with_capacity(120));
+        }
+        let buf = &mut hist[idx];
+        if buf.len() >= 120 { buf.pop_front(); }
+        let ms = res.latency_ms.unwrap_or(0.0) as f32;
+        let ok = res.latency_ms.is_some() && res.loss_pct < 100.0;
+        buf.push_back((ms, ok));
+    }
+}
+
+/// Render a ping latency history graph (480×480).
+///
+/// Shows up to 4 configured hosts as overlaid coloured line charts.
+/// Unreachable samples are shown as a red vertical spike at the bottom.
+pub fn render_ping_graph(results: &[PingResult]) -> DynamicImage {
+    // Push fresh samples first
+    push_ping_history(results);
+
+    let hist = ping_history_data();
+    let hosts: Vec<(String, Vec<(f32, bool)>)> = results.iter()
+        .enumerate()
+        .take(4)
+        .map(|(i, res)| {
+            let buf: Vec<(f32, bool)> = if i < hist.len() {
+                hist[i].iter().cloned().collect()
+            } else {
+                vec![]
+            };
+            (res.label.clone(), buf)
+        })
+        .collect();
+    drop(hist);
+
+    let mut img  = blank();
+    let bold = font_bold();
+    let mono = font_mono();
+    let now = Local::now();
+
+    // ── Header ────────────────────────────────────────────────────────────
+    draw_text_mut(&mut img, OVERLAY0, 20, 18, PxScale::from(19.0), &bold, "PING GRAPH");
+    let ts = now.format("%H:%M:%S").to_string();
+    let tw = text_width(&mono, PxScale::from(22.0), &ts);
+    draw_text_mut(&mut img, OVERLAY0, 480 - 20 - tw, 18, PxScale::from(22.0), &mono, &ts);
+
+    // Per-host current latency
+    let colors: &[Rgb<u8>] = &[GREEN, BLUE, PEACH, MAUVE];
+    let mut cur_y = 48i32;
+    for (i, (label, _)) in hosts.iter().enumerate() {
+        let ms = results.get(i).and_then(|r| r.latency_ms).unwrap_or(0.0);
+        let loss = results.get(i).map(|r| r.loss_pct).unwrap_or(100.0);
+        let col = if loss >= 100.0 { RED } else if ms > 100.0 { YELLOW } else { colors[i] };
+        let stat = if loss >= 100.0 {
+            format!("{}: timeout", label)
+        } else {
+            format!("{}: {:.1} ms ({:.0}% loss)", label, ms, loss)
+        };
+        draw_text_mut(&mut img, col, 20, cur_y, PxScale::from(16.0), &bold, &stat);
+        cur_y += 20;
+    }
+
+    // ── Compute chart scale ───────────────────────────────────────────────
+    let max_ms = hosts.iter()
+        .flat_map(|(_, buf)| buf.iter())
+        .filter(|(_, ok)| *ok)
+        .map(|(ms, _)| *ms)
+        .fold(0.0f32, f32::max);
+    let chart_max = (max_ms * 1.2).max(100.0);
+
+    // ── Chart area ────────────────────────────────────────────────────────
+    let chart_x = 0i32;
+    let chart_y = (cur_y + 10).max(130);
+    let chart_w = 480i32;
+    let chart_h = 480 - chart_y - 60;
+
+    // Grid lines at 25%, 50%, 75%
+    for pct in &[0.25f32, 0.5, 0.75] {
+        let ly = chart_y + chart_h - (chart_h as f32 * pct) as i32;
+        for x in (chart_x..(chart_x + chart_w)).step_by(8) {
+            if ly >= 0 && (ly as u32) < img.height() {
+                img.put_pixel(x as u32, ly as u32, SURFACE0);
+            }
+        }
+        let label_ms = format!("{:.0}ms", chart_max * pct);
+        draw_text_mut(&mut img, OVERLAY0, 2, (ly - 10).max(chart_y), PxScale::from(11.0), &mono, &label_ms);
+    }
+
+    // Per-host line charts
+    for (i, (_, buf)) in hosts.iter().enumerate().take(4) {
+        if buf.is_empty() { continue; }
+        let color = colors[i];
+        let fill  = Rgb([color.0[0] / 8, color.0[1] / 8, color.0[2] / 8]);
+        let vals: Vec<f32> = buf.iter().map(|(ms, ok)| if *ok { *ms } else { 0.0 }).collect();
+        draw_line_chart(&mut img, &vals, chart_max, chart_x, chart_y, chart_w, chart_h, color, fill);
+
+        // Timeout markers (vertical red lines at bottom)
+        let n = buf.len();
+        let bar_w = (chart_w / 120).max(2);
+        let offset = 120 - n as i32;
+        for (j, (_, ok)) in buf.iter().enumerate() {
+            if !ok {
+                let bx = chart_x + (offset + j as i32) * bar_w;
+                let by = chart_y + chart_h - 10;
+                if bx >= 0 && (bx as u32) < img.width() as u32 {
+                    draw_filled_rect_mut(&mut img, Rect::at(bx, by).of_size(bar_w as u32, 10), RED);
+                }
+            }
+        }
+    }
+
+    // Chart border
+    draw_filled_rect_mut(&mut img, Rect::at(chart_x, chart_y + chart_h).of_size(chart_w as u32, 2), SURFACE0);
+
+    // ── Legend ────────────────────────────────────────────────────────────
+    let legend_y = chart_y + chart_h + 6;
+    let mut lx = 8i32;
+    for (i, (label, _)) in hosts.iter().enumerate().take(4) {
+        let color = colors[i];
+        draw_filled_rect_mut(&mut img, Rect::at(lx, legend_y + 2).of_size(12, 8), color);
+        lx += 14;
+        let short = if label.len() > 12 { &label[..12] } else { label.as_str() };
+        draw_text_mut(&mut img, SUBTEXT, lx, legend_y, PxScale::from(13.0), &mono, short);
+        lx += text_width(&mono, PxScale::from(13.0), short) + 10;
+    }
+
+    let footer = "← 2 min ago    now →  ▼ = timeout";
+    let fw = text_width(&mono, PxScale::from(12.0), footer);
+    draw_text_mut(&mut img, OVERLAY0, (480 - fw).max(0), legend_y + 17, PxScale::from(12.0), &mono, footer);
+
+    DynamicImage::ImageRgb8(img)
+}
+
+#[cfg(test)]
+mod ping_graph_tests {
+    use super::*;
+
+    #[test]
+    fn test_render_ping_graph_empty() {
+        let img = render_ping_graph(&[]);
+        assert_eq!(img.width(), 480);
+        assert_eq!(img.height(), 480);
+    }
+
+    #[test]
+    fn test_render_ping_graph_with_results() {
+        let results = vec![
+            PingResult { host: "8.8.8.8".into(), label: "Google DNS".into(), latency_ms: Some(12.5), loss_pct: 0.0 },
+            PingResult { host: "1.1.1.1".into(), label: "Cloudflare".into(), latency_ms: Some(8.3), loss_pct: 0.0 },
+        ];
+        push_ping_history(&results);
+        let img = render_ping_graph(&results);
+        assert_eq!(img.width(), 480);
+    }
+}

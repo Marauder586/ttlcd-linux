@@ -69,6 +69,8 @@ use ttlcd::{
         render_net_speed_graph,
         render_cpu_core_bars,
         render_analog_clock,
+        render_ping_graph,
+        push_ping_history,
         read_docker_containers,
         read_user_sessions,
         HttpMonitorResult,
@@ -770,6 +772,7 @@ enum DisplayMode {
     DiskIoGraph,
     GraphsOverview,
     AnalogClock,
+    PingGraph,
     NetSpeedGraph,
     CpuCoreBars,
     Idle,
@@ -781,7 +784,7 @@ enum DisplayMode {
 impl DisplayMode {
     const ALL_NAMES: &'static [&'static str] = &[
         "clock", "big_clock", "clock_sysinfo", "sysinfo", "cpu_detail",
-        "network", "disk_usage", "process_top", "temperature", "memory_detail", "countdown", "cpu_graph", "net_graph", "recent_alerts", "process_memory", "disk_io", "calendar", "stopwatch", "metrics", "weather", "notes", "qr_code", "pomodoro", "battery", "world_clock", "ticker", "http_status", "shell_cmd", "ping_monitor", "dashboard", "log_tail", "cpu_freq", "hostname_ip", "rss_feed", "service_status", "net_connections", "uptime_fancy", "os_info", "docker_status", "logged_in_users", "load_graph", "mem_graph", "progress", "matrix_rain", "temp_graph", "disk_io_graph", "graphs_overview", "analog_clock", "net_speed_graph", "cpu_core_bars", "idle",
+        "network", "disk_usage", "process_top", "temperature", "memory_detail", "countdown", "cpu_graph", "net_graph", "recent_alerts", "process_memory", "disk_io", "calendar", "stopwatch", "metrics", "weather", "notes", "qr_code", "pomodoro", "battery", "world_clock", "ticker", "http_status", "shell_cmd", "ping_monitor", "dashboard", "log_tail", "cpu_freq", "hostname_ip", "rss_feed", "service_status", "net_connections", "uptime_fancy", "os_info", "docker_status", "logged_in_users", "load_graph", "mem_graph", "progress", "matrix_rain", "temp_graph", "disk_io_graph", "graphs_overview", "analog_clock", "ping_graph", "net_speed_graph", "cpu_core_bars", "idle",
     ];
 
     fn from_str_name(s: &str) -> Option<Self> {
@@ -831,6 +834,7 @@ impl DisplayMode {
             "progress"         => Some(DisplayMode::Progress),
             "matrix_rain"      => Some(DisplayMode::MatrixRain),
             "analog_clock"      => Some(DisplayMode::AnalogClock),
+            "ping_graph"        => Some(DisplayMode::PingGraph),
             "net_speed_graph"   => Some(DisplayMode::NetSpeedGraph),
             "cpu_core_bars"     => Some(DisplayMode::CpuCoreBars),
             "idle"             => Some(DisplayMode::Idle),
@@ -890,6 +894,7 @@ impl DisplayMode {
             DisplayMode::DiskIoGraph    => "disk_io_graph",
             DisplayMode::GraphsOverview => "graphs_overview",
     DisplayMode::AnalogClock    => "analog_clock",
+    DisplayMode::PingGraph      => "ping_graph",
     DisplayMode::NetSpeedGraph  => "net_speed_graph",
     DisplayMode::CpuCoreBars    => "cpu_core_bars",
             DisplayMode::Idle           => "idle",
@@ -2415,6 +2420,10 @@ fn display_loop(panel: Arc<Mutex<Option<Panel>>>, state: DaemonState) {
                 DisplayMode::DiskIoGraph    => (render_disk_io_graph(), 5),
                 DisplayMode::GraphsOverview => (render_graphs_overview(), 5),
                 DisplayMode::AnalogClock    => (render_analog_clock(), 1),
+                DisplayMode::PingGraph      => {
+                    let results = state.ping_results.lock().unwrap().clone();
+                    (render_ping_graph(&results), 5)
+                },
                 DisplayMode::NetSpeedGraph  => (render_net_speed_graph(), 5),
                 DisplayMode::CpuCoreBars    => (render_cpu_core_bars(), 5),
                 DisplayMode::MatrixRain => (render_matrix_rain(), 0),
@@ -2819,6 +2828,7 @@ async fn ping_monitor_loop(state: DaemonState) {
                 loss_pct:   result.1,
             });
         }
+        push_ping_history(&results);
         *state.ping_results.lock().unwrap() = results;
     }
 }
@@ -3783,6 +3793,7 @@ async fn api_modes_list() -> impl Responder {
         ModeInfo { name: "mem_graph",      description: "Memory usage history graph: RAM % over time as a filled line chart" },
         ModeInfo { name: "progress",       description: "Full-screen progress bar — configure via POST /api/progress with value/total/label" },
         ModeInfo { name: "matrix_rain",    description: "Matrix digital rain screensaver — animated falling characters" },
+        ModeInfo { name: "ping_graph",      description: "Ping latency history graph — overlaid line charts for up to 4 monitored hosts" },
         ModeInfo { name: "analog_clock",    description: "Analog clock face with hour/minute/second hands and date/load display" },
         ModeInfo { name: "net_speed_graph", description: "Network speed history: overlaid Rx/Tx line chart with per-interface breakdown" },
         ModeInfo { name: "cpu_core_bars",   description: "Per-core CPU utilisation as horizontal bars — good for high core-count systems" },
@@ -5747,6 +5758,7 @@ async fn api_status_badge(state: web::Data<DaemonState>) -> impl Responder {
         "disk_usage" | "disk_io"                => "#f9e2af",  // yellow
         "process_top" | "process_memory"        => "#a6e3a1",  // green
         "temperature" | "temp_graph"            => "#fab387",  // peach
+        "ping_graph"                           => "#a6e3a1",  // green
         "analog_clock"                         => "#cba6f7",  // mauve
         "net_speed_graph"                      => "#a6e3a1",  // green
         "cpu_core_bars"                        => "#cba6f7",  // mauve
@@ -8715,6 +8727,10 @@ async fn api_render_mode_preview(
             DisplayMode::DiskIoGraph    => render_disk_io_graph(),
             DisplayMode::GraphsOverview => render_graphs_overview(),
             DisplayMode::AnalogClock    => render_analog_clock(),
+            DisplayMode::PingGraph      => {
+                let results = state_clone.ping_results.lock().unwrap().clone();
+                render_ping_graph(&results)
+            },
             DisplayMode::NetSpeedGraph  => render_net_speed_graph(),
             DisplayMode::CpuCoreBars    => render_cpu_core_bars(),
             DisplayMode::MatrixRain   => render_matrix_rain(),
