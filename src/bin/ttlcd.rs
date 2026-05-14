@@ -1866,6 +1866,7 @@ async fn run_daemon(
             .route("/ping",               web::get().to(api_ping))
             .route("/api/ping",           web::get().to(api_ping))
             .route("/api/blank",          web::post().to(api_blank))
+            .route("/api/display/reset",  web::post().to(api_display_reset))
             .route("/api/countdown",      web::post().to(api_countdown))
             // Prometheus metrics
             .route("/metrics",            web::get().to(api_metrics))
@@ -4025,6 +4026,34 @@ async fn api_blank(state: web::Data<DaemonState>) -> impl Responder {
     *state.pending_jpeg.lock().unwrap() = Some(jpeg);
     *state.mode.lock().unwrap()         = DisplayMode::CustomImage;
     HttpResponse::Ok().body("blanked")
+}
+
+
+// ─── Full reset ───────────────────────────────────────────────────────────────
+
+/// POST /api/display/reset — reset daemon to defaults.
+///
+/// - Stops rotation (sets interval = 0)
+/// - Cancels countdown and screensaver
+/// - Returns to `clock` mode
+/// - Clears pending JPEG
+///
+/// Does NOT clear presets, history, thresholds, or persisted settings.
+async fn api_display_reset(state: web::Data<DaemonState>) -> impl Responder {
+    *state.rotation_interval.lock().unwrap() = 0;
+    *state.rotation_modes.lock().unwrap()    = vec![];
+    *state.countdown.lock().unwrap()         = None;
+    *state.screensaver_active.lock().unwrap()= false;
+    *state.pending_jpeg.lock().unwrap()      = None;
+    *state.mode.lock().unwrap()              = DisplayMode::Clock;
+    *state.prev_mode.lock().unwrap()         = DisplayMode::Clock;
+    log::info!("display reset to defaults");
+    push_history(&state, HistoryKind::System, "display reset".to_string());
+    HttpResponse::Ok().json(serde_json::json!({
+        "ok": true,
+        "mode": "clock",
+        "message": "display reset to defaults"
+    }))
 }
 
 // ─── Text → JPEG preview renderer ───────────────────────────────────────────

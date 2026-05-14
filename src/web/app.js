@@ -4025,6 +4025,51 @@ async function fetchScreensaverStatus() {
   applyFilter();
 })();
 
+
+// ─── Web UI QR code button ─────────────────────────────────────────────────────
+(function initWebQrBtn() {
+  const btn = document.getElementById('web-qr-btn');
+  if (!btn) return;
+  btn.addEventListener('click', async () => {
+    try {
+      // Generate a URL pointing to this web UI
+      const url = window.location.origin;
+      const hostname = window.location.hostname;
+      const port = window.location.port ? `:${window.location.port}` : '';
+      const webUrl = `http://${hostname}${port}`;
+      await api('POST', '/api/qr', {
+        payload:  webUrl,
+        title:    'ttlcd Web UI',
+        display:  true
+      });
+      log(`QR code shown: ${webUrl}`);
+      setStatusMsg(quickStatus, `✓ Web UI QR shown`, true);
+    } catch (e) {
+      log(`QR code failed: ${e.message}`, 'err');
+      setStatusMsg(quickStatus, `QR error: ${e.message}`, false);
+    }
+  });
+})();
+
+
+// ─── Reset panel button ───────────────────────────────────────────────────────
+(function initResetPanelBtn() {
+  const btn = document.getElementById('reset-panel-btn');
+  if (!btn) return;
+  btn.addEventListener('click', async () => {
+    if (!confirm('Reset panel to clock mode and stop rotation / screensaver?')) return;
+    try {
+      const data = await apiJson('POST', '/api/display/reset');
+      log(`Panel reset: ${data.message || 'ok'}`);
+      setStatusMsg(quickStatus, '✓ Panel reset to clock', true);
+      await fetchStatus();
+    } catch (e) {
+      log(`Reset failed: ${e.message}`, 'err');
+      setStatusMsg(quickStatus, `Reset error: ${e.message}`, false);
+    }
+  });
+})();
+
 // ─── Boot ─────────────────────────────────────────────────────────────────────
 initSSE();
 startPolling();
