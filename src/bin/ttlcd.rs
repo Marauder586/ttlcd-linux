@@ -98,6 +98,7 @@ use ttlcd::{
         render_net_heatmap,
         render_word_clock,
         render_breakout,
+        render_spectrum, render_doom_fire, render_boids, render_tunnel, render_aurora, render_metaballs, render_sand, render_gravity,
         read_docker_containers,
         read_user_sessions,
         HttpMonitorResult,
@@ -828,6 +829,14 @@ enum DisplayMode {
     NetHeatmap,
     WordClock,
     Breakout,
+    Spectrum,
+    DoomFire,
+    Boids,
+    Tunnel,
+    Aurora,
+    Metaballs,
+    Sand,
+    Gravity,
     Idle,
     CustomImage,
     CustomText,
@@ -837,7 +846,7 @@ enum DisplayMode {
 impl DisplayMode {
     const ALL_NAMES: &'static [&'static str] = &[
         "clock", "big_clock", "clock_sysinfo", "sysinfo", "cpu_detail",
-        "network", "disk_usage", "process_top", "temperature", "memory_detail", "countdown", "cpu_graph", "net_graph", "recent_alerts", "process_memory", "disk_io", "calendar", "stopwatch", "metrics", "weather", "notes", "qr_code", "pomodoro", "battery", "world_clock", "ticker", "http_status", "shell_cmd", "ping_monitor", "dashboard", "log_tail", "cpu_freq", "hostname_ip", "rss_feed", "service_status", "net_connections", "uptime_fancy", "os_info", "docker_status", "logged_in_users", "load_graph", "mem_graph", "progress", "matrix_rain", "temp_graph", "disk_io_graph", "graphs_overview", "analog_clock", "ping_graph", "status_overview", "game_of_life", "led_clock", "bounce_ball", "net_speed_graph", "cpu_core_bars", "speedometer_gauge", "disk_pie", "thermal_dashboard", "plasma", "fireworks", "cpu_heatmap", "starfield", "pulse", "minimal_clock", "particle_clock", "snake", "cube_3d", "dvd_bounce", "binary_clock", "radar", "oscilloscope", "lissajous", "pong", "neon_clock", "net_heatmap", "word_clock", "breakout", "idle",
+        "network", "disk_usage", "process_top", "temperature", "memory_detail", "countdown", "cpu_graph", "net_graph", "recent_alerts", "process_memory", "disk_io", "calendar", "stopwatch", "metrics", "weather", "notes", "qr_code", "pomodoro", "battery", "world_clock", "ticker", "http_status", "shell_cmd", "ping_monitor", "dashboard", "log_tail", "cpu_freq", "hostname_ip", "rss_feed", "service_status", "net_connections", "uptime_fancy", "os_info", "docker_status", "logged_in_users", "load_graph", "mem_graph", "progress", "matrix_rain", "temp_graph", "disk_io_graph", "graphs_overview", "analog_clock", "ping_graph", "status_overview", "game_of_life", "led_clock", "bounce_ball", "net_speed_graph", "cpu_core_bars", "speedometer_gauge", "disk_pie", "thermal_dashboard", "plasma", "fireworks", "cpu_heatmap", "starfield", "pulse", "minimal_clock", "particle_clock", "snake", "cube_3d", "dvd_bounce", "binary_clock", "radar", "oscilloscope", "lissajous", "pong", "neon_clock", "net_heatmap", "word_clock", "breakout", "spectrum", "doom_fire", "boids", "tunnel", "aurora", "metaballs", "sand", "gravity", "idle",
     ];
 
     fn from_str_name(s: &str) -> Option<Self> {
@@ -916,6 +925,14 @@ impl DisplayMode {
             "net_heatmap"         => Some(DisplayMode::NetHeatmap),
             "word_clock"          => Some(DisplayMode::WordClock),
             "breakout"            => Some(DisplayMode::Breakout),
+            "spectrum"            => Some(DisplayMode::Spectrum),
+            "doom_fire"           => Some(DisplayMode::DoomFire),
+            "boids"               => Some(DisplayMode::Boids),
+            "tunnel"              => Some(DisplayMode::Tunnel),
+            "aurora"              => Some(DisplayMode::Aurora),
+            "metaballs"           => Some(DisplayMode::Metaballs),
+            "sand"                => Some(DisplayMode::Sand),
+            "gravity"             => Some(DisplayMode::Gravity),
             "idle"             => Some(DisplayMode::Idle),
             "custom_text"   => Some(DisplayMode::CustomText),
             "slideshow"     => Some(DisplayMode::Slideshow),
@@ -1002,6 +1019,14 @@ impl DisplayMode {
     DisplayMode::NetHeatmap    => "net_heatmap",
     DisplayMode::WordClock     => "word_clock",
     DisplayMode::Breakout      => "breakout",
+    DisplayMode::Spectrum      => "spectrum",
+    DisplayMode::DoomFire      => "doom_fire",
+    DisplayMode::Boids         => "boids",
+    DisplayMode::Tunnel        => "tunnel",
+    DisplayMode::Aurora        => "aurora",
+    DisplayMode::Metaballs     => "metaballs",
+    DisplayMode::Sand          => "sand",
+    DisplayMode::Gravity       => "gravity",
             DisplayMode::Idle           => "idle",
             DisplayMode::CustomImage  => "image",
             DisplayMode::CustomText   => "custom_text",
@@ -2681,6 +2706,14 @@ fn display_loop(panel: Arc<Mutex<Option<Panel>>>, state: DaemonState) {
                 DisplayMode::NetHeatmap    => (render_net_heatmap(), 2),
                 DisplayMode::WordClock     => (render_word_clock(), 1),
                 DisplayMode::Breakout      => (render_breakout(), 0),
+                DisplayMode::Spectrum      => (render_spectrum(), 0),
+                DisplayMode::DoomFire      => (render_doom_fire(), 0),
+                DisplayMode::Boids         => (render_boids(), 0),
+                DisplayMode::Tunnel        => (render_tunnel(), 0),
+                DisplayMode::Aurora        => (render_aurora(), 0),
+                DisplayMode::Metaballs     => (render_metaballs(), 0),
+                DisplayMode::Sand          => (render_sand(), 0),
+                DisplayMode::Gravity       => (render_gravity(), 0),
                 DisplayMode::MatrixRain => (render_matrix_rain(), 0),
                 DisplayMode::Idle
                 | DisplayMode::CustomImage
@@ -4117,6 +4150,14 @@ async fn api_modes_list() -> impl Responder {
         ModeInfo { name: "net_heatmap",     description: "Network heatmap — 60-sample Rx/Tx bar history coloured by throughput" },
         ModeInfo { name: "word_clock",      description: "Word clock — displays time as English words in large type" },
         ModeInfo { name: "breakout",        description: "Self-playing Breakout/Arkanoid — AI paddle, colour-coded bricks, score and lives" },
+        ModeInfo { name: "spectrum",        description: "Audio spectrum visualizer — 32 frequency bars driven by per-core CPU load" },
+        ModeInfo { name: "doom_fire",       description: "Classic Doom-PSX fire simulation — 120x120 intensity cells with lateral spread and decay" },
+        ModeInfo { name: "boids",           description: "Craig Reynolds Boids flocking — 80 coloured agents, separation/alignment/cohesion rules" },
+        ModeInfo { name: "tunnel",          description: "Demoscene perspective tunnel — Catppuccin-tinted rings and sectors scroll towards viewer" },
+        ModeInfo { name: "aurora",          description: "Aurora Borealis simulation — animated sine bands with Gaussian glow, stars, water reflection" },
+        ModeInfo { name: "metaballs",       description: "Animated metaballs — 8 bouncing blobs blending smoothly into organic shapes" },
+        ModeInfo { name: "sand",            description: "Falling sand simulation — coloured grains injected at top, pile up and drain" },
+        ModeInfo { name: "gravity",         description: "N-body gravity — 10 bodies orbiting a central mass with fading trails" },
         ModeInfo { name: "idle",           description: "Keepalive — no display update, prevents blank" },
     ];
     HttpResponse::Ok().json(modes)
@@ -6159,6 +6200,14 @@ async fn api_status_badge(state: web::Data<DaemonState>) -> impl Responder {
         "net_heatmap"                          => "#89b4fa",  // blue
         "word_clock"                           => "#cdd6f4",  // text
         "breakout"                             => "#f38ba8",  // red
+        "spectrum"                             => "#89dceb",  // sky
+        "doom_fire"                            => "#f38ba8",  // red (fire)
+        "boids"                                => "#a6e3a1",  // green
+        "tunnel"                               => "#cba6f7",  // mauve
+        "aurora"                               => "#94e2d5",  // teal
+        "metaballs"                            => "#cba6f7",  // mauve
+        "sand"                                 => "#f9e2af",  // yellow
+        "gravity"                              => "#89b4fa",  // blue
         "status_overview"                      => "#89dceb",  // sky
         "analog_clock"                         => "#cba6f7",  // mauve
         "net_speed_graph"                      => "#a6e3a1",  // green
@@ -6463,7 +6512,7 @@ async fn api_modes_catalog(_state: web::Data<DaemonState>) -> impl Responder {
             "weather"|"rss_feed"|"http_status"|"service_status"|"shell_cmd"|"log_tail"|
             "notes"|"battery"|"world_clock" => "info",
             "matrix_rain"|"game_of_life"|"bounce_ball"|"plasma"|"fireworks"|"starfield"|
-            "snake"|"cube_3d"|"dvd_bounce"|"lissajous"|"pong"|"breakout" => "fun",
+            "snake"|"cube_3d"|"dvd_bounce"|"lissajous"|"pong"|"breakout"|"doom_fire"|"boids"|"tunnel"|"aurora"|"metaballs"|"sand"|"gravity" => "fun",
             _ => "other",
         }
     }
@@ -9358,10 +9407,17 @@ async fn api_render_mode_preview(
             DisplayMode::DiskPie          => render_disk_pie(),
             DisplayMode::ThermalDashboard => render_thermal_dashboard(),
             DisplayMode::Plasma        => render_plasma(),
-            DisplayMode::Fireworks     => render_fireworks(),
+            DisplayMode::Breakout      => render_breakout(),
+            DisplayMode::Spectrum      => render_spectrum(),
+            DisplayMode::DoomFire      => render_doom_fire(),
+            DisplayMode::Metaballs     => render_metaballs(),
+            DisplayMode::Sand          => render_sand(),
+            DisplayMode::Gravity       => render_gravity(),
+            DisplayMode::Boids         => render_boids(),
+            DisplayMode::Tunnel        => render_tunnel(),
+            DisplayMode::Aurora        => render_aurora(),
             DisplayMode::CpuHeatmap    => render_cpu_heatmap(),
             DisplayMode::WordClock     => render_word_clock(),
-            DisplayMode::Breakout      => render_breakout(),
             DisplayMode::Pulse         => render_pulse(),
             DisplayMode::NetHeatmap    => render_net_heatmap(),
             DisplayMode::Pong          => render_pong(),

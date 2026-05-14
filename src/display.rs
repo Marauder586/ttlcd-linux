@@ -10527,3 +10527,876 @@ pub fn render_breakout() -> DynamicImage {
     DynamicImage::ImageRgb8(img)
 }
 
+
+
+// ─── Audio Spectrum Visualizer (CPU-driven) ───────────────────────────────────
+
+const SPECTRUM_BARS: usize = 32;
+
+static SPECTRUM_HEIGHTS: std::sync::OnceLock<std::sync::Mutex<Vec<f32>>> =
+    std::sync::OnceLock::new();
+static SPECTRUM_PEAKS:   std::sync::OnceLock<std::sync::Mutex<Vec<f32>>> =
+    std::sync::OnceLock::new();
+static SPECTRUM_TICK:    std::sync::OnceLock<std::sync::Mutex<u64>>      =
+    std::sync::OnceLock::new();
+
+pub fn render_spectrum() -> DynamicImage {
+    let tick = {
+        let t = SPECTRUM_TICK.get_or_init(|| std::sync::Mutex::new(0));
+        let mut g = t.lock().unwrap();
+        let v = *g;
+        *g = g.wrapping_add(1);
+        v
+    };
+
+    let heights_lock = SPECTRUM_HEIGHTS.get_or_init(|| {
+        std::sync::Mutex::new(vec![0.0f32; SPECTRUM_BARS])
+    });
+    let peaks_lock = SPECTRUM_PEAKS.get_or_init(|| {
+        std::sync::Mutex::new(vec![0.0f32; SPECTRUM_BARS])
+    });
+
+    // Get CPU usage per core, map to spectrum bars
+    let mut sys = System::new();
+    sys.refresh_cpu_all();
+    let cpus = sys.cpus();
+    let n = cpus.len().max(1);
+    let cpu_loads: Vec<f32> = cpus.iter().map(|c| c.cpu_usage() / 100.0).collect();
+
+    // Pseudo-random seed for this tick
+    let mut seed = tick.wrapping_mul(2654435761);
+    let lcg = |v: u64| v.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+
+    // Distribute CPU loads across spectrum bars with noise
+    let mut heights = heights_lock.lock().unwrap();
+    let mut peaks   = peaks_lock.lock().unwrap();
+
+    for i in 0..SPECTRUM_BARS {
+        // Map bar to a CPU core
+        let core_idx = (i * n / SPECTRUM_BARS).min(n - 1);
+        let base_load = cpu_loads[core_idx];
+
+        // Add frequency-like envelope: louder in bass/mids, quieter at extremes
+        let freq_frac = i as f32 / SPECTRUM_BARS as f32;
+        let envelope = 1.0 - (freq_frac * 2.0 - 1.0).powi(2) * 0.4;  // slight U-dip at edges
+
+        seed = lcg(seed);
+        let noise = (seed as f32 / u64::MAX as f32 - 0.5) * 0.25;
+
+        // Target height: CPU load × envelope + noise + slight boost for bass
+        let bass_boost = if i < 4 { 0.1 } else { 0.0 };
+        let target = ((base_load * envelope + noise + bass_boost) * 0.9 + 0.05).clamp(0.0, 1.0);
+
+        // Smooth: rise fast, decay slow
+        if target > heights[i] {
+            heights[i] += (target - heights[i]) * 0.35;
+        } else {
+            heights[i] -= (heights[i] - target) * 0.12;
+        }
+        heights[i] = heights[i].clamp(0.02, 1.0);
+
+        // Peak hold + decay
+        if heights[i] > peaks[i] {
+            peaks[i] = heights[i];
+        } else {
+            peaks[i] -= 0.008;
+        }
+        peaks[i] = peaks[i].clamp(0.0, 1.0);
+    }
+
+    let heights_snap: Vec<f32> = heights.clone();
+    let peaks_snap:   Vec<f32> = peaks.clone();
+    drop(heights);
+    drop(peaks);
+
+    // ── Render ────────────────────────────────────────────────────────────────
+    let mut img = RgbImage::new(480, 480);
+    for p in img.pixels_mut() { *p = Rgb([4, 4, 16]); }
+    let font = font_bold();
+
+    let bar_area_h = 380i32;
+    let bar_area_y = 60i32;
+    let bar_total_w = 480i32;
+    let bar_w  = (bar_total_w as f32 / SPECTRUM_BARS as f32).floor() as i32;
+    let bar_gap = 2i32;
+    let bar_inner = (bar_w - bar_gap).max(1);
+
+    // Frequency labels at bottom
+    let freq_labels = ["32", "64", "128", "256", "512", "1k", "2k", "4k", "8k", "16k"];
+    let label_step = SPECTRUM_BARS / freq_labels.len();
+
+    for (i, &h) in heights_snap.iter().enumerate() {
+        let _freq_frac = i as f32 / SPECTRUM_BARS as f32;
+        let bx = i as i32 * bar_w;
+        let bar_h = (h * bar_area_h as f32) as i32;
+        let by   = bar_area_y + bar_area_h - bar_h;
+
+        // Colour gradient: BLUE → TEAL → GREEN → YELLOW → RED (low → high energy)
+        let col = if h < 0.3 {
+            let t = h / 0.3;
+            let r = (BLUE.0[0] as f32 * (1.0-t) + TEAL.0[0] as f32 * t) as u8;
+            let g = (BLUE.0[1] as f32 * (1.0-t) + TEAL.0[1] as f32 * t) as u8;
+            let b = (BLUE.0[2] as f32 * (1.0-t) + TEAL.0[2] as f32 * t) as u8;
+            Rgb([r, g, b])
+        } else if h < 0.6 {
+            let t = (h - 0.3) / 0.3;
+            let r = (TEAL.0[0] as f32 * (1.0-t) + GREEN.0[0] as f32 * t) as u8;
+            let g = (TEAL.0[1] as f32 * (1.0-t) + GREEN.0[1] as f32 * t) as u8;
+            let b = (TEAL.0[2] as f32 * (1.0-t) + GREEN.0[2] as f32 * t) as u8;
+            Rgb([r, g, b])
+        } else if h < 0.85 {
+            let t = (h - 0.6) / 0.25;
+            let r = (GREEN.0[0] as f32 * (1.0-t) + YELLOW.0[0] as f32 * t) as u8;
+            let g = (GREEN.0[1] as f32 * (1.0-t) + YELLOW.0[1] as f32 * t) as u8;
+            let b = (GREEN.0[2] as f32 * (1.0-t) + YELLOW.0[2] as f32 * t) as u8;
+            Rgb([r, g, b])
+        } else {
+            let t = (h - 0.85) / 0.15;
+            let r = (YELLOW.0[0] as f32 * (1.0-t) + RED.0[0] as f32 * t) as u8;
+            let g = (YELLOW.0[1] as f32 * (1.0-t) + RED.0[1] as f32 * t) as u8;
+            let b = (YELLOW.0[2] as f32 * (1.0-t) + RED.0[2] as f32 * t) as u8;
+            Rgb([r, g, b])
+        };
+
+        // Draw bar
+        if bar_h > 0 {
+            let bar_rect = imageproc::rect::Rect::at(bx, by)
+                .of_size(bar_inner as u32, bar_h as u32);
+            imageproc::drawing::draw_filled_rect_mut(&mut img, bar_rect, col);
+
+            // Bright top pixel line
+            let bright = Rgb([
+                (col.0[0] as u32 + 80).min(255) as u8,
+                (col.0[1] as u32 + 80).min(255) as u8,
+                (col.0[2] as u32 + 80).min(255) as u8,
+            ]);
+            for dx in 0..bar_inner {
+                let px = (bx + dx).clamp(0, 479) as u32;
+                if by >= 0 && by < 480 {
+                    img.put_pixel(px, by as u32, bright);
+                }
+            }
+        }
+
+        // Peak dot
+        let peak_h = (peaks_snap[i] * bar_area_h as f32) as i32;
+        let peak_y = bar_area_y + bar_area_h - peak_h;
+        if peak_y >= bar_area_y && peak_y < bar_area_y + bar_area_h {
+            for dx in 0..bar_inner {
+                let px = (bx + dx).clamp(0, 479) as u32;
+                img.put_pixel(px, peak_y as u32, TEXT);
+            }
+        }
+
+        // Freq label
+        if label_step > 0 && i % label_step == 0 {
+            let li = i / label_step;
+            if li < freq_labels.len() {
+                let label = freq_labels[li];
+                draw_text_mut(&mut img, OVERLAY0, bx, 450, PxScale::from(11.0), &font, label);
+            }
+        }
+    }
+
+    // Baseline
+    for x in 0u32..480 {
+        img.put_pixel(x, (bar_area_y + bar_area_h) as u32, SURFACE0);
+    }
+
+    // dB scale labels on left
+    for db in [0i32, -6, -12, -24].iter() {
+        let frac = 1.0 - (db.abs() as f32 / 24.0);
+        let y = bar_area_y + ((1.0 - frac) * bar_area_h as f32) as i32;
+        let label = format!("{}dB", db);
+        draw_text_mut(&mut img, OVERLAY0, 0, y, PxScale::from(10.0), &font, &label);
+    }
+
+    // Title
+    let cpu_avg: f32 = {
+        let mut sys2 = System::new();
+        sys2.refresh_cpu_all();
+        let cpus = sys2.cpus();
+        if cpus.is_empty() { 0.0 }
+        else { cpus.iter().map(|c| c.cpu_usage()).sum::<f32>() / cpus.len() as f32 }
+    };
+    let title = format!("Spectrum Analyzer — CPU {:.0}%", cpu_avg);
+    let tw = text_width(&font, PxScale::from(20.0), &title);
+    draw_text_mut(&mut img, TEXT, (480 - tw as i32) / 2, 10, PxScale::from(20.0), &font, &title);
+
+    // Frequency label at bottom
+    draw_text_mut(&mut img, OVERLAY0, 200, 465, PxScale::from(11.0), &font, "Hz →");
+
+    DynamicImage::ImageRgb8(img)
+}
+
+
+// ─── Doom Fire ────────────────────────────────────────────────────────────────
+
+static DOOM_FIRE_BUF:  std::sync::OnceLock<std::sync::Mutex<Vec<u8>>> = std::sync::OnceLock::new();
+static DOOM_FIRE_SEED: std::sync::OnceLock<std::sync::Mutex<u32>>     = std::sync::OnceLock::new();
+
+/// Classic Doom-PSX fire simulation.
+/// 120×120 intensity cells (each rendered 4×4 px) with an LCG-driven decay
+/// and slight lateral spread for an authentic flicker.
+pub fn render_doom_fire() -> DynamicImage {
+    const FIRE_W: usize = 120;
+    const FIRE_H: usize = 120;
+
+    let buf_m  = DOOM_FIRE_BUF.get_or_init(|| {
+        let mut v = vec![0u8; FIRE_W * FIRE_H];
+        for x in 0..FIRE_W { v[(FIRE_H - 1) * FIRE_W + x] = 36; }
+        std::sync::Mutex::new(v)
+    });
+    let seed_m = DOOM_FIRE_SEED.get_or_init(|| std::sync::Mutex::new(0xDEAD_BEEFu32));
+
+    let lcg = |s: &mut u32| -> u32 {
+        *s = s.wrapping_mul(1_664_525).wrapping_add(1_013_904_223); *s
+    };
+
+    let mut seed = seed_m.lock().unwrap();
+    let mut buf  = buf_m.lock().unwrap();
+
+    // Propagate fire upward (skip the seed row)
+    for y in 0..(FIRE_H - 1) {
+        for x in 0..FIRE_W {
+            let decay = (lcg(&mut *seed) % 3) as u8;           // 0, 1, or 2
+            let shift = (lcg(&mut *seed) % 3) as usize;         // 0, 1, or 2 left-shift
+            let src_x = if shift > 0 && x >= shift { x - shift } else { x };
+            let below = buf[(y + 1) * FIRE_W + src_x];
+            buf[y * FIRE_W + x] = below.saturating_sub(decay);
+        }
+    }
+
+    // Palette: 37 shades, black → dark red → orange → yellow → white
+    let pal: [Rgb<u8>; 37] = [
+        Rgb([  0,   0,   0]), Rgb([  7,   0,   0]), Rgb([ 22,   0,   0]),
+        Rgb([ 40,   0,   0]), Rgb([ 58,   0,   0]), Rgb([ 80,   0,   0]),
+        Rgb([103,   0,   0]), Rgb([128,   0,   0]), Rgb([148,   0,   0]),
+        Rgb([168,   0,   0]), Rgb([188,   6,   0]), Rgb([208,  12,   0]),
+        Rgb([220,  22,   0]), Rgb([232,  32,   0]), Rgb([240,  48,   0]),
+        Rgb([248,  64,   0]), Rgb([250,  80,   0]), Rgb([252,  96,   0]),
+        Rgb([252, 112,   0]), Rgb([252, 128,   0]), Rgb([252, 148,   0]),
+        Rgb([252, 164,   0]), Rgb([252, 180,   0]), Rgb([252, 196,   0]),
+        Rgb([252, 212,   0]), Rgb([252, 224,   0]), Rgb([252, 236,   0]),
+        Rgb([252, 248,   0]), Rgb([252, 252,  60]), Rgb([252, 252, 120]),
+        Rgb([252, 252, 160]), Rgb([252, 252, 200]), Rgb([252, 252, 220]),
+        Rgb([255, 255, 230]), Rgb([255, 255, 240]), Rgb([255, 255, 248]),
+        Rgb([255, 255, 255]),
+    ];
+
+    let mut img = RgbImage::new(480, 480);
+    for cy in 0..FIRE_H {
+        for cx in 0..FIRE_W {
+            let col  = pal[buf[cy * FIRE_W + cx].min(36) as usize];
+            let px0  = (cx as u32) * 4;
+            let py0  = (cy as u32) * 4;
+            for dy in 0..4u32 {
+                for dx in 0..4u32 {
+                    img.put_pixel(px0 + dx, py0 + dy, col);
+                }
+            }
+        }
+    }
+    DynamicImage::ImageRgb8(img)
+}
+
+// ─── Boids / Flocking ─────────────────────────────────────────────────────────
+
+#[derive(Clone)]
+struct Boid {
+    x: f32, y: f32,
+    vx: f32, vy: f32,
+    color_idx: usize,
+}
+
+static BOIDS_STATE: std::sync::OnceLock<std::sync::Mutex<Vec<Boid>>> =
+    std::sync::OnceLock::new();
+
+/// Craig Reynolds' Boids flocking simulation — 80 coloured agents.
+/// Three steering rules: separation, alignment, cohesion.
+pub fn render_boids() -> DynamicImage {
+    const N:      usize = 80;
+    const SIZE:   f32   = 480.0;
+    const VIS:    f32   = 75.0;   // visual range
+    const SEP:    f32   = 10.0;   // protected (separation) range
+    const CENTER: f32   = 0.0005; // cohesion strength
+    const AVOID:  f32   = 0.04;   // separation strength
+    const MATCH:  f32   = 0.05;   // alignment strength
+    const MAX_V:  f32   = 5.5;
+    const MIN_V:  f32   = 2.5;
+    const MARGIN: f32   = 50.0;
+    const TURN:   f32   = 0.4;
+
+    let m = BOIDS_STATE.get_or_init(|| {
+        let mut s = 0xABCD_EF01u32;
+        let lcg = |r: &mut u32| -> f32 {
+            *r = r.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            (*r as f32) / u32::MAX as f32
+        };
+        let v: Vec<Boid> = (0..N).map(|i| Boid {
+            x:         lcg(&mut s) * SIZE,
+            y:         lcg(&mut s) * SIZE,
+            vx:        (lcg(&mut s) - 0.5) * MAX_V * 2.0,
+            vy:        (lcg(&mut s) - 0.5) * MAX_V * 2.0,
+            color_idx: i % 7,
+        }).collect();
+        std::sync::Mutex::new(v)
+    });
+    let mut boids = m.lock().unwrap();
+
+    let prev = boids.clone();
+    for b in boids.iter_mut() {
+        let (mut cdx, mut cdy) = (0.0f32, 0.0);
+        let (mut avx, mut avy, mut ax, mut ay) = (0.0f32, 0.0, 0.0, 0.0);
+        let mut nb = 0usize;
+
+        for o in &prev {
+            let dx = o.x - b.x;
+            let dy = o.y - b.y;
+            let d  = (dx * dx + dy * dy).sqrt();
+            if d < SEP && d > 0.0 {
+                cdx -= dx; cdy -= dy;
+            } else if d < VIS {
+                avx += o.vx; avy += o.vy;
+                ax  += o.x;  ay  += o.y;
+                nb  += 1;
+            }
+        }
+
+        b.vx += cdx * AVOID;
+        b.vy += cdy * AVOID;
+        if nb > 0 {
+            let n = nb as f32;
+            b.vx += (avx / n - b.vx) * MATCH;
+            b.vy += (avy / n - b.vy) * MATCH;
+            b.vx += (ax  / n - b.x)  * CENTER;
+            b.vy += (ay  / n - b.y)  * CENTER;
+        }
+
+        if b.x < MARGIN           { b.vx += TURN; }
+        if b.x > SIZE - MARGIN    { b.vx -= TURN; }
+        if b.y < MARGIN           { b.vy += TURN; }
+        if b.y > SIZE - MARGIN    { b.vy -= TURN; }
+
+        let spd = (b.vx * b.vx + b.vy * b.vy).sqrt();
+        if spd > MAX_V && spd > 0.0 { b.vx = b.vx / spd * MAX_V; b.vy = b.vy / spd * MAX_V; }
+        if spd < MIN_V && spd > 0.0 { b.vx = b.vx / spd * MIN_V; b.vy = b.vy / spd * MIN_V; }
+
+        b.x = (b.x + b.vx).clamp(0.0, SIZE - 1.0);
+        b.y = (b.y + b.vy).clamp(0.0, SIZE - 1.0);
+    }
+
+    let colors = [BLUE, GREEN, YELLOW, RED, MAUVE, TEAL, PEACH];
+    let mut img = RgbImage::new(480, 480);
+    for p in img.pixels_mut() { *p = BG; }
+
+    for b in boids.iter() {
+        let col = colors[b.color_idx % colors.len()];
+        let x = b.x as i32;
+        let y = b.y as i32;
+        // Head dot (2×2)
+        for dy in 0..2i32 {
+            for dx in 0..2i32 {
+                let px = x + dx; let py = y + dy;
+                if px >= 0 && px < 480 && py >= 0 && py < 480 {
+                    img.put_pixel(px as u32, py as u32, col);
+                }
+            }
+        }
+        // Dim trail behind
+        let tx = (b.x - b.vx * 1.2) as i32;
+        let ty = (b.y - b.vy * 1.2) as i32;
+        if tx >= 0 && tx < 480 && ty >= 0 && ty < 480 {
+            img.put_pixel(tx as u32, ty as u32, Rgb([
+                (col[0] as u32 * 3 / 10) as u8,
+                (col[1] as u32 * 3 / 10) as u8,
+                (col[2] as u32 * 3 / 10) as u8,
+            ]));
+        }
+    }
+
+    let font = font_bold();
+    draw_text_mut(&mut img, OVERLAY0, 8, 462, PxScale::from(14.0), &font,
+                  &format!("{N} boids"));
+    DynamicImage::ImageRgb8(img)
+}
+
+// ─── Perspective Tunnel ───────────────────────────────────────────────────────
+
+static TUNNEL_TICK: std::sync::OnceLock<std::sync::Mutex<u64>> = std::sync::OnceLock::new();
+
+/// Classic demoscene perspective tunnel.  2×2-pixel cells → 240×240 iters.
+/// Catppuccin-tinted rings and sectors scroll towards the viewer.
+pub fn render_tunnel() -> DynamicImage {
+    let tick = {
+        let mut t = TUNNEL_TICK.get_or_init(|| std::sync::Mutex::new(0)).lock().unwrap();
+        *t += 1; *t
+    };
+    let tf = tick as f32;
+
+    let stripes: [Rgb<u8>; 6] = [BLUE, MAUVE, TEAL, PEACH, GREEN, RED];
+    let mut img = RgbImage::new(480, 480);
+
+    for cy in 0..240u32 {
+        for cx in 0..240u32 {
+            let dx = cx as f32 - 120.0;
+            let dy = cy as f32 - 120.0;
+            let dist = (dx * dx + dy * dy).sqrt().max(0.5);
+
+            // Depth brightness (close = bright)
+            let depth = (100.0 / dist).min(1.0);
+
+            // Texture coords (scroll inward)
+            let ring    = (32.0 / dist + tf * 0.35) as i32;
+            let angle   = dy.atan2(dx);                    // -π .. π
+            let sector  = (angle / std::f32::consts::FRAC_PI_3) as i32;  // 6 sectors
+
+            // Checkerboard of rings × sectors → stripe index
+            let idx = if (ring.abs() + sector.abs()) % 2 == 0 {
+                ring.unsigned_abs() as usize % 6
+            } else {
+                sector.unsigned_abs() as usize % 6
+            };
+            let base = stripes[idx];
+            let br = depth.powf(1.3);
+            let col = Rgb([
+                (base[0] as f32 * br) as u8,
+                (base[1] as f32 * br) as u8,
+                (base[2] as f32 * br) as u8,
+            ]);
+
+            let px = cx * 2; let py = cy * 2;
+            img.put_pixel(px,     py,     col);
+            img.put_pixel(px + 1, py,     col);
+            img.put_pixel(px,     py + 1, col);
+            img.put_pixel(px + 1, py + 1, col);
+        }
+    }
+    DynamicImage::ImageRgb8(img)
+}
+
+// ─── Aurora Borealis ──────────────────────────────────────────────────────────
+
+static AURORA_TICK: std::sync::OnceLock<std::sync::Mutex<u64>> = std::sync::OnceLock::new();
+
+/// Northern-lights simulation — 5 animated sine-wave bands with Gaussian
+/// falloff and additive blending, reflected in a still-water horizon.
+pub fn render_aurora() -> DynamicImage {
+    let tick = {
+        let mut t = AURORA_TICK.get_or_init(|| std::sync::Mutex::new(0)).lock().unwrap();
+        *t += 1; *t
+    };
+    let tf = tick as f32;
+
+    let mut img = RgbImage::new(480, 480);
+
+    // ── Sky gradient ──────────────────────────────────────────────────────────
+    for py in 0..480u32 {
+        let frac = py as f32 / 480.0;
+        let r = (4.0  + frac * 6.0)  as u8;
+        let g = (4.0  + frac * 8.0)  as u8;
+        let b = (16.0 + frac * 20.0) as u8;
+        for px in 0..480u32 { img.put_pixel(px, py, Rgb([r, g, b])); }
+    }
+
+    // ── Stars (deterministic positions, twinkling) ────────────────────────────
+    {
+        let mut seed = 0x1234_5678u32;
+        let lcg = |s: &mut u32| -> u32 {
+            *s = s.wrapping_mul(1_664_525).wrapping_add(1_013_904_223); *s
+        };
+        for _ in 0..160u32 {
+            let sx    = lcg(&mut seed) % 480;
+            let sy    = lcg(&mut seed) % 310;
+            let base  = 120 + (lcg(&mut seed) % 136) as u8;
+            let phase = (lcg(&mut seed) % 1_000) as f32 / 1_000.0;
+            let br    = (base as f32 * (0.65 + 0.35 * ((tf * 0.06 + phase * 6.28).sin())))
+                        .min(255.0) as u8;
+            img.put_pixel(sx, sy, Rgb([br, br, br + 15]));
+        }
+    }
+
+    // ── Aurora bands ─────────────────────────────────────────────────────────
+    // (r,g,b) base intensities for each layer
+    let layers: [(f32, f32, f32); 5] = [
+        (0.0, 0.85, 0.45),  // emerald green
+        (0.0, 0.70, 0.75),  // cyan
+        (0.15, 0.55, 0.95), // blue-green
+        (0.50, 0.25, 0.90), // blue-violet
+        (0.85, 0.15, 0.85), // magenta-purple
+    ];
+
+    const HORIZON_Y: u32 = 340;
+
+    for (i, &(rb, gb, bb)) in layers.iter().enumerate() {
+        let lf    = i as f32;
+        let base  = 35.0 + lf * 42.0;          // vertical position
+        let thick = 48.0 + lf * 8.0;           // band half-thickness
+        let ph    = lf * 1.83;                  // phase offset
+
+        for px in 0..480u32 {
+            let xf = px as f32;
+
+            // Undulating centre line
+            let cy = base
+                + (xf * 0.011  + tf * 0.017 + ph).sin() * 26.0
+                + (xf * 0.023  - tf * 0.011 + ph).sin() * 16.0
+                + (xf * 0.0055 + tf * 0.007 + ph * 0.7).sin() * 9.0;
+
+            // Local thickness ripple
+            let loc_th = thick * (0.7 + 0.3 * ((xf * 0.014 + tf * 0.019 + ph).sin()));
+
+            // Column shimmer (computed once per column)
+            let shimmer = 0.65 + 0.35 * ((xf * 0.028 + tf * 0.038 + ph).sin());
+
+            for py in 0..HORIZON_Y {
+                let yf  = py as f32;
+                let dy  = (yf - cy).abs();
+                if dy >= loc_th { continue; }
+
+                // Gaussian falloff
+                let t   = dy / loc_th;
+                let alp = (-t * t * 3.0).exp() * 0.55 * shimmer;
+
+                let px_col = img.get_pixel(px, py);
+                let nr = (px_col[0] as f32 + rb * alp * 180.0).min(255.0) as u8;
+                let ng = (px_col[1] as f32 + gb * alp * 230.0).min(255.0) as u8;
+                let nb = (px_col[2] as f32 + bb * alp * 210.0).min(255.0) as u8;
+                img.put_pixel(px, py, Rgb([nr, ng, nb]));
+            }
+        }
+    }
+
+    // ── Horizon line ─────────────────────────────────────────────────────────
+    for px in 0..480u32 { img.put_pixel(px, HORIZON_Y, Rgb([28, 48, 38])); }
+
+    // ── Water reflection (mirror + fade + darken) ────────────────────────────
+    for py in (HORIZON_Y + 1)..480 {
+        let mirror = HORIZON_Y.saturating_sub(py - HORIZON_Y);
+        let fade   = 1.0 - ((py - HORIZON_Y) as f32 / 140.0).min(1.0);
+        for px in 0..480u32 {
+            let src = img.get_pixel(px, mirror);
+            img.put_pixel(px, py, Rgb([
+                (src[0] as f32 * fade * 0.50) as u8,
+                (src[1] as f32 * fade * 0.62) as u8,
+                (src[2] as f32 * fade * 0.72) as u8,
+            ]));
+        }
+    }
+
+    DynamicImage::ImageRgb8(img)
+}
+
+// ─── Metaballs ────────────────────────────────────────────────────────────────
+
+#[derive(Clone)]
+#[allow(dead_code)]
+struct MetaBall { x: f32, y: f32, vx: f32, vy: f32, r: f32, ci: usize }
+
+static METABALLS_STATE: std::sync::OnceLock<std::sync::Mutex<Vec<MetaBall>>> =
+    std::sync::OnceLock::new();
+
+/// Classic animated metaballs — 8 blobs bouncing around, blending smoothly.
+/// Rendered at 240×240 (2×2 px cells) for performance.
+pub fn render_metaballs() -> DynamicImage {
+    const N:    usize = 8;
+    const CELL: u32   = 2;
+    const GRID: u32   = 240;   // 480 / CELL
+
+    let m = METABALLS_STATE.get_or_init(|| {
+        let mut s = 0xFEED_CAFEu32;
+        let lcg = |r: &mut u32| -> f32 {
+            *r = r.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            (*r as f32) / u32::MAX as f32
+        };
+        let balls: Vec<MetaBall> = (0..N).map(|i| MetaBall {
+            x:  lcg(&mut s) * 480.0,
+            y:  lcg(&mut s) * 480.0,
+            vx: (lcg(&mut s) - 0.5) * 4.0,
+            vy: (lcg(&mut s) - 0.5) * 4.0,
+            r:  55.0 + lcg(&mut s) * 40.0,
+            ci: i % 7,
+        }).collect();
+        std::sync::Mutex::new(balls)
+    });
+    let mut balls = m.lock().unwrap();
+
+    // Move balls, bounce off walls
+    for b in balls.iter_mut() {
+        b.x += b.vx; b.y += b.vy;
+        if b.x < 0.0   { b.x = 0.0;   b.vx = b.vx.abs(); }
+        if b.x > 480.0 { b.x = 480.0; b.vx = -b.vx.abs(); }
+        if b.y < 0.0   { b.y = 0.0;   b.vy = b.vy.abs(); }
+        if b.y > 480.0 { b.y = 480.0; b.vy = -b.vy.abs(); }
+    }
+
+    let cols = [BLUE, GREEN, YELLOW, RED, MAUVE, TEAL, PEACH];
+    let mut img = RgbImage::new(480, 480);
+    for p in img.pixels_mut() { *p = BG; }
+
+    for cy in 0..GRID {
+        for cx in 0..GRID {
+            let pcx = (cx as f32 + 0.5) * CELL as f32;
+            let pcy = (cy as f32 + 0.5) * CELL as f32;
+            let mut field  = 0.0f32;
+            let mut dom_c  = BG;
+            let mut dom_v  = 0.0f32;
+            for b in balls.iter() {
+                let dx = pcx - b.x;
+                let dy = pcy - b.y;
+                let d2 = (dx * dx + dy * dy).max(1.0);
+                let v  = b.r * b.r / d2;
+                field += v;
+                if v > dom_v { dom_v = v; dom_c = cols[b.ci % cols.len()]; }
+            }
+
+            let col = if field >= 1.0 {
+                let br = (field - 1.0).min(1.0) * 0.4 + 0.6;
+                Rgb([ (dom_c[0] as f32 * br) as u8,
+                      (dom_c[1] as f32 * br) as u8,
+                      (dom_c[2] as f32 * br) as u8 ])
+            } else if field > 0.55 {
+                let g = (field - 0.55) / 0.45;
+                Rgb([ (dom_c[0] as f32 * g * 0.28) as u8,
+                      (dom_c[1] as f32 * g * 0.28) as u8,
+                      (dom_c[2] as f32 * g * 0.28) as u8 ])
+            } else {
+                continue;
+            };
+
+            let px = cx * CELL; let py = cy * CELL;
+            img.put_pixel(px,     py,     col);
+            img.put_pixel(px + 1, py,     col);
+            img.put_pixel(px,     py + 1, col);
+            img.put_pixel(px + 1, py + 1, col);
+        }
+    }
+    DynamicImage::ImageRgb8(img)
+}
+
+// ─── Falling Sand ─────────────────────────────────────────────────────────────
+
+struct SandState { cells: Vec<u8>, seed: u32, tick: u64 }
+
+static SAND_STATE: std::sync::OnceLock<std::sync::Mutex<SandState>> =
+    std::sync::OnceLock::new();
+
+/// Cellular-automaton falling sand simulation.
+/// 160×160 grid (3×3 px cells) — sand drains off the bottom; new grains
+/// are injected from the top each tick.
+pub fn render_sand() -> DynamicImage {
+    const W: usize = 160;
+    const H: usize = 160;
+    const CELL: u32 = 3;   // 160×3 = 480
+
+    let m = SAND_STATE.get_or_init(|| {
+        std::sync::Mutex::new(SandState {
+            cells: vec![0u8; W * H],
+            seed:  0xDEAD_C0DEu32,
+            tick:  0,
+        })
+    });
+    let mut st = m.lock().unwrap();
+    st.tick += 1;
+
+    let lcg = |s: &mut u32| -> u32 {
+        *s = s.wrapping_mul(1_664_525).wrapping_add(1_013_904_223); *s
+    };
+
+    // Drain bottom row
+    for x in 0..W { st.cells[(H - 1) * W + x] = 0; }
+
+    // Inject a few grains at the top
+    for _ in 0..5u32 {
+        let x   = (lcg(&mut st.seed) % W as u32) as usize;
+        let col = 1 + (lcg(&mut st.seed) % 7) as u8;
+        if st.cells[x] == 0 { st.cells[x] = col; }
+    }
+
+    // Update: bottom-to-top sweep (so moved grains aren't re-processed)
+    for y in (0..(H - 1)).rev() {
+        for x in 0..W {
+            let c = st.cells[y * W + x];
+            if c == 0 { continue; }
+            // Try straight down
+            if st.cells[(y + 1) * W + x] == 0 {
+                st.cells[(y + 1) * W + x] = c;
+                st.cells[y       * W + x] = 0;
+            } else {
+                // Try diagonal (randomly prefer left or right)
+                let go_left  = x > 0   && st.cells[(y + 1) * W + x - 1] == 0;
+                let go_right = x < W-1 && st.cells[(y + 1) * W + x + 1] == 0;
+                let chosen = match (go_left, go_right) {
+                    (true, true) => if lcg(&mut st.seed) % 2 == 0 { Some(x - 1) } else { Some(x + 1) },
+                    (true,  _)  => Some(x - 1),
+                    (_,  true)  => Some(x + 1),
+                    _           => None,
+                };
+                if let Some(nx) = chosen {
+                    st.cells[(y + 1) * W + nx] = c;
+                    st.cells[y       * W + x]  = 0;
+                }
+            }
+        }
+    }
+
+    // Color table (0 = empty/BG, 1-7 = Catppuccin sand colours)
+    let sand_cols: [Rgb<u8>; 8] = [BG, BLUE, GREEN, YELLOW, RED, MAUVE, TEAL, PEACH];
+    // Slightly darken each sand colour for a "grain" look
+    let tint = |c: Rgb<u8>| Rgb([ (c[0] as u32 * 9 / 10) as u8,
+                                   (c[1] as u32 * 9 / 10) as u8,
+                                   (c[2] as u32 * 9 / 10) as u8 ]);
+
+    let mut img = RgbImage::new(480, 480);
+    for p in img.pixels_mut() { *p = BG; }
+
+    for cy in 0..H {
+        for cx in 0..W {
+            let c = st.cells[cy * W + cx];
+            if c == 0 { continue; }
+            let col = tint(sand_cols[c as usize % sand_cols.len()]);
+            let px0 = cx as u32 * CELL;
+            let py0 = cy as u32 * CELL;
+            for dy in 0..CELL { for dx in 0..CELL {
+                img.put_pixel(px0 + dx, py0 + dy, col);
+            }}
+        }
+    }
+    DynamicImage::ImageRgb8(img)
+}
+
+// ─── N-body Gravity ───────────────────────────────────────────────────────────
+
+#[derive(Clone)]
+#[allow(dead_code)]
+struct GravBody { x: f32, y: f32, vx: f32, vy: f32, mass: f32, ci: usize }
+
+struct GravState {
+    bodies: Vec<GravBody>,
+    trails: Vec<std::collections::VecDeque<(f32, f32)>>,
+}
+
+static GRAVITY_STATE: std::sync::OnceLock<std::sync::Mutex<GravState>> =
+    std::sync::OnceLock::new();
+
+/// N-body gravitational simulation — 10 coloured bodies with trails.
+/// Bodies start in a stable circular arrangement and orbit under mutual attraction.
+pub fn render_gravity() -> DynamicImage {
+    const N:          usize = 10;
+    const TRAIL:      usize = 60;   // trail length in ticks
+    const G:          f32   = 350.0;
+    const SOFT:       f32   = 8.0;  // softening to avoid singularities
+    const DT:         f32   = 0.45;
+    const CENTER_X:   f32   = 240.0;
+    const CENTER_Y:   f32   = 240.0;
+
+    let m = GRAVITY_STATE.get_or_init(|| {
+        let mut bodies = Vec::with_capacity(N);
+        let mut trails: Vec<std::collections::VecDeque<(f32, f32)>> =
+            (0..N).map(|_| std::collections::VecDeque::with_capacity(TRAIL + 1)).collect();
+
+        // One heavy central mass + N-1 orbiting bodies
+        bodies.push(GravBody { x: CENTER_X, y: CENTER_Y, vx: 0.0, vy: 0.0, mass: 200.0, ci: 0 });
+        for i in 1..N {
+            let angle   = (i as f32) / ((N - 1) as f32) * std::f32::consts::TAU;
+            let radius  = 60.0 + (i as f32) * 15.0;
+            let orbit_v = (G * 200.0 / radius).sqrt();  // circular orbit speed
+            bodies.push(GravBody {
+                x:    CENTER_X + angle.cos() * radius,
+                y:    CENTER_Y + angle.sin() * radius,
+                vx:  -angle.sin() * orbit_v,
+                vy:   angle.cos() * orbit_v,
+                mass: 5.0 + (i as f32) * 2.0,
+                ci:   i % 7,
+            });
+        }
+        // Pre-fill trails
+        for (b, t) in bodies.iter().zip(trails.iter_mut()) {
+            t.push_back((b.x, b.y));
+        }
+        std::sync::Mutex::new(GravState { bodies, trails })
+    });
+
+    let mut st = m.lock().unwrap();
+    let n = st.bodies.len();
+
+    // Compute accelerations
+    let mut ax = vec![0.0f32; n];
+    let mut ay = vec![0.0f32; n];
+    let bodies_snap = st.bodies.clone();
+    for i in 0..n {
+        for j in 0..n {
+            if i == j { continue; }
+            let dx  = bodies_snap[j].x - bodies_snap[i].x;
+            let dy  = bodies_snap[j].y - bodies_snap[i].y;
+            let d2  = dx * dx + dy * dy + SOFT * SOFT;
+            let d   = d2.sqrt();
+            let f   = G * bodies_snap[j].mass / d2;
+            ax[i] += f * dx / d;
+            ay[i] += f * dy / d;
+        }
+    }
+
+    // Integrate velocities and positions (wrap at boundary)
+    for i in 0..n {
+        st.bodies[i].vx += ax[i] * DT;
+        st.bodies[i].vy += ay[i] * DT;
+        // Damp central body slightly to keep it near center
+        if i == 0 {
+            st.bodies[i].vx *= 0.96;
+            st.bodies[i].vy *= 0.96;
+        }
+        st.bodies[i].x  += st.bodies[i].vx * DT;
+        st.bodies[i].y  += st.bodies[i].vy * DT;
+        // Soft wrap
+        if st.bodies[i].x < 0.0   { st.bodies[i].x += 480.0; }
+        if st.bodies[i].x > 480.0 { st.bodies[i].x -= 480.0; }
+        if st.bodies[i].y < 0.0   { st.bodies[i].y += 480.0; }
+        if st.bodies[i].y > 480.0 { st.bodies[i].y -= 480.0; }
+
+        // Record trail (read position first to satisfy borrow checker)
+        let pos = (st.bodies[i].x, st.bodies[i].y);
+        st.trails[i].push_back(pos);
+        while st.trails[i].len() > TRAIL { st.trails[i].pop_front(); }
+    }
+
+    let cols = [YELLOW, BLUE, GREEN, RED, MAUVE, TEAL, PEACH, TEXT, SUBTEXT, OVERLAY0];
+    let mut img = RgbImage::new(480, 480);
+    for p in img.pixels_mut() { *p = BG; }
+
+    // Draw trails (fading alpha by position in trail)
+    for (i, trail) in st.trails.iter().enumerate() {
+        let base = cols[i % cols.len()];
+        let len  = trail.len();
+        for (idx, &(tx, ty)) in trail.iter().enumerate() {
+            let frac = idx as f32 / len as f32;  // 0=oldest, 1=newest
+            let br   = frac * frac;               // quadratic fade
+            let px   = tx as i32; let py = ty as i32;
+            if px >= 0 && px < 480 && py >= 0 && py < 480 {
+                let tc = Rgb([
+                    (base[0] as f32 * br) as u8,
+                    (base[1] as f32 * br) as u8,
+                    (base[2] as f32 * br) as u8,
+                ]);
+                img.put_pixel(px as u32, py as u32, tc);
+            }
+        }
+    }
+
+    // Draw bodies (3×3 dot, central body = 5×5)
+    for (i, b) in st.bodies.iter().enumerate() {
+        let col  = cols[i % cols.len()];
+        let size = if i == 0 { 3i32 } else { 2i32 };
+        let bx   = b.x as i32; let by = b.y as i32;
+        for dy in -size..=size {
+            for dx in -size..=size {
+                let px = bx + dx; let py = by + dy;
+                if px >= 0 && px < 480 && py >= 0 && py < 480 {
+                    img.put_pixel(px as u32, py as u32, col);
+                }
+            }
+        }
+    }
+
+    DynamicImage::ImageRgb8(img)
+}
