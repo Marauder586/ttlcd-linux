@@ -4093,6 +4093,30 @@ async function fetchScreensaverStatus() {
   });
 })();
 
+// ─── USB Reconnect button ──────────────────────────────────────────────────────
+(function initReconnectUsbBtn() {
+  const btn = document.getElementById('reconnect-usb-btn');
+  if (!btn) return;
+  btn.addEventListener('click', async () => {
+    try {
+      btn.disabled = true;
+      btn.textContent = '⏳ Reconnecting…';
+      const data = await apiJson('POST', '/api/panel/reconnect');
+      log(`USB reconnect: ${data.message || 'ok'}`);
+      setStatusMsg(quickStatus, '✓ Reconnect triggered — check status dot', true);
+      // Poll for status change
+      setTimeout(fetchStatus, 3000);
+      setTimeout(fetchStatus, 6000);
+    } catch (e) {
+      log(`Reconnect failed: ${e.message}`, 'err');
+      setStatusMsg(quickStatus, `Reconnect error: ${e.message}`, false);
+    } finally {
+      btn.disabled = false;
+      btn.textContent = '🔌 Reconnect';
+    }
+  });
+})();
+
 // ─── Boot ─────────────────────────────────────────────────────────────────────
 initSSE();
 startPolling();

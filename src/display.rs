@@ -8275,6 +8275,206 @@ pub fn render_fireworks() -> DynamicImage {
 
 
 
+// ─── CPU Core Heatmap ─────────────────────────────────────────────────────────
+
+/// Per-core CPU utilization history (rows = cores, cols = time samples).
+/// Stored as a Vec<VecDeque<f32>> where each VecDeque is one core's history.
+static CPU_CORE_HISTORY: std::sync::OnceLock<std::sync::Mutex<Vec<std::collections::VecDeque<f32>>>> =
+    std::sync::OnceLock::new();
+
+const CPU_HEATMAP_COLS: usize = 60;  // 60 time samples
+
+/// Update per-core history. Call on each display tick.
+pub fn push_cpu_core_history() {
+    use sysinfo::{System, CpuRefreshKind};
+    let mut sys = System::new();
+    sys.refresh_cpu_specifics(CpuRefreshKind::everything());
+    std::thread::sleep(std::time::Duration::from_millis(100));
+    sys.refresh_cpu_specifics(CpuRefreshKind::everything());
+
+    let cpus = sys.cpus();
+    let n = cpus.len();
+
+    let mut history = CPU_CORE_HISTORY
+        .get_or_init(|| std::sync::Mutex::new(vec![std::collections::VecDeque::new(); n.max(1)]))
+        .lock().unwrap();
+
+    // Grow if CPU count changed
+    while history.len() < n { history.push(std::collections::VecDeque::new()); }
+
+    for (i, cpu) in cpus.iter().enumerate() {
+        if i >= history.len() { break; }
+        history[i].push_back(cpu.cpu_usage());
+        while history[i].len() > CPU_HEATMAP_COLS { history[i].pop_front(); }
+    }
+}
+
+/// Render the CPU core heatmap: cores on Y axis, time on X axis.
+/// Hot = red, warm = yellow, cool = green, idle = dark teal.
+pub fn render_cpu_heatmap() -> DynamicImage {
+    use sysinfo::{System, CpuRefreshKind};
+
+    // Refresh and push a sample
+    let mut sys = System::new();
+    sys.refresh_cpu_specifics(CpuRefreshKind::everything());
+    std::thread::sleep(std::time::Duration::from_millis(150));
+    sys.refresh_cpu_specifics(CpuRefreshKind::everything());
+
+    let cpus = sys.cpus();
+    let n_cores = cpus.len().max(1);
+    let cpu_usage = sys.global_cpu_usage();
+
+    {
+        let mut history = CPU_CORE_HISTORY
+            .get_or_init(|| std::sync::Mutex::new(vec![std::collections::VecDeque::new(); n_cores]))
+            .lock().unwrap();
+
+        while history.len() < n_cores { history.push(std::collections::VecDeque::new()); }
+        for (i, cpu) in cpus.iter().enumerate() {
+            if i >= history.len() { break; }
+            history[i].push_back(cpu.cpu_usage());
+            while history[i].len() > CPU_HEATMAP_COLS { history[i].pop_front(); }
+        }
+    }
+
+    let font = font_bold();
+    let mut img = RgbImage::new(480, 480);
+    for p in img.pixels_mut() { *p = BG; }
+
+    // Title
+    let title = format!("CPU Heatmap — {:.0}% avg", cpu_usage);
+    let tw = text_width(&font, PxScale::from(22.0), &title);
+    draw_text_mut(&mut img, TEXT, (480 - tw) / 2, 6, PxScale::from(22.0), &font, &title);
+
+    // Core count label
+    let cstr = format!("{} cores × {} samples", n_cores, CPU_HEATMAP_COLS);
+    let cw = text_width(&font, PxScale::from(14.0), &cstr);
+    draw_text_mut(&mut img, OVERLAY0, (480 - cw) / 2, 32, PxScale::from(14.0), &font, &cstr);
+
+    // Heat map grid
+    let grid_x = 40_i32;
+    let grid_y = 50_i32;
+    let grid_w = 430_i32;
+    let grid_h = 400_i32;
+
+    let cell_w = (grid_w as f32 / CPU_HEATMAP_COLS as f32).max(1.0);
+    let cell_h = (grid_h as f32 / n_cores as f32).max(1.0);
+
+    let history = CPU_CORE_HISTORY
+        .get_or_init(|| std::sync::Mutex::new(vec![std::collections::VecDeque::new(); n_cores]))
+        .lock().unwrap();
+
+    for (core_idx, core_history) in history.iter().enumerate() {
+        let y0 = grid_y + (core_idx as f32 * cell_h) as i32;
+        let y1 = grid_y + ((core_idx + 1) as f32 * cell_h) as i32;
+
+        // Core label on Y axis
+        if cell_h >= 10.0 {
+            let label = format!("C{}", core_idx);
+            draw_text_mut(&mut img, OVERLAY0, 4, y0 + 1,
+                PxScale::from(cell_h.min(14.0)), &font, &label);
+        }
+
+        for (col_idx, &usage) in core_history.iter().enumerate() {
+            let x0 = grid_x + (col_idx as f32 * cell_w) as i32;
+            let x1 = grid_x + ((col_idx + 1) as f32 * cell_w) as i32;
+
+            // Map usage 0..100 → heatmap colour
+            let u = (usage / 100.0).clamp(0.0, 1.0) as f64;
+            let (r, g, b) = if u < 0.25 {
+                // Dark blue/teal (idle)
+                let t = u / 0.25;
+                (
+                    (30.0 + (148.0 - 30.0) * t) as u8,
+                    (30.0 + (226.0 - 30.0) * t) as u8,
+                    (46.0 + (213.0 - 46.0) * t) as u8,
+                )
+            } else if u < 0.5 {
+                // Teal to green
+                let t = (u - 0.25) / 0.25;
+                (
+                    (148.0 + (166.0 - 148.0) * t) as u8,
+                    (226.0 + (227.0 - 226.0) * t) as u8,
+                    (213.0 + (161.0 - 213.0) * t) as u8,
+                )
+            } else if u < 0.75 {
+                // Green to yellow
+                let t = (u - 0.5) / 0.25;
+                (
+                    (166.0 + (249.0 - 166.0) * t) as u8,
+                    (227.0 + (226.0 - 227.0) * t) as u8,
+                    (161.0 + (175.0 - 161.0) * t) as u8,
+                )
+            } else {
+                // Yellow to red
+                let t = (u - 0.75) / 0.25;
+                (
+                    (249.0 + (243.0 - 249.0) * t) as u8,
+                    (226.0 + (139.0 - 226.0) * t) as u8,
+                    (175.0 + (168.0 - 175.0) * t) as u8,
+                )
+            };
+
+            let col = Rgb([r, g, b]);
+            for py in y0..y1 {
+                for px in x0..x1 {
+                    if px >= 0 && py >= 0 && (px as u32) < 480 && (py as u32) < 480 {
+                        img.put_pixel(px as u32, py as u32, col);
+                    }
+                }
+            }
+        }
+    }
+
+    // Time axis labels
+    draw_text_mut(&mut img, OVERLAY0, grid_x, grid_y + grid_h + 4,
+        PxScale::from(13.0), &font, "← older");
+    let now_str = {
+        let n = chrono::Local::now();
+        format!("{:02}:{:02}:{:02} →", n.hour(), n.minute(), n.second())
+    };
+    let nw = text_width(&font, PxScale::from(13.0), &now_str);
+    draw_text_mut(&mut img, OVERLAY0, grid_x + grid_w - nw, grid_y + grid_h + 4,
+        PxScale::from(13.0), &font, &now_str);
+
+    // Color legend bar
+    let legend_y = grid_y + grid_h + 22;
+    let legend_w = grid_w;
+    for lx in 0..legend_w {
+        let u = lx as f64 / legend_w as f64;
+        let (lr, lg, lb) = if u < 0.25 {
+            let t = u / 0.25;
+            ((30.0 + 118.0*t) as u8, (30.0 + 196.0*t) as u8, (46.0 + 167.0*t) as u8)
+        } else if u < 0.5 {
+            let t = (u-0.25)/0.25;
+            ((148.0 + 18.0*t) as u8, (226.0 + 1.0*t) as u8, (213.0 - 52.0*t) as u8)
+        } else if u < 0.75 {
+            let t = (u-0.5)/0.25;
+            ((166.0 + 83.0*t) as u8, (227.0 - 1.0*t) as u8, (161.0 + 14.0*t) as u8)
+        } else {
+            let t = (u-0.75)/0.25;
+            ((249.0 - 6.0*t) as u8, (226.0 - 87.0*t) as u8, (175.0 - 7.0*t) as u8)
+        };
+        let px = grid_x + lx;
+        for dy in 0..6 {
+            let py_leg = legend_y + dy;
+            if py_leg < 480 && (px as u32) < 480 {
+                img.put_pixel(px as u32, py_leg as u32, Rgb([lr, lg, lb]));
+            }
+        }
+    }
+    draw_text_mut(&mut img, OVERLAY0, grid_x, legend_y + 7,
+        PxScale::from(12.0), &font, "0%");
+    let h_str = "100%";
+    let hw = text_width(&font, PxScale::from(12.0), h_str);
+    draw_text_mut(&mut img, OVERLAY0, grid_x + grid_w - hw, legend_y + 7,
+        PxScale::from(12.0), &font, h_str);
+
+    DynamicImage::ImageRgb8(img)
+}
+
+
+
 #[cfg(test)]
 mod bounce_ball_tests {
     use super::*;
