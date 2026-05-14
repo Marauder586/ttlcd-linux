@@ -12472,3 +12472,215 @@ pub fn render_system_health() -> DynamicImage {
 
     DynamicImage::ImageRgb8(img)
 }
+
+// ─── Neon Grid (Tron-style) ───────────────────────────────────────────────────
+
+static NEON_GRID_TICK: std::sync::OnceLock<std::sync::Mutex<u64>> =
+    std::sync::OnceLock::new();
+
+/// Tron-inspired neon grid — glowing lines, pulsing nodes, travelling colour
+/// pulses along the wire-frame.
+pub fn render_neon_grid() -> DynamicImage {
+    let tick = {
+        let mut t = NEON_GRID_TICK.get_or_init(|| std::sync::Mutex::new(0)).lock().unwrap();
+        *t += 1; *t
+    };
+    let tf = tick as f32;
+
+    const COLS: u32 = 10;
+    const ROWS: u32 = 10;
+    let cw = 480.0 / COLS as f32;
+    let ch = 480.0 / ROWS as f32;
+
+    let mut img = RgbImage::new(480, 480);
+    for p in img.pixels_mut() { *p = Rgb([3, 5, 15]); }  // near-black blue
+
+    let line_cols: [Rgb<u8>; 4] = [
+        Rgb([ 0, 180, 255]),  // cyan
+        Rgb([ 0, 255, 180]),  // teal
+        Rgb([180,  80, 255]), // purple
+        Rgb([  0, 220, 120]), // green
+    ];
+
+    // Draw horizontal lines
+    for row in 0..=ROWS {
+        let y = (row as f32 * ch) as u32;
+        let col_idx = (row as usize + (tf * 0.02) as usize) % line_cols.len();
+        let pulse = (tf * 0.05 + row as f32 * 0.7).sin() * 0.4 + 0.6;
+        let lc = line_cols[col_idx];
+        let col = Rgb([(lc[0] as f32 * pulse) as u8, (lc[1] as f32 * pulse) as u8, (lc[2] as f32 * pulse) as u8]);
+        for x in 0..480u32 {
+            if y < 480 {
+                img.put_pixel(x, y, col);
+                // Glow row above/below
+                if y > 0 {
+                    let g = Rgb([(lc[0] as f32 * pulse * 0.25) as u8, (lc[1] as f32 * pulse * 0.25) as u8, (lc[2] as f32 * pulse * 0.25) as u8]);
+                    let e = img.get_pixel(x, y - 1);
+                    img.put_pixel(x, y - 1, Rgb([(e[0] as u32 + g[0] as u32).min(255) as u8, (e[1] as u32 + g[1] as u32).min(255) as u8, (e[2] as u32 + g[2] as u32).min(255) as u8]));
+                }
+            }
+        }
+    }
+
+    // Draw vertical lines
+    for col in 0..=COLS {
+        let x = (col as f32 * cw) as u32;
+        let col_idx = (col as usize * 2 + (tf * 0.015) as usize) % line_cols.len();
+        let pulse = (tf * 0.06 + col as f32 * 0.5).sin() * 0.4 + 0.6;
+        let lc = line_cols[col_idx];
+        let c = Rgb([(lc[0] as f32 * pulse) as u8, (lc[1] as f32 * pulse) as u8, (lc[2] as f32 * pulse) as u8]);
+        for y in 0..480u32 {
+            if x < 480 {
+                img.put_pixel(x, y, c);
+            }
+        }
+    }
+
+    // Bright node dots at intersections
+    for row in 0..=ROWS {
+        for col in 0..=COLS {
+            let nx = (col as f32 * cw) as i32;
+            let ny = (row as f32 * ch) as i32;
+            let node_pulse = ((tf * 0.08 + (row + col * 3) as f32 * 0.4).sin() * 0.5 + 0.5).powf(2.0);
+            let node_col = line_cols[(row as usize + col as usize) % line_cols.len()];
+            let nc = Rgb([
+                (node_col[0] as f32 * node_pulse + 200.0 * node_pulse) as u8,
+                (node_col[1] as f32 * node_pulse + 200.0 * node_pulse) as u8,
+                (node_col[2] as f32 * node_pulse + 200.0 * node_pulse) as u8,
+            ]);
+            for dy in -2i32..=2 {
+                for dx in -2i32..=2 {
+                    if dx*dx + dy*dy > 5 { continue; }
+                    let px = nx + dx; let py = ny + dy;
+                    if px >= 0 && px < 480 && py >= 0 && py < 480 {
+                        img.put_pixel(px as u32, py as u32, nc);
+                    }
+                }
+            }
+        }
+    }
+
+    DynamicImage::ImageRgb8(img)
+}
+
+// ─── Water Ripple ─────────────────────────────────────────────────────────────
+
+struct RippleState {
+    /// 2D height field, 160×160 (f32 in -1..1)
+    field: Vec<f32>,
+    prev:  Vec<f32>,
+    seed:  u32,
+    tick:  u64,
+}
+
+static RIPPLE_STATE: std::sync::OnceLock<std::sync::Mutex<RippleState>> =
+    std::sync::OnceLock::new();
+
+/// Water ripple simulation using a simplified 2D wave equation.
+/// New drops are added at random positions every ~15 ticks.
+pub fn render_ripple() -> DynamicImage {
+    const W: usize = 160;
+    const H: usize = 160;
+    const CELL: u32 = 3;
+    const DAMP: f32  = 0.985;  // damping factor
+
+    let m = RIPPLE_STATE.get_or_init(|| {
+        std::sync::Mutex::new(RippleState {
+            field: vec![0.0f32; W * H],
+            prev:  vec![0.0f32; W * H],
+            seed:  0xBAD_C0DE_u32,
+            tick:  0,
+        })
+    });
+    let mut st = m.lock().unwrap();
+    st.tick += 1;
+
+    let lcg = |s: &mut u32| -> u32 {
+        *s = s.wrapping_mul(1_664_525).wrapping_add(1_013_904_223); *s
+    };
+
+    // Drop a new "stone" every 15 ticks
+    if st.tick % 15 == 0 {
+        let x = 2 + (lcg(&mut st.seed) % (W - 4) as u32) as usize;
+        let y = 2 + (lcg(&mut st.seed) % (H - 4) as u32) as usize;
+        for dy in 0..3usize {
+            for dx in 0..3usize {
+                st.field[(y + dy) * W + (x + dx)] = 0.8;
+            }
+        }
+    }
+
+    // Wave propagation: new = 2*cur - prev + c²*(laplacian), then damp
+    let cur  = st.field.clone();
+    let prev = st.prev.clone();
+    for y in 1..(H - 1) {
+        for x in 1..(W - 1) {
+            let lap = cur[(y-1)*W+x] + cur[(y+1)*W+x] + cur[y*W+x-1] + cur[y*W+x+1]
+                    - 4.0 * cur[y*W+x];
+            st.field[y * W + x] = ((2.0 * cur[y*W+x] - prev[y*W+x] + 0.5 * lap) * DAMP)
+                                  .clamp(-1.0, 1.0);
+        }
+    }
+    st.prev = cur;
+
+    // Render: height → color
+    // negative = one color, positive = another, zero = BG
+    let mut img = RgbImage::new(480, 480);
+    for cy in 0..H {
+        for cx in 0..W {
+            let h  = st.field[cy * W + cx];
+            let ah = h.abs();
+            let col = if ah < 0.02 {
+                BG
+            } else if h > 0.0 {
+                // Positive: teal/cyan
+                Rgb([ (ah * 80.0)  as u8, (ah * 220.0) as u8, (ah * 200.0 + 40.0).min(255.0) as u8 ])
+            } else {
+                // Negative: blue/purple
+                Rgb([ (ah * 60.0)  as u8, (ah * 80.0)  as u8, (ah * 255.0) as u8 ])
+            };
+            let px0 = cx as u32 * CELL;
+            let py0 = cy as u32 * CELL;
+            for dy in 0..CELL { for dx in 0..CELL { img.put_pixel(px0+dx, py0+dy, col); }}
+        }
+    }
+    DynamicImage::ImageRgb8(img)
+}
+
+// ─── Hypnotic Spiral ─────────────────────────────────────────────────────────
+
+static HYPNO_TICK: std::sync::OnceLock<std::sync::Mutex<u64>> =
+    std::sync::OnceLock::new();
+
+/// Hypnotic spiral — combination of radial distance and angle modulated
+/// by slow tick-based oscillation, coloured with a Catppuccin-derived palette.
+pub fn render_hypno() -> DynamicImage {
+    let tick = {
+        let mut t = HYPNO_TICK.get_or_init(|| std::sync::Mutex::new(0)).lock().unwrap();
+        *t += 1; *t
+    };
+    let tf = tick as f32;
+
+    let mut img = RgbImage::new(480, 480);
+
+    for py in 0..480u32 {
+        for px in 0..480u32 {
+            let dx = px as f32 - 240.0;
+            let dy = py as f32 - 240.0;
+            let dist  = (dx * dx + dy * dy).sqrt();
+            let angle = dy.atan2(dx);
+
+            // Two overlaid spiral patterns
+            let s1 = (dist * 0.08 - tf * 0.04 + angle * 3.0).sin();
+            let s2 = (dist * 0.05 + tf * 0.025 - angle * 5.0).cos();
+            let wave = (s1 * s2 + (dist * 0.04 + tf * 0.02).sin() * 0.3) * 0.5 + 0.5;
+
+            // Colour: map 0..1 to a Catppuccin cycle
+            let h = (wave + tf * 0.002) % 1.0;
+            let col = hsl_to_rgb(h, 0.9, 0.45 + wave * 0.2);
+
+            img.put_pixel(px, py, col);
+        }
+    }
+    DynamicImage::ImageRgb8(img)
+}
