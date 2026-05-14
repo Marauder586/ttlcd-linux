@@ -74,6 +74,7 @@ use ttlcd::{
         render_status_overview,
         render_game_of_life,
         render_led_clock,
+        render_bounce_ball,
         read_docker_containers,
         read_user_sessions,
         HttpMonitorResult,
@@ -779,6 +780,7 @@ enum DisplayMode {
     StatusOverview,
     GameOfLife,
     LedClock,
+    BounceBall,
     NetSpeedGraph,
     CpuCoreBars,
     Idle,
@@ -790,7 +792,7 @@ enum DisplayMode {
 impl DisplayMode {
     const ALL_NAMES: &'static [&'static str] = &[
         "clock", "big_clock", "clock_sysinfo", "sysinfo", "cpu_detail",
-        "network", "disk_usage", "process_top", "temperature", "memory_detail", "countdown", "cpu_graph", "net_graph", "recent_alerts", "process_memory", "disk_io", "calendar", "stopwatch", "metrics", "weather", "notes", "qr_code", "pomodoro", "battery", "world_clock", "ticker", "http_status", "shell_cmd", "ping_monitor", "dashboard", "log_tail", "cpu_freq", "hostname_ip", "rss_feed", "service_status", "net_connections", "uptime_fancy", "os_info", "docker_status", "logged_in_users", "load_graph", "mem_graph", "progress", "matrix_rain", "temp_graph", "disk_io_graph", "graphs_overview", "analog_clock", "ping_graph", "status_overview", "game_of_life", "led_clock", "net_speed_graph", "cpu_core_bars", "idle",
+        "network", "disk_usage", "process_top", "temperature", "memory_detail", "countdown", "cpu_graph", "net_graph", "recent_alerts", "process_memory", "disk_io", "calendar", "stopwatch", "metrics", "weather", "notes", "qr_code", "pomodoro", "battery", "world_clock", "ticker", "http_status", "shell_cmd", "ping_monitor", "dashboard", "log_tail", "cpu_freq", "hostname_ip", "rss_feed", "service_status", "net_connections", "uptime_fancy", "os_info", "docker_status", "logged_in_users", "load_graph", "mem_graph", "progress", "matrix_rain", "temp_graph", "disk_io_graph", "graphs_overview", "analog_clock", "ping_graph", "status_overview", "game_of_life", "led_clock", "bounce_ball", "net_speed_graph", "cpu_core_bars", "idle",
     ];
 
     fn from_str_name(s: &str) -> Option<Self> {
@@ -844,6 +846,7 @@ impl DisplayMode {
             "status_overview"   => Some(DisplayMode::StatusOverview),
             "game_of_life"      => Some(DisplayMode::GameOfLife),
             "led_clock"         => Some(DisplayMode::LedClock),
+            "bounce_ball"       => Some(DisplayMode::BounceBall),
             "net_speed_graph"   => Some(DisplayMode::NetSpeedGraph),
             "cpu_core_bars"     => Some(DisplayMode::CpuCoreBars),
             "idle"             => Some(DisplayMode::Idle),
@@ -907,6 +910,7 @@ impl DisplayMode {
     DisplayMode::StatusOverview  => "status_overview",
     DisplayMode::GameOfLife      => "game_of_life",
     DisplayMode::LedClock        => "led_clock",
+    DisplayMode::BounceBall      => "bounce_ball",
     DisplayMode::NetSpeedGraph  => "net_speed_graph",
     DisplayMode::CpuCoreBars    => "cpu_core_bars",
             DisplayMode::Idle           => "idle",
@@ -2435,6 +2439,7 @@ fn display_loop(panel: Arc<Mutex<Option<Panel>>>, state: DaemonState) {
                 DisplayMode::StatusOverview => (render_status_overview(), 3),
                 DisplayMode::GameOfLife      => (render_game_of_life(), 0),
                 DisplayMode::LedClock        => (render_led_clock(), 1),
+                DisplayMode::BounceBall      => (render_bounce_ball(), 0),
             DisplayMode::PingGraph      => {
                     let results = state.ping_results.lock().unwrap().clone();
                     (render_ping_graph(&results), 5)
@@ -3808,6 +3813,7 @@ async fn api_modes_list() -> impl Responder {
         ModeInfo { name: "mem_graph",      description: "Memory usage history graph: RAM % over time as a filled line chart" },
         ModeInfo { name: "progress",       description: "Full-screen progress bar — configure via POST /api/progress with value/total/label" },
         ModeInfo { name: "matrix_rain",    description: "Matrix digital rain screensaver — animated falling characters" },
+        ModeInfo { name: "bounce_ball",      description: "Bouncing ball screensaver — Catppuccin colour cycling on wall bounces" },
         ModeInfo { name: "led_clock",        description: "7-segment LED-style clock with date, load average, and hostname — flashing colons" },
         ModeInfo { name: "game_of_life",     description: "Conway's Game of Life — animated cellular automaton, re-seeds when population stagnates" },
         ModeInfo { name: "status_overview",  description: "4-quadrant live overview: clock, CPU/RAM, network Rx/Tx, and temperature/uptime" },
@@ -5779,6 +5785,7 @@ async fn api_status_badge(state: web::Data<DaemonState>) -> impl Responder {
         "ping_graph"                           => "#a6e3a1",  // green
         "game_of_life"                         => "#a6e3a1",  // green
         "led_clock"                            => "#fab387",  // peach
+        "bounce_ball"                          => "#cba6f7",  // mauve
         "status_overview"                      => "#89dceb",  // sky
         "analog_clock"                         => "#cba6f7",  // mauve
         "net_speed_graph"                      => "#a6e3a1",  // green

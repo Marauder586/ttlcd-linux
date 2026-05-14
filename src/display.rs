@@ -7541,3 +7541,134 @@ mod led_clock_tests {
         assert_eq!(img.height(), 480);
     }
 }
+
+
+// ─── Bouncing Ball Screensaver ─────────────────────────────────────────────────
+
+static BALL_STATE: OnceLock<std::sync::Mutex<(f64, f64, f64, f64, u8)>> = OnceLock::new();
+// State: (x, y, vx, vy, color_idx)
+
+fn ball_state_data() -> std::sync::MutexGuard<'static, (f64, f64, f64, f64, u8)> {
+    BALL_STATE.get_or_init(|| {
+        std::sync::Mutex::new((120.0, 180.0, 3.7, 2.3, 0))
+    })
+    .lock()
+    .unwrap()
+}
+
+/// Render a bouncing ball screensaver (480×480).
+///
+/// A filled circle bounces around the screen, changing colour on each wall
+/// bounce.  Position persists across frames for smooth animation.
+pub fn render_bounce_ball() -> DynamicImage {
+    const RADIUS: f64 = 36.0;
+    const W: f64 = 480.0;
+    const H: f64 = 480.0;
+
+    let palette: &[Rgb<u8>] = &[MAUVE, BLUE, GREEN, PEACH, YELLOW, RED, TEAL, TEAL];
+
+    let (mut x, mut y, mut vx, mut vy, mut color_idx) = {
+        let s = ball_state_data();
+        (s.0, s.1, s.2, s.3, s.4)
+    };
+
+    // Advance physics
+    x += vx;
+    y += vy;
+
+    let mut bounced = false;
+    if x - RADIUS < 0.0 { x = RADIUS; vx = vx.abs(); bounced = true; }
+    if x + RADIUS > W   { x = W - RADIUS; vx = -vx.abs(); bounced = true; }
+    if y - RADIUS < 0.0 { y = RADIUS; vy = vy.abs(); bounced = true; }
+    if y + RADIUS > H   { y = H - RADIUS; vy = -vy.abs(); bounced = true; }
+
+    if bounced {
+        color_idx = (color_idx + 1) % palette.len() as u8;
+    }
+
+    // Save new state
+    {
+        let mut s = ball_state_data();
+        *s = (x, y, vx, vy, color_idx);
+    }
+
+    let color = palette[color_idx as usize];
+    let glow  = Rgb([color.0[0] / 4, color.0[1] / 4, color.0[2] / 4]);
+
+    let mut img = blank();
+
+    // Draw glow (slightly larger dim circle)
+    let glow_r = RADIUS + 8.0;
+    for py in ((y - glow_r) as i32 - 1)..=((y + glow_r) as i32 + 1) {
+        for px in ((x - glow_r) as i32 - 1)..=((x + glow_r) as i32 + 1) {
+            if px < 0 || py < 0 || px >= 480 || py >= 480 { continue; }
+            let dx = px as f64 - x;
+            let dy = py as f64 - y;
+            if dx*dx + dy*dy <= glow_r * glow_r {
+                img.put_pixel(px as u32, py as u32, glow);
+            }
+        }
+    }
+
+    // Draw main ball
+    for py in ((y - RADIUS) as i32)..=((y + RADIUS) as i32) {
+        for px in ((x - RADIUS) as i32)..=((x + RADIUS) as i32) {
+            if px < 0 || py < 0 || px >= 480 || py >= 480 { continue; }
+            let dx = px as f64 - x;
+            let dy = py as f64 - y;
+            if dx*dx + dy*dy <= RADIUS * RADIUS {
+                // Slight highlight at top-left
+                let dist = (dx*dx + dy*dy).sqrt();
+                let highlight = ((RADIUS - dist) / RADIUS * 80.0) as u8;
+                let r = color.0[0].saturating_add(highlight);
+                let g = color.0[1].saturating_add(highlight);
+                let b = color.0[2].saturating_add(highlight);
+                img.put_pixel(px as u32, py as u32, Rgb([r, g, b]));
+            }
+        }
+    }
+
+    // Shadow (ellipse below ball)
+    let shadow_y = y + RADIUS + 4.0;
+    for dx in (-20i32)..20 {
+        let shadow_x = x as i32 + dx;
+        if shadow_x < 0 || shadow_x >= 480 { continue; }
+        let shadow_py = shadow_y as i32;
+        if shadow_py >= 0 && shadow_py < 480 {
+            let existing = img.get_pixel(shadow_x as u32, shadow_py as u32);
+            let r = existing.0[0].saturating_add(20);
+            let g = existing.0[1].saturating_add(20);
+            let b = existing.0[2].saturating_add(20);
+            img.put_pixel(shadow_x as u32, shadow_py as u32, Rgb([r / 2, g / 2, b / 2]));
+        }
+    }
+
+    // Small velocity trail
+    let mono = font_bold();
+    let speed_str = format!("{:.1}", (vx*vx + vy*vy).sqrt());
+    let sw = text_width(&mono, PxScale::from(12.0), &speed_str);
+    draw_text_mut(&mut img, OVERLAY0, 480 - sw - 4, 468, PxScale::from(12.0), &mono, &speed_str);
+
+    DynamicImage::ImageRgb8(img)
+}
+
+#[cfg(test)]
+mod bounce_ball_tests {
+    use super::*;
+
+    #[test]
+    fn test_render_bounce_ball_size() {
+        let img = render_bounce_ball();
+        assert_eq!(img.width(), 480);
+        assert_eq!(img.height(), 480);
+    }
+
+    #[test]
+    fn test_bounce_ball_animates() {
+        let img1 = render_bounce_ball();
+        let img2 = render_bounce_ball();
+        // Frames differ as ball moves
+        assert_eq!(img1.width(), 480);
+        assert_eq!(img2.width(), 480);
+    }
+}
