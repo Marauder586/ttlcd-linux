@@ -8685,6 +8685,146 @@ pub fn render_pulse() -> DynamicImage {
 
 
 
+// ─── Minimal Clock ────────────────────────────────────────────────────────────
+
+/// Ultra-minimal full-screen clock: just time (huge) and date (below).
+/// Perfect for use as a bedside clock or when minimal visual noise is desired.
+pub fn render_minimal_clock() -> DynamicImage {
+    let now = chrono::Local::now();
+    let time_str = now.format("%H:%M").to_string();
+    let secs_str = format!(":{:02}", now.second());
+    let date_str = now.format("%A, %B %-d").to_string();
+    let year_str = now.format("%Y").to_string();
+
+    let font = font_bold();
+    let mono = font_mono();
+    let mut img = RgbImage::new(480, 480);
+    for p in img.pixels_mut() { *p = BG; }
+
+    // Large time in center
+    let time_scale = PxScale::from(110.0);
+    let tw = text_width(&mono, time_scale, &time_str);
+    let secs_scale = PxScale::from(42.0);
+    let sw = text_width(&mono, secs_scale, &secs_str);
+    let total_w = tw + sw;
+    let tx = (480 - total_w) / 2;
+    let ty = 140;
+
+    // Drop shadow
+    draw_text_mut(&mut img, SURFACE0, tx + 3, ty + 3, time_scale, &mono, &time_str);
+    draw_text_mut(&mut img, SURFACE0, tx + tw + 3, ty + 68 + 3, secs_scale, &mono, &secs_str);
+
+    // Main time
+    draw_text_mut(&mut img, TEXT, tx, ty, time_scale, &mono, &time_str);
+    // Seconds (smaller, aligned to baseline of H:MM)
+    draw_text_mut(&mut img, OVERLAY0, tx + tw, ty + 68, secs_scale, &mono, &secs_str);
+
+    // Date line
+    let date_scale = PxScale::from(28.0);
+    let dw = text_width(&font, date_scale, &date_str);
+    draw_text_mut(&mut img, SUBTEXT, (480 - dw) / 2, 280, date_scale, &font, &date_str);
+
+    // Year line
+    let year_scale = PxScale::from(20.0);
+    let yw = text_width(&font, year_scale, &year_str);
+    draw_text_mut(&mut img, OVERLAY0, (480 - yw) / 2, 314, year_scale, &font, &year_str);
+
+    // Subtle bottom bar: day-of-year progress
+    let day_of_year = now.ordinal() as f32;
+    let days_in_year = if now.date_naive().leap_year() { 366.0 } else { 365.0 };
+    let progress = day_of_year / days_in_year;
+    let bar_w = (progress * 380.0) as u32;
+    // Background bar
+    let bg_rect = imageproc::rect::Rect::at(50, 440).of_size(380, 6);
+    imageproc::drawing::draw_filled_rect_mut(&mut img, bg_rect, SURFACE0);
+    // Progress bar
+    if bar_w > 0 {
+        let prog_rect = imageproc::rect::Rect::at(50, 440).of_size(bar_w.min(380), 6);
+        imageproc::drawing::draw_filled_rect_mut(&mut img, prog_rect, BLUE);
+    }
+    let prog_label = format!("Day {} of {}", day_of_year as u32, days_in_year as u32);
+    let plw = text_width(&font, PxScale::from(13.0), &prog_label);
+    draw_text_mut(&mut img, OVERLAY0, (480 - plw) / 2, 450, PxScale::from(13.0), &font, &prog_label);
+
+    DynamicImage::ImageRgb8(img)
+}
+
+// ─── Ambient Particle Clock ────────────────────────────────────────────────────
+
+static PARTICLE_CLOCK_TICK: std::sync::OnceLock<std::sync::Mutex<u64>> = std::sync::OnceLock::new();
+
+/// Particle clock: time displayed with drifting pixel particles in Catppuccin colours.
+pub fn render_particle_clock() -> DynamicImage {
+    let tick = {
+        let m = PARTICLE_CLOCK_TICK.get_or_init(|| std::sync::Mutex::new(0));
+        let mut t = m.lock().unwrap();
+        let v = *t;
+        *t = t.wrapping_add(1);
+        v
+    };
+
+    let now = chrono::Local::now();
+    let time_str = now.format("%H:%M:%S").to_string();
+    let date_str = now.format("%a %d %b").to_string();
+
+    let font = font_mono();
+    let t = tick as f64 * 0.05;
+
+    let mut img = RgbImage::new(480, 480);
+    for p in img.pixels_mut() { *p = BG; }
+
+    // Particle layer (behind text): drifting pixels
+    let lcg = |s: u64| s.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+    let n_particles = 120_usize;
+    for i in 0..n_particles {
+        let mut seed = (i as u64).wrapping_mul(9371).wrapping_add(tick / 3);
+        seed = lcg(seed);
+        let base_x = (seed % 480) as f64;
+        seed = lcg(seed);
+        let base_y = (seed % 480) as f64;
+        seed = lcg(seed);
+        let speed = 0.3 + (seed % 10) as f64 * 0.07;
+        seed = lcg(seed);
+        let phase = seed as f64 * 0.001;
+
+        let x = (base_x + (t * speed + phase).sin() * 30.0).rem_euclid(480.0) as u32;
+        let y = (base_y + (t * speed * 0.7 + phase).cos() * 20.0).rem_euclid(480.0) as u32;
+
+        // Catppuccin colors cycling
+        let col = match i % 6 {
+            0 => Rgb([137u8, 180, 250]),  // BLUE
+            1 => Rgb([203, 166, 247]),    // MAUVE
+            2 => Rgb([148, 226, 213]),    // TEAL
+            3 => Rgb([250, 179, 135]),    // PEACH
+            4 => Rgb([166, 227, 161]),    // GREEN
+            _ => Rgb([249, 226, 175]),    // YELLOW
+        };
+        // Dim to 30% so text is readable
+        let col = Rgb([col.0[0]/4, col.0[1]/4, col.0[2]/4]);
+        img.put_pixel(x, y, col);
+    }
+
+    // Time text (large, centered)
+    let time_scale = PxScale::from(80.0);
+    let tw = text_width(&font, time_scale, &time_str);
+    draw_text_mut(&mut img, TEXT, (480-tw)/2, 168, time_scale, &font, &time_str);
+
+    // Date text
+    let date_scale = PxScale::from(28.0);
+    let dw = text_width(&font, date_scale, &date_str);
+    draw_text_mut(&mut img, SUBTEXT, (480-dw)/2, 266, date_scale, &font, &date_str);
+
+    // Horizontal dividers
+    for x in 80..400_u32 {
+        img.put_pixel(x, 158, SURFACE0);
+        img.put_pixel(x, 298, SURFACE0);
+    }
+
+    DynamicImage::ImageRgb8(img)
+}
+
+
+
 #[cfg(test)]
 mod bounce_ball_tests {
     use super::*;
