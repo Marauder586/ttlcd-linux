@@ -3387,6 +3387,44 @@ function startPolling() {
   setInterval(fetchServices, 15000);
 }
 
+// ─── Progress display section ────────────────────────────────────────────────
+
+(function injectProgressSection() {
+  const setBtn   = document.getElementById('prog-set-btn');
+  const clearBtn = document.getElementById('prog-clear-btn');
+  const statusEl = document.getElementById('prog-status');
+
+  if (setBtn) {
+    setBtn.addEventListener('click', async () => {
+      const label     = document.getElementById('prog-label')?.value || 'Progress';
+      const sublabel  = document.getElementById('prog-sublabel')?.value || '';
+      const value     = parseFloat(document.getElementById('prog-value')?.value || '0');
+      const total     = parseFloat(document.getElementById('prog-total')?.value || '100');
+      const color     = document.getElementById('prog-color')?.value || 'blue';
+      const startTimer = document.getElementById('prog-timer-check')?.checked || false;
+      try {
+        const r = await api('POST', '/api/progress', { label, sublabel, value, total, color, start_timer: startTimer });
+        if (statusEl) statusEl.textContent = `${r.pct ? r.pct.toFixed(1) : 0}% — showing on panel`;
+        fetchStatus();
+      } catch (e) {
+        if (statusEl) statusEl.textContent = `Error: ${e.message}`;
+      }
+    });
+  }
+
+  if (clearBtn) {
+    clearBtn.addEventListener('click', async () => {
+      try {
+        await api('DELETE', '/api/progress');
+        if (statusEl) statusEl.textContent = 'Cleared';
+        fetchStatus();
+      } catch (e) {
+        if (statusEl) statusEl.textContent = `Error: ${e.message}`;
+      }
+    });
+  }
+})();
+
 // ─── Docker status section ────────────────────────────────────────────────────
 
 async function fetchDocker() {

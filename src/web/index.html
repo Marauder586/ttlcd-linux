@@ -67,6 +67,7 @@
         <button class="mode-btn" data-mode="os_info"          title="OS and system info: distro, kernel, CPU, hostname">💻<span>OS Info</span></button>
         <button class="mode-btn" data-mode="docker_status"    title="Docker containers: running/stopped with image names">🐳<span>Docker</span></button>
         <button class="mode-btn" data-mode="logged_in_users"  title="Active user sessions: who is logged in, from where, idle time">👥<span>Sessions</span></button>
+        <button class="mode-btn" data-mode="progress"           title="Full-screen progress bar — update via POST /api/progress">🔄<span>Progress</span></button>
         <button class="mode-btn" data-mode="load_graph"        title="Load average history: 1m/5m/15m load avg as a filled line chart">📈<span>Load Graph</span></button>
         <button class="mode-btn" data-mode="mem_graph"         title="Memory usage history: RAM % over time as a filled line chart">📊<span>Mem Graph</span></button>
         <button class="mode-btn" data-mode="idle"              title="Keepalive — no display update">💤<span>Idle</span></button>
@@ -503,6 +504,49 @@
         <a href="/api/history?format=csv&limit=50" download="ttlcd-history.csv" class="small-btn btn-link" style="text-decoration:none">⬇ CSV</a>
       </div>
       <ul id="history-list" class="history-list"></ul>
+    </section>
+
+    <!-- ── Progress display ──────────────────────────────────────────── -->
+    <section class="card" id="progress-section">
+      <h2>🔄 Progress Display</h2>
+      <p class="card-hint">Show a full-screen progress bar. Updates live. Also accessible via <code>POST /api/progress</code>.</p>
+      <div class="form-row two-col">
+        <div class="form-group">
+          <label for="prog-label">Label</label>
+          <input type="text" id="prog-label" placeholder="Building…" maxlength="30" value="Progress">
+        </div>
+        <div class="form-group">
+          <label for="prog-sublabel">Sub-label</label>
+          <input type="text" id="prog-sublabel" placeholder="optional detail" maxlength="50">
+        </div>
+      </div>
+      <div class="form-row three-col">
+        <div class="form-group">
+          <label for="prog-value">Value</label>
+          <input type="number" id="prog-value" min="0" value="0" step="any">
+        </div>
+        <div class="form-group">
+          <label for="prog-total">Total</label>
+          <input type="number" id="prog-total" min="1" value="100" step="any">
+        </div>
+        <div class="form-group">
+          <label for="prog-color">Color</label>
+          <select id="prog-color">
+            <option value="blue" selected>Blue</option>
+            <option value="green">Green</option>
+            <option value="yellow">Yellow</option>
+            <option value="red">Red</option>
+            <option value="teal">Teal</option>
+            <option value="mauve">Mauve</option>
+          </select>
+        </div>
+      </div>
+      <div class="form-actions">
+        <button id="prog-set-btn" class="primary">▶ Show on Panel</button>
+        <label><input type="checkbox" id="prog-timer-check"> Start ETA timer</label>
+        <button id="prog-clear-btn">✕ Clear</button>
+        <span id="prog-status"></span>
+      </div>
     </section>
 
     <!-- ── Docker status ────────────────────────────────────────────── -->

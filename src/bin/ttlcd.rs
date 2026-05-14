@@ -56,6 +56,8 @@ use ttlcd::{
         render_logged_in_users,
         render_load_graph,
         render_mem_graph,
+        render_progress,
+        ProgressState,
         push_load_history,
         push_mem_history,
         read_docker_containers,
@@ -752,6 +754,7 @@ enum DisplayMode {
     LoggedInUsers,
     LoadGraph,
     MemGraph,
+    Progress,
     Idle,
     CustomImage,
     CustomText,
@@ -761,7 +764,7 @@ enum DisplayMode {
 impl DisplayMode {
     const ALL_NAMES: &'static [&'static str] = &[
         "clock", "big_clock", "clock_sysinfo", "sysinfo", "cpu_detail",
-        "network", "disk_usage", "process_top", "temperature", "memory_detail", "countdown", "cpu_graph", "net_graph", "recent_alerts", "process_memory", "disk_io", "calendar", "stopwatch", "metrics", "weather", "notes", "qr_code", "pomodoro", "battery", "world_clock", "ticker", "http_status", "shell_cmd", "ping_monitor", "dashboard", "log_tail", "cpu_freq", "hostname_ip", "rss_feed", "service_status", "net_connections", "uptime_fancy", "os_info", "docker_status", "logged_in_users", "load_graph", "mem_graph", "idle",
+        "network", "disk_usage", "process_top", "temperature", "memory_detail", "countdown", "cpu_graph", "net_graph", "recent_alerts", "process_memory", "disk_io", "calendar", "stopwatch", "metrics", "weather", "notes", "qr_code", "pomodoro", "battery", "world_clock", "ticker", "http_status", "shell_cmd", "ping_monitor", "dashboard", "log_tail", "cpu_freq", "hostname_ip", "rss_feed", "service_status", "net_connections", "uptime_fancy", "os_info", "docker_status", "logged_in_users", "load_graph", "mem_graph", "progress", "idle",
     ];
 
     fn from_str_name(s: &str) -> Option<Self> {
@@ -808,6 +811,7 @@ impl DisplayMode {
             "logged_in_users"  => Some(DisplayMode::LoggedInUsers),
             "load_graph"       => Some(DisplayMode::LoadGraph),
             "mem_graph"        => Some(DisplayMode::MemGraph),
+            "progress"         => Some(DisplayMode::Progress),
             "idle"             => Some(DisplayMode::Idle),
             "custom_text"   => Some(DisplayMode::CustomText),
             "slideshow"     => Some(DisplayMode::Slideshow),
@@ -859,6 +863,7 @@ impl DisplayMode {
             DisplayMode::LoggedInUsers  => "logged_in_users",
             DisplayMode::LoadGraph      => "load_graph",
             DisplayMode::MemGraph       => "mem_graph",
+            DisplayMode::Progress       => "progress",
             DisplayMode::Idle           => "idle",
             DisplayMode::CustomImage  => "image",
             DisplayMode::CustomText   => "custom_text",
@@ -1094,6 +1099,8 @@ struct DaemonState {
     /// will be POSTed to this URL as a plain-text notification.
     /// Example: "https://ntfy.sh/my-ttlcd-topic"
     ntfy_url: Arc<Mutex<Option<String>>>,
+    /// Progress bar display state for the Progress mode.
+    progress_state: Arc<Mutex<ttlcd::display::ProgressState>>,
 }
 
 /// A single entry in the display-mode schedule.
@@ -1527,6 +1534,7 @@ async fn run_daemon(
         service_poll_interval: Arc::new(Mutex::new(10)),
         api_key:               Arc::new(Mutex::new(None)),
         ntfy_url:              Arc::new(Mutex::new(None)),
+        progress_state:        Arc::new(Mutex::new(ttlcd::display::ProgressState::default())),
     };
 
     let panel: Arc<Mutex<Option<Panel>>> = if headless {
@@ -1923,6 +1931,10 @@ async fn run_daemon(
             .route("/api/auth/key",                 web::post().to(api_set_auth_key))
             .route("/api/auth/key",                 web::delete().to(api_clear_auth_key))
             .route("/api/auth/status",              web::get().to(api_get_auth_status))
+            // Progress bar display
+            .route("/api/progress",                 web::get().to(api_get_progress))
+            .route("/api/progress",                 web::post().to(api_set_progress))
+            .route("/api/progress",                 web::delete().to(api_clear_progress))
             // ntfy.sh push notification config
             .route("/api/ntfy/config",              web::get().to(api_get_ntfy_config))
             .route("/api/ntfy/config",              web::post().to(api_set_ntfy_config))
@@ -2273,6 +2285,10 @@ fn display_loop(panel: Arc<Mutex<Option<Panel>>>, state: DaemonState) {
                 },
                 DisplayMode::LoadGraph      => (render_load_graph(), 5),
                 DisplayMode::MemGraph       => (render_mem_graph(), 5),
+                DisplayMode::Progress => {
+                    let ps = state.progress_state.lock().unwrap().clone();
+                    (render_progress(&ps), 2)
+                },
                 DisplayMode::Idle
                 | DisplayMode::CustomImage
                 | DisplayMode::CustomText
@@ -3580,6 +3596,7 @@ async fn api_modes_list() -> impl Responder {
         ModeInfo { name: "logged_in_users",description: "Active user sessions: who is logged in, from where, and idle time" },
         ModeInfo { name: "load_graph",     description: "Load average history graph: 1m/5m/15m load avg as a filled line chart" },
         ModeInfo { name: "mem_graph",      description: "Memory usage history graph: RAM % over time as a filled line chart" },
+        ModeInfo { name: "progress",       description: "Full-screen progress bar — configure via POST /api/progress with value/total/label" },
         ModeInfo { name: "idle",           description: "Keepalive — no display update, prevents blank" },
     ];
     HttpResponse::Ok().json(modes)
@@ -8236,4 +8253,115 @@ async fn api_ntfy_test(state: web::Data<DaemonState>) -> impl Responder {
             }))
         }
     }
+}
+
+// ─── Progress display API ─────────────────────────────────────────────────────
+
+#[derive(Deserialize)]
+struct SetProgressPayload {
+    #[serde(default)]
+    label:      String,
+    #[serde(default)]
+    sublabel:   String,
+    #[serde(default)]
+    value:      f64,
+    #[serde(default = "default_total")]
+    total:      f64,
+    #[serde(default)]
+    units:      String,
+    #[serde(default)]
+    color:      String,
+    /// If true, record current time as started_at (enables ETA calculation).
+    #[serde(default)]
+    start_timer: bool,
+}
+
+fn default_total() -> f64 { 100.0 }
+
+/// GET /api/progress — return current progress state.
+async fn api_get_progress(state: web::Data<DaemonState>) -> impl Responder {
+    let ps = state.progress_state.lock().unwrap().clone();
+    HttpResponse::Ok().json(serde_json::json!({
+        "label":      ps.label,
+        "sublabel":   ps.sublabel,
+        "value":      ps.value,
+        "total":      ps.total,
+        "units":      ps.units,
+        "color":      format!("{:?}", ps.color).to_lowercase(),
+        "pct":        if ps.total > 0.0 { ps.value / ps.total * 100.0 } else { 0.0 },
+        "started_at": ps.started_at,
+    }))
+}
+
+/// POST /api/progress — update the progress state.
+///
+/// Body fields (all optional):
+/// - `label`       — main heading (default "Progress")
+/// - `sublabel`    — secondary description line
+/// - `value`       — current value (default 0)
+/// - `total`       — maximum value (default 100)
+/// - `units`       — unit suffix (e.g. "MB", "%")
+/// - `color`       — accent: blue | green | yellow | red | mauve | teal | peach
+/// - `start_timer` — true to record start time for ETA calculation
+///
+/// Also switches the display to Progress mode.
+async fn api_set_progress(
+    state:   web::Data<DaemonState>,
+    payload: web::Json<SetProgressPayload>,
+) -> impl Responder {
+    use ttlcd::display::NamedColor;
+    let p = payload.into_inner();
+    let color = match p.color.to_lowercase().as_str() {
+        "green"  => NamedColor::Green,
+        "yellow" => NamedColor::Yellow,
+        "red"    => NamedColor::Red,
+        "mauve"  => NamedColor::Mauve,
+        "teal"   => NamedColor::Teal,
+        "peach"  => NamedColor::Peach,
+        "white"  => NamedColor::White,
+        _        => NamedColor::Blue,
+    };
+    let started_at = if p.start_timer {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0)
+    } else {
+        state.progress_state.lock().unwrap().started_at
+    };
+
+    let total = if p.total > 0.0 { p.total } else { 100.0 };
+    let new_state = ProgressState {
+        label:      if p.label.is_empty() { "Progress".into() } else { p.label },
+        sublabel:   p.sublabel,
+        value:      p.value.clamp(0.0, total),
+        total,
+        units:      p.units,
+        color,
+        started_at,
+    };
+    let pct = new_state.value / new_state.total * 100.0;
+    *state.progress_state.lock().unwrap() = new_state;
+
+    // Auto-switch to Progress mode
+    let cur = state.mode.lock().unwrap().clone();
+    if !cur.is_transient() && cur != DisplayMode::Progress {
+        *state.prev_mode.lock().unwrap() = cur;
+    }
+    *state.mode.lock().unwrap() = DisplayMode::Progress;
+
+    HttpResponse::Ok().json(serde_json::json!({
+        "ok": true,
+        "pct": pct,
+    }))
+}
+
+/// DELETE /api/progress — clear progress and return to previous mode.
+async fn api_clear_progress(state: web::Data<DaemonState>) -> impl Responder {
+    *state.progress_state.lock().unwrap() = ProgressState::default();
+    if matches!(*state.mode.lock().unwrap(), DisplayMode::Progress) {
+        let prev = state.prev_mode.lock().unwrap().clone();
+        *state.mode.lock().unwrap() = prev;
+    }
+    HttpResponse::Ok().body("progress cleared")
 }

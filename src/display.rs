@@ -5572,3 +5572,188 @@ mod graph_history_tests {
         assert_eq!(img.height(), 480);
     }
 }
+
+// ─── Progress display ─────────────────────────────────────────────────────────
+
+/// State for the configurable progress display mode.
+#[derive(Clone, Debug)]
+pub struct ProgressState {
+    pub label:     String,
+    pub sublabel:  String,
+    pub value:     f64,
+    pub total:     f64,
+    pub units:     String,
+    pub color:     NamedColor,
+    pub started_at: u64, // unix seconds; 0 = no ETA
+}
+
+impl Default for ProgressState {
+    fn default() -> Self {
+        Self {
+            label:     "Progress".into(),
+            sublabel:  String::new(),
+            value:     0.0,
+            total:     100.0,
+            units:     String::new(),
+            color:     NamedColor::Blue,
+            started_at: 0,
+        }
+    }
+}
+
+/// Render a full-screen progress display (480×480).
+///
+/// Shows a large progress bar with percentage, label, optional sublabel,
+/// and an ETA derived from `started_at` if provided.
+pub fn render_progress(state: &ProgressState) -> DynamicImage {
+    let mut img = blank();
+    let bold = font_bold();
+    let mono = font_mono();
+
+    let frac = if state.total > 0.0 {
+        (state.value / state.total).clamp(0.0, 1.0)
+    } else { 0.0 };
+    let pct  = frac * 100.0;
+
+    let color = match state.color {
+        NamedColor::Green  => GREEN,
+        NamedColor::Yellow => YELLOW,
+        NamedColor::Red    => RED,
+        NamedColor::Mauve  => MAUVE,
+        NamedColor::Teal   => TEAL,
+        NamedColor::Peach  => PEACH,
+        NamedColor::White  => TEXT,
+        _                  => BLUE,
+    };
+
+    // ── Header ────────────────────────────────────────────────────────────
+    draw_filled_rect_mut(&mut img, Rect::at(0, 0).of_size(480, 52), SURFACE0);
+    let label_short: String = state.label.chars().take(26).collect();
+    draw_centered(&mut img, &bold, PxScale::from(22.0), 6, color, &label_short);
+    let ts = Local::now().format("%H:%M:%S").to_string();
+    let tw = text_width(&mono, PxScale::from(13.0), &ts);
+    draw_text_mut(&mut img, OVERLAY0, 480 - 20 - tw, 35, PxScale::from(13.0), &mono, &ts);
+
+    // ── Large percentage ──────────────────────────────────────────────────
+    let pct_str = format!("{:.1}%", pct);
+    draw_centered(&mut img, &bold, PxScale::from(100.0), 60, color, &pct_str);
+
+    // ── Sub-label ─────────────────────────────────────────────────────────
+    if !state.sublabel.is_empty() {
+        let sub: String = state.sublabel.chars().take(40).collect();
+        draw_centered(&mut img, &mono, PxScale::from(16.0), 175, SUBTEXT, &sub);
+    }
+
+    // ── Value / total ─────────────────────────────────────────────────────
+    if state.total > 0.0 {
+        let units = if state.units.is_empty() { "" } else { state.units.as_str() };
+        let vt_str = format!("{:.1}{} / {:.1}{}", state.value, units, state.total, units);
+        draw_centered(&mut img, &mono, PxScale::from(18.0), 198, SUBTEXT, &vt_str);
+    }
+
+    // ── Progress bar ──────────────────────────────────────────────────────
+    let bar_x = 30i32;
+    let bar_y = 230i32;
+    let bar_w = 420i32;
+    let bar_h = 60i32;
+
+    // Outer border
+    draw_hollow_rect_mut(&mut img, Rect::at(bar_x, bar_y).of_size(bar_w as u32, bar_h as u32), SURFACE0);
+
+    // Fill
+    let inner_w = ((bar_w - 4) as f64 * frac) as i32;
+    if inner_w > 0 {
+        draw_filled_rect_mut(&mut img,
+            Rect::at(bar_x + 2, bar_y + 2).of_size(inner_w.max(0) as u32, (bar_h - 4) as u32),
+            color);
+    }
+
+    // Percentage text inside bar
+    let inside_pct = format!("{:.0}%", pct);
+    let iw = text_width(&bold, PxScale::from(28.0), &inside_pct);
+    let text_color = if frac > 0.5 { BG } else { color };
+    draw_text_mut(&mut img, text_color,
+        (bar_x + (bar_w - iw) / 2).max(0), bar_y + 16, PxScale::from(28.0), &bold, &inside_pct);
+
+    // ── ETA ───────────────────────────────────────────────────────────────
+    let now_unix = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+
+    let eta_y = bar_y + bar_h + 18;
+    if state.started_at > 0 && frac > 0.01 && frac < 1.0 {
+        let elapsed = now_unix.saturating_sub(state.started_at);
+        let total_est = (elapsed as f64 / frac) as u64;
+        let remaining = total_est.saturating_sub(elapsed);
+        let eta_str = if remaining > 3600 {
+            format!("ETA ~{}h {}m", remaining / 3600, (remaining % 3600) / 60)
+        } else if remaining > 60 {
+            format!("ETA ~{}m {}s", remaining / 60, remaining % 60)
+        } else {
+            format!("ETA ~{}s", remaining)
+        };
+        draw_centered(&mut img, &mono, PxScale::from(18.0), eta_y, PEACH, &eta_str);
+    } else if frac >= 1.0 {
+        draw_centered(&mut img, &bold, PxScale::from(20.0), eta_y, GREEN, "✓ Complete!");
+    }
+
+    // ── Elapsed time ──────────────────────────────────────────────────────
+    if state.started_at > 0 {
+        let elapsed = now_unix.saturating_sub(state.started_at);
+        let elapsed_str = if elapsed > 3600 {
+            format!("Elapsed: {}h {}m", elapsed / 3600, (elapsed % 3600) / 60)
+        } else if elapsed > 60 {
+            format!("Elapsed: {}m {}s", elapsed / 60, elapsed % 60)
+        } else {
+            format!("Elapsed: {}s", elapsed)
+        };
+        draw_centered(&mut img, &mono, PxScale::from(15.0), eta_y + 26, OVERLAY0, &elapsed_str);
+    }
+
+    // ── Footer ────────────────────────────────────────────────────────────
+    draw_divider(&mut img, 452);
+    draw_centered(&mut img, &mono, PxScale::from(13.0), 457, OVERLAY0, "ttlcd progress");
+
+    DynamicImage::ImageRgb8(img)
+}
+
+#[cfg(test)]
+mod progress_tests {
+    use super::*;
+
+    #[test]
+    fn test_progress_default_size() {
+        let state = ProgressState::default();
+        let img = render_progress(&state);
+        assert_eq!(img.width(), 480);
+        assert_eq!(img.height(), 480);
+    }
+
+    #[test]
+    fn test_progress_half() {
+        let state = ProgressState {
+            label:    "Building release…".into(),
+            sublabel: "linking step".into(),
+            value:    50.0,
+            total:    100.0,
+            units:    "%".into(),
+            color:    NamedColor::Blue,
+            started_at: 1_700_000_000,
+        };
+        let img = render_progress(&state);
+        assert_eq!(img.width(), 480);
+        assert_eq!(img.height(), 480);
+    }
+
+    #[test]
+    fn test_progress_complete() {
+        let state = ProgressState {
+            value: 100.0, total: 100.0,
+            color: NamedColor::Green,
+            ..Default::default()
+        };
+        let img = render_progress(&state);
+        assert_eq!(img.width(), 480);
+    }
+}
