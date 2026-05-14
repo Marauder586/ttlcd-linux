@@ -5,6 +5,8 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>ttlcd — LCD Panel Control</title>
   <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='6' fill='%231e1e2e'/><rect x='4' y='6' width='24' height='18' rx='3' fill='%2389b4fa' opacity='.15'/><rect x='4' y='6' width='24' height='18' rx='3' fill='none' stroke='%2389b4fa' stroke-width='2'/><text x='16' y='19' font-size='11' font-family='monospace' fill='%2389b4fa' text-anchor='middle'>LCD</text></svg>">
+  <link rel="manifest" href="/manifest.json">
+  <meta name="theme-color" content="#89b4fa">
   <link rel="stylesheet" href="/static/app.css">
 </head>
 <body>
@@ -53,6 +55,7 @@
         <button class="mode-btn" data-mode="analog_clock" data-cat="clock"  title="Analog clock face with hour/minute/second hands, date and load average">⏱<span>Analog Clock</span></button>
         <button class="mode-btn" data-mode="led_clock" data-cat="clock"     title="7-segment LED-style clock — amber digits, flashing colons, date and load avg">🔢<span>LED Clock</span></button>
         <button class="mode-btn" data-mode="minimal_clock" data-cat="clock"   title="Ultra-minimal full-screen clock — large H:MM:SS + date + day-of-year progress">🕐<span>Minimal</span></button>
+        <button class="mode-btn" data-mode="binary_clock" data-cat="clock"    title="Binary clock — hours/minutes/seconds shown as lit/unlit cells in binary">🔲<span>Binary</span></button>
         <button class="mode-btn" data-mode="particle_clock" data-cat="clock"  title="Particle clock — drifting Catppuccin colour pixels behind large time display">✨<span>Particles</span></button>
         <button class="mode-btn" data-mode="clock_sysinfo" data-cat="clock" title="Clock + quick stats">🕐📊<span>Clock+Stats</span></button>
         <button class="mode-btn" data-mode="sysinfo" data-cat="system"       title="CPU · RAM · temp · uptime">📊<span>Sysinfo</span></button>
@@ -112,9 +115,20 @@
         <button class="mode-btn" data-mode="pulse" data-cat="system"             title="Ambient CPU pulse — concentric expanding rings; speed and color reflect CPU load">🔵<span>Pulse</span></button>
         <button class="mode-btn" data-mode="plasma" data-cat="fun"              title="Plasma screensaver — animated sine-wave colour field in Catppuccin palette">🌊<span>Plasma</span></button>
         <button class="mode-btn" data-mode="fireworks" data-cat="fun"           title="Fireworks screensaver — rockets launch and burst with Catppuccin particle trails">🎆<span>Fireworks</span></button>
+        <button class="mode-btn" data-mode="snake" data-cat="fun"              title="Self-playing snake game with greedy AI — Catppuccin colour scheme, 32×32 grid">🐍<span>Snake</span></button>
+        <button class="mode-btn" data-mode="cube_3d" data-cat="fun"            title="Spinning 3D wireframe cube — smooth rotation with Catppuccin edge colours">🎲<span>3D Cube</span></button>
+        <button class="mode-btn" data-mode="dvd_bounce" data-cat="fun"         title="DVD-style bouncing logo screensaver — colour changes on wall hit">📀<span>DVD</span></button>
+        <button class="mode-btn" data-mode="radar" data-cat="system"           title="CPU radar — rotating sweep with per-core load blips">📡<span>Radar</span></button>
+        <button class="mode-btn" data-mode="oscilloscope" data-cat="system"   title="Oscilloscope — CPU usage history as a phosphor-green waveform">〰<span>Oscilloscope</span></button>
+        <button class="mode-btn" data-mode="net_heatmap" data-cat="network"    title="Network heatmap — 60-sample Rx/Tx bar history coloured by throughput">📶<span>Net Heatmap</span></button>
+        <button class="mode-btn" data-mode="lissajous" data-cat="fun"         title="Lissajous curves screensaver — parametric curves cycling through frequency ratios">🌀<span>Lissajous</span></button>
+        <button class="mode-btn" data-mode="pong" data-cat="fun"               title="Self-playing Pong — AI paddles, score tracked, Catppuccin colours">🏓<span>Pong</span></button>
+        <button class="mode-btn" data-mode="neon_clock" data-cat="clock"        title="Neon-glow clock — colour-cycling phosphor glow on H:MM:SS with seconds arc">🌈<span>Neon Clock</span></button>
+        <button class="mode-btn" data-mode="word_clock" data-cat="clock"         title="Word clock — time displayed as English words in large type">💬<span>Word Clock</span></button>
         <button class="mode-btn" data-mode="idle" data-cat="other"              title="Keepalive — no display update">💤<span>Idle</span></button>
       </div>
       <p id="mode-filter-count" style="font-size:0.78rem;color:var(--overlay0);margin:0.3rem 0 0"></p>
+      <div class="recent-modes-row"><span class="recent-modes-label">Recent:</span><div id="recent-modes-bar" class="recent-modes-bar"></div></div>
     </section>
 
     <!-- ── Auto-rotation ─────────────────────────────────────────── -->
@@ -339,7 +353,13 @@
         </a>
         <button id="mjpeg-toggle-btn" class="btn-link" title="Toggle between JPEG polling and embedded MJPEG stream">📺 MJPEG</button>
         <a href="/api/stream" target="_blank" class="btn-link" title="Open MJPEG stream in new tab">↗</a>
+        <button id="fullscreen-preview-btn" class="btn-link" title="View panel in fullscreen overlay (press Escape to exit)">⛶ Full</button>
         <button id="freeze-btn" class="btn-link" title="Freeze / unfreeze display updates">❄ Freeze</button>
+      </div>
+      <!-- Fullscreen overlay for panel preview -->
+      <div id="fullscreen-overlay" style="display:none;position:fixed;inset:0;z-index:9000;background:rgba(0,0,0,0.9);display:none;align-items:center;justify-content:center;cursor:pointer" title="Click or press Escape to close">
+        <img id="fullscreen-img" src="" alt="Panel fullscreen" style="max-width:90vmin;max-height:90vmin;image-rendering:pixelated;border-radius:8px;box-shadow:0 0 40px rgba(0,0,0,0.8)">
+        <div style="position:absolute;top:1rem;right:1.5rem;color:#fff;font-size:1.5rem;cursor:pointer" id="fullscreen-close">✕</div>
       </div>
     </section>
 
@@ -421,6 +441,24 @@
         </div>
       </div>
     </section>
+
+    <!-- ── Flash Message ─────────────────────────────────────────────────────── -->
+    <details class="card" id="flash-section">
+      <summary><h2 style="display:inline;margin:0">⚡ Flash Message</h2></summary>
+      <p class="card-hint">Show a temporary full-screen message on the panel for a set duration, then return to the current mode.</p>
+      <div class="form-grid">
+        <label for="flash-text">Message</label>
+        <textarea id="flash-text" rows="3" placeholder="Build complete!    </section>#10;Deploy succeeded." style="resize:vertical;font-size:0.9rem;padding:0.3rem;background:var(--surface0);color:var(--text);border:1px solid var(--surface2);border-radius:6px"></textarea>
+        <label for="flash-duration">Duration (seconds)</label>
+        <input type="number" id="flash-duration" value="10" min="1" max="300" style="width:80px">
+        <label for="flash-color">Colour</label>
+        <input type="color" id="flash-color" value="#89b4fa" style="width:60px;height:2rem">
+      </div>
+      <div style="margin-top:0.6rem">
+        <button id="flash-send-btn" class="primary">⚡ Flash Now</button>
+        <span id="flash-status" style="margin-left:0.5rem;font-size:0.85rem"></span>
+      </div>
+    </details>
 
     <!-- ── Panel settings ────────────────────────────────────────── -->
     <section class="card">
@@ -706,6 +744,15 @@
             <option value="plasma">🌊 Plasma</option>
             <option value="starfield">✨ Starfield</option>
             <option value="fireworks">🎆 Fireworks</option>
+            <option value="snake">🐍 Snake</option>
+            <option value="cube_3d">🎲 3D Cube</option>
+            <option value="dvd_bounce">📀 DVD Bounce</option>
+            <option value="radar">📡 CPU Radar</option>
+            <option value="oscilloscope">〰 Oscilloscope</option>
+            <option value="lissajous">🌀 Lissajous</option>
+            <option value="pong">🏓 Pong</option>
+            <option value="neon_clock">🌈 Neon Clock</option>
+            <option value="word_clock">💬 Word Clock</option>
             <option value="game_of_life">🧫 Game of Life</option>
             <option value="bounce_ball">⚽ Bounce Ball</option>
             <option value="analog_clock">⏱ Analog Clock</option>

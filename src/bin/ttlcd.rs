@@ -85,6 +85,18 @@ use ttlcd::{
         render_pulse,
         render_minimal_clock,
         render_particle_clock,
+        render_snake,
+        render_cube_3d,
+        render_dvd_bounce,
+        render_binary_clock,
+        render_radar,
+        render_oscilloscope,
+        render_lissajous,
+        render_pong,
+        render_flash_message,
+        render_neon_clock,
+        render_net_heatmap,
+        render_word_clock,
         read_docker_containers,
         read_user_sessions,
         HttpMonitorResult,
@@ -803,6 +815,17 @@ enum DisplayMode {
     Pulse,
     MinimalClock,
     ParticleClock,
+    Snake,
+    Cube3d,
+    DvdBounce,
+    BinaryClock,
+    Radar,
+    Oscilloscope,
+    Lissajous,
+    Pong,
+    NeonClock,
+    NetHeatmap,
+    WordClock,
     Idle,
     CustomImage,
     CustomText,
@@ -812,7 +835,7 @@ enum DisplayMode {
 impl DisplayMode {
     const ALL_NAMES: &'static [&'static str] = &[
         "clock", "big_clock", "clock_sysinfo", "sysinfo", "cpu_detail",
-        "network", "disk_usage", "process_top", "temperature", "memory_detail", "countdown", "cpu_graph", "net_graph", "recent_alerts", "process_memory", "disk_io", "calendar", "stopwatch", "metrics", "weather", "notes", "qr_code", "pomodoro", "battery", "world_clock", "ticker", "http_status", "shell_cmd", "ping_monitor", "dashboard", "log_tail", "cpu_freq", "hostname_ip", "rss_feed", "service_status", "net_connections", "uptime_fancy", "os_info", "docker_status", "logged_in_users", "load_graph", "mem_graph", "progress", "matrix_rain", "temp_graph", "disk_io_graph", "graphs_overview", "analog_clock", "ping_graph", "status_overview", "game_of_life", "led_clock", "bounce_ball", "net_speed_graph", "cpu_core_bars", "speedometer_gauge", "disk_pie", "thermal_dashboard", "plasma", "fireworks", "cpu_heatmap", "starfield", "pulse", "minimal_clock", "particle_clock", "idle",
+        "network", "disk_usage", "process_top", "temperature", "memory_detail", "countdown", "cpu_graph", "net_graph", "recent_alerts", "process_memory", "disk_io", "calendar", "stopwatch", "metrics", "weather", "notes", "qr_code", "pomodoro", "battery", "world_clock", "ticker", "http_status", "shell_cmd", "ping_monitor", "dashboard", "log_tail", "cpu_freq", "hostname_ip", "rss_feed", "service_status", "net_connections", "uptime_fancy", "os_info", "docker_status", "logged_in_users", "load_graph", "mem_graph", "progress", "matrix_rain", "temp_graph", "disk_io_graph", "graphs_overview", "analog_clock", "ping_graph", "status_overview", "game_of_life", "led_clock", "bounce_ball", "net_speed_graph", "cpu_core_bars", "speedometer_gauge", "disk_pie", "thermal_dashboard", "plasma", "fireworks", "cpu_heatmap", "starfield", "pulse", "minimal_clock", "particle_clock", "snake", "cube_3d", "dvd_bounce", "binary_clock", "radar", "oscilloscope", "lissajous", "pong", "neon_clock", "net_heatmap", "word_clock", "idle",
     ];
 
     fn from_str_name(s: &str) -> Option<Self> {
@@ -879,6 +902,17 @@ impl DisplayMode {
             "pulse"               => Some(DisplayMode::Pulse),
             "minimal_clock"       => Some(DisplayMode::MinimalClock),
             "particle_clock"      => Some(DisplayMode::ParticleClock),
+            "snake"               => Some(DisplayMode::Snake),
+            "cube_3d"             => Some(DisplayMode::Cube3d),
+            "dvd_bounce"          => Some(DisplayMode::DvdBounce),
+            "binary_clock"        => Some(DisplayMode::BinaryClock),
+            "radar"               => Some(DisplayMode::Radar),
+            "oscilloscope"        => Some(DisplayMode::Oscilloscope),
+            "lissajous"           => Some(DisplayMode::Lissajous),
+            "pong"                => Some(DisplayMode::Pong),
+            "neon_clock"          => Some(DisplayMode::NeonClock),
+            "net_heatmap"         => Some(DisplayMode::NetHeatmap),
+            "word_clock"          => Some(DisplayMode::WordClock),
             "idle"             => Some(DisplayMode::Idle),
             "custom_text"   => Some(DisplayMode::CustomText),
             "slideshow"     => Some(DisplayMode::Slideshow),
@@ -953,6 +987,17 @@ impl DisplayMode {
     DisplayMode::Pulse         => "pulse",
     DisplayMode::MinimalClock  => "minimal_clock",
     DisplayMode::ParticleClock => "particle_clock",
+    DisplayMode::Snake         => "snake",
+    DisplayMode::Cube3d        => "cube_3d",
+    DisplayMode::DvdBounce     => "dvd_bounce",
+    DisplayMode::BinaryClock   => "binary_clock",
+    DisplayMode::Radar         => "radar",
+    DisplayMode::Oscilloscope  => "oscilloscope",
+    DisplayMode::Lissajous     => "lissajous",
+    DisplayMode::Pong          => "pong",
+    DisplayMode::NeonClock     => "neon_clock",
+    DisplayMode::NetHeatmap    => "net_heatmap",
+    DisplayMode::WordClock     => "word_clock",
             DisplayMode::Idle           => "idle",
             DisplayMode::CustomImage  => "image",
             DisplayMode::CustomText   => "custom_text",
@@ -1201,6 +1246,17 @@ struct DaemonState {
     screensaver_active: Arc<Mutex<bool>>,
     /// True while the USB panel is believed to be connected (False after send errors).
     panel_connected: Arc<Mutex<bool>>,
+    /// Flash message (temporary override) set by /api/flash.
+    flash_message: Arc<Mutex<Option<FlashMessageState>>>,
+}
+
+
+/// Temporary flash message shown instead of the current display mode.
+#[derive(Clone, Debug)]
+struct FlashMessageState {
+    text:  String,
+    color: String,
+    expires_at: std::time::Instant,
 }
 
 /// A single entry in the display-mode schedule.
@@ -1660,6 +1716,7 @@ async fn run_daemon(
         screensaver_mode_name:    Arc::new(Mutex::new("matrix_rain".to_string())),
         screensaver_active:       Arc::new(Mutex::new(false)),
         panel_connected:          Arc::new(Mutex::new(!headless)),
+        flash_message:            Arc::new(Mutex::new(None)),
     };
 
     let panel: Arc<Mutex<Option<Panel>>> = if headless {
@@ -1976,6 +2033,7 @@ async fn run_daemon(
             .route("/api/panel/info",       web::get().to(api_panel_info))
             .route("/api/panel/reconnect", web::post().to(api_panel_reconnect))
             .route("/api/usb/devices",    web::get().to(api_usb_devices))
+            .route("/api/flash",          web::post().to(api_flash_message))
             // Large text banner (POST to display, GET to fetch last banner)
             .route("/api/banner",         web::post().to(api_banner))
             // Modes with descriptions
@@ -2122,6 +2180,7 @@ async fn run_daemon(
             .route("/",                   web::get().to(web_ui_index))
             .route("/static/app.css",     web::get().to(web_ui_css))
             .route("/static/app.js",      web::get().to(web_ui_js))
+            .route("/manifest.json",      web::get().to(web_ui_manifest))
     })
     .bind((bind.as_str(), port))?
     .run();
@@ -2245,6 +2304,26 @@ fn display_loop(panel: Arc<Mutex<Option<Panel>>>, state: DaemonState) {
                 return Ok(());
             }
 
+            // ── Flash message override ────────────────────────────────────────────
+            {
+                let maybe_flash = state.flash_message.lock().unwrap().clone();
+                if let Some(ref fm) = maybe_flash {
+                    if std::time::Instant::now() < fm.expires_at {
+                        let img  = render_flash_message(&fm.text, &fm.color);
+                        let img  = apply_rotation(img, rotate_deg);
+                        let img  = apply_brightness(img, *state.dim_factor.lock().unwrap());
+                        let jpeg = encode_for_panel(&img, quality)?;
+                        let jpeg = store_frame(&state, jpeg);
+                        let mut g = panel.lock().unwrap();
+                        if let Some(p) = g.as_mut() { p.send_jpeg(&jpeg)?; }
+                        thread::sleep(Duration::from_secs(1));
+                        return Ok(());
+                    } else {
+                        // Expired — clear it
+                        *state.flash_message.lock().unwrap() = None;
+                    }
+                }
+            }
             match mode {
                 DisplayMode::Idle => {
                     let mut g = panel.lock().unwrap();
@@ -2556,6 +2635,17 @@ fn display_loop(panel: Arc<Mutex<Option<Panel>>>, state: DaemonState) {
                 DisplayMode::Pulse         => (render_pulse(), 0),
                 DisplayMode::MinimalClock  => (render_minimal_clock(), 1),
                 DisplayMode::ParticleClock => (render_particle_clock(), 0),
+                DisplayMode::Snake         => (render_snake(), 0),
+                DisplayMode::Cube3d        => (render_cube_3d(), 0),
+                DisplayMode::DvdBounce     => (render_dvd_bounce(), 0),
+                DisplayMode::BinaryClock   => (render_binary_clock(), 1),
+                DisplayMode::Radar         => (render_radar(), 0),
+                DisplayMode::Oscilloscope  => (render_oscilloscope(), 0),
+                DisplayMode::Lissajous     => (render_lissajous(), 0),
+                DisplayMode::Pong          => (render_pong(), 0),
+                DisplayMode::NeonClock     => (render_neon_clock(), 1),
+                DisplayMode::NetHeatmap    => (render_net_heatmap(), 2),
+                DisplayMode::WordClock     => (render_word_clock(), 1),
                 DisplayMode::MatrixRain => (render_matrix_rain(), 0),
                 DisplayMode::Idle
                 | DisplayMode::CustomImage
@@ -3980,6 +4070,17 @@ async fn api_modes_list() -> impl Responder {
         ModeInfo { name: "pulse",           description: "Ambient CPU pulse — concentric expanding rings, speed and color reflect CPU load" },
         ModeInfo { name: "minimal_clock",   description: "Ultra-minimal full-screen clock: large time + date, day-of-year progress bar" },
         ModeInfo { name: "particle_clock",  description: "Ambient particle clock — drifting Catppuccin pixels behind large time display" },
+        ModeInfo { name: "snake",           description: "Self-playing snake game with greedy AI — Catppuccin colour scheme" },
+        ModeInfo { name: "cube_3d",         description: "Spinning 3D wireframe cube — smooth rotation with Catppuccin edge colours" },
+        ModeInfo { name: "dvd_bounce",      description: "DVD-style bouncing logo screensaver — colour changes on wall hit" },
+        ModeInfo { name: "binary_clock",    description: "Binary clock — hours/minutes/seconds shown as lit/unlit cells in binary" },
+        ModeInfo { name: "radar",           description: "CPU radar — rotating sweep with per-core load blips" },
+        ModeInfo { name: "oscilloscope",    description: "Oscilloscope — CPU usage history as a phosphor-green waveform" },
+        ModeInfo { name: "lissajous",       description: "Lissajous curves screensaver — parametric curves cycling through frequency ratios" },
+        ModeInfo { name: "pong",            description: "Self-playing Pong with AI paddles — Catppuccin colours, scores tracked" },
+        ModeInfo { name: "neon_clock",      description: "Neon-glow clock — colour-cycling phosphor glow on H:MM:SS with seconds arc" },
+        ModeInfo { name: "net_heatmap",     description: "Network heatmap — 60-sample Rx/Tx bar history coloured by throughput" },
+        ModeInfo { name: "word_clock",      description: "Word clock — displays time as English words in large type" },
         ModeInfo { name: "idle",           description: "Keepalive — no display update, prevents blank" },
     ];
     HttpResponse::Ok().json(modes)
@@ -6010,6 +6111,17 @@ async fn api_status_badge(state: web::Data<DaemonState>) -> impl Responder {
         "pulse"                                => "#cba6f7",  // mauve
         "minimal_clock"                        => "#cdd6f4",  // text
         "particle_clock"                       => "#b4befe",  // lavender
+        "snake"                                => "#a6e3a1",  // green
+        "cube_3d"                              => "#89b4fa",  // blue
+        "dvd_bounce"                           => "#cba6f7",  // mauve
+        "binary_clock"                         => "#89dceb",  // sky
+        "radar"                                => "#a6e3a1",  // green
+        "oscilloscope"                         => "#a6e3a1",  // green
+        "lissajous"                            => "#cba6f7",  // mauve
+        "pong"                                 => "#f9e2af",  // yellow
+        "neon_clock"                           => "#cba6f7",  // mauve
+        "net_heatmap"                          => "#89b4fa",  // blue
+        "word_clock"                           => "#cdd6f4",  // text
         "status_overview"                      => "#89dceb",  // sky
         "analog_clock"                         => "#cba6f7",  // mauve
         "net_speed_graph"                      => "#a6e3a1",  // green
@@ -6202,6 +6314,40 @@ async fn api_usb_devices() -> impl Responder {
     }))
 }
 
+// ─── POST /api/flash ─────────────────────────────────────────────────────────
+
+#[derive(serde::Deserialize)]
+struct FlashRequest {
+    text:     String,
+    #[serde(default = "default_flash_duration")]
+    duration: u64,
+    #[serde(default = "default_flash_color")]
+    color:    String,
+}
+fn default_flash_duration() -> u64 { 10 }
+fn default_flash_color()    -> String { "#89b4fa".into() }
+
+async fn api_flash_message(
+    state: web::Data<DaemonState>,
+    body:  web::Json<FlashRequest>,
+) -> impl Responder {
+    let expires_at = std::time::Instant::now()
+        + std::time::Duration::from_secs(body.duration.max(1).min(300));
+    let fm = FlashMessageState {
+        text:       body.text.clone(),
+        color:      body.color.clone(),
+        expires_at,
+    };
+    *state.flash_message.lock().unwrap() = Some(fm);
+    push_history(&state, HistoryKind::System, format!("Flash message: \"{}\": {}s", body.text, body.duration));
+    HttpResponse::Ok().json(serde_json::json!({
+        "ok": true,
+        "text": body.text,
+        "duration": body.duration,
+        "color": body.color,
+    }))
+}
+
 // ─── Banner endpoint ────────────────────────────────────────────────────────
 
 #[derive(Deserialize)]
@@ -6343,6 +6489,9 @@ async fn web_ui_css() -> HttpResponse {
 }
 async fn web_ui_js() -> HttpResponse {
     HttpResponse::Ok().content_type("application/javascript").body(include_str!("../../src/web/app.js"))
+}
+async fn web_ui_manifest() -> HttpResponse {
+    HttpResponse::Ok().content_type("application/manifest+json").body(include_str!("../../src/web/manifest.json"))
 }
 
 // ─── Gradient test pattern ────────────────────────────────────────────────────
@@ -9080,8 +9229,17 @@ async fn api_render_mode_preview(
             DisplayMode::CpuHeatmap    => render_cpu_heatmap(),
             DisplayMode::Starfield     => render_starfield(),
             DisplayMode::Pulse         => render_pulse(),
-            DisplayMode::MinimalClock  => render_minimal_clock(),
-            DisplayMode::ParticleClock => render_particle_clock(),
+            DisplayMode::NetHeatmap    => render_net_heatmap(),
+            DisplayMode::WordClock     => render_word_clock(),
+            DisplayMode::Pong          => render_pong(),
+            DisplayMode::NeonClock     => render_neon_clock(),
+            DisplayMode::Snake         => render_snake(),
+            DisplayMode::Cube3d        => render_cube_3d(),
+            DisplayMode::DvdBounce     => render_dvd_bounce(),
+            DisplayMode::BinaryClock   => render_binary_clock(),
+            DisplayMode::Lissajous     => render_lissajous(),
+            DisplayMode::Radar         => render_radar(),
+            DisplayMode::Oscilloscope  => render_oscilloscope(),
             DisplayMode::MatrixRain       => render_matrix_rain(),
             DisplayMode::Progress     => {
                 let ps = state_clone.progress_state.lock().unwrap().clone();

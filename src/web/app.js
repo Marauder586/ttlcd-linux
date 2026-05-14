@@ -4121,6 +4121,44 @@ async function fetchScreensaverStatus() {
   });
 })();
 
+// ─── Fullscreen panel preview ────────────────────────────────────────────────
+(function initFullscreenPreview() {
+  const overlay   = document.getElementById('fullscreen-overlay');
+  const fsImg     = document.getElementById('fullscreen-img');
+  const fsBtn     = document.getElementById('fullscreen-preview-btn');
+  const closeBtn  = document.getElementById('fullscreen-close');
+  const panelImg  = document.getElementById('panel-preview-img');
+  if (!overlay || !fsBtn || !panelImg) return;
+
+  let fsTimer = null;
+
+  function showFullscreen() {
+    if (!overlay) return;
+    overlay.style.display = 'flex';
+    // Set initial image
+    fsImg.src = panelImg.src;
+    // Auto-refresh at same rate as main preview
+    fsTimer = setInterval(() => {
+      fsImg.src = `/api/preview?_=${Date.now()}`;
+    }, 1000);
+    document.addEventListener('keydown', onEscKey, { once: true });
+  }
+
+  function hideFullscreen() {
+    if (!overlay) return;
+    overlay.style.display = 'none';
+    if (fsTimer) { clearInterval(fsTimer); fsTimer = null; }
+  }
+
+  function onEscKey(e) {
+    if (e.key === 'Escape') hideFullscreen();
+  }
+
+  fsBtn.addEventListener('click', showFullscreen);
+  if (closeBtn) closeBtn.addEventListener('click', e => { e.stopPropagation(); hideFullscreen(); });
+  overlay.addEventListener('click', hideFullscreen);
+})();
+
 // ─── Random mode button ────────────────────────────────────────────────────────
 (function initRandomModeBtn() {
   const btn = document.getElementById('random-mode-btn');
@@ -4487,3 +4525,228 @@ log('ttlcd web UI connected');
   const h2 = histSection.querySelector('h2');
   if (h2) h2.appendChild(exportBtn);
 })();
+
+// ─── Favorites System ─────────────────────────────────────────────────────────
+(function () {
+  const STORAGE_KEY = 'ttlcd_favorites';
+
+  function loadFavorites() {
+    try { return new Set(JSON.parse(localStorage.getItem(STORAGE_KEY) || '[]')); }
+    catch { return new Set(); }
+  }
+
+  function saveFavorites(favSet) {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify([...favSet]));
+  }
+
+  let favorites = loadFavorites();
+
+  // Add a "⭐ Favorites" category button after the "All" button
+  const catBar = document.getElementById('mode-categories');
+  if (catBar) {
+    const favBtn = document.createElement('button');
+    favBtn.className = 'cat-btn';
+    favBtn.dataset.cat = 'favorites';
+    favBtn.textContent = '⭐ Favorites';
+    catBar.insertBefore(favBtn, catBar.children[1]);
+  }
+
+  function applyFavoriteStar(btn) {
+    const mode = btn.dataset.mode;
+    if (!mode) return;
+    // Remove old star if present
+    const old = btn.querySelector('.fav-star');
+    if (old) old.remove();
+    // Add star span
+    const star = document.createElement('span');
+    star.className = 'fav-star';
+    star.textContent = favorites.has(mode) ? '★' : '☆';
+    star.title = favorites.has(mode) ? 'Remove from favorites' : 'Add to favorites';
+    star.addEventListener('click', e => {
+      e.stopPropagation();
+      if (favorites.has(mode)) {
+        favorites.delete(mode);
+      } else {
+        favorites.add(mode);
+      }
+      saveFavorites(favorites);
+      applyFavoriteStar(btn);
+      // If currently in favorites filter, re-apply
+      const activeCat = document.querySelector('.cat-btn.active');
+      if (activeCat && activeCat.dataset.cat === 'favorites') {
+        applyFavoritesFilter();
+      }
+    });
+    btn.appendChild(star);
+  }
+
+  function applyFavoritesFilter() {
+    const btns = document.querySelectorAll('#mode-grid .mode-btn');
+    btns.forEach(btn => {
+      const inFav = favorites.has(btn.dataset.mode || '');
+      btn.classList.toggle('hidden-by-filter', !inFav);
+    });
+    const countEl = document.getElementById('mode-filter-count');
+    if (countEl) countEl.textContent = `${favorites.size} favorite${favorites.size !== 1 ? 's' : ''}`;
+  }
+
+  // Decorate all mode buttons with star
+  function decorateAll() {
+    document.querySelectorAll('#mode-grid .mode-btn').forEach(applyFavoriteStar);
+  }
+  decorateAll();
+
+  // Intercept cat-btn click for "favorites"
+  document.querySelectorAll('.cat-btn').forEach(btn => {
+    if (btn.dataset.cat !== 'favorites') return;
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('.cat-btn').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      applyFavoritesFilter();
+    });
+  });
+
+  // After any dynamic injection of mode buttons, re-decorate
+  const grid = document.getElementById('mode-grid');
+  if (grid) {
+    new MutationObserver(() => decorateAll()).observe(grid, { childList: true, subtree: false });
+  }
+})();
+
+
+// ─── Recent Modes Tracker ─────────────────────────────────────────────────────
+(function () {
+  const STORAGE_KEY = 'ttlcd_recent_modes';
+  const MAX_RECENT  = 8;
+
+  function loadRecent() {
+    try { return JSON.parse(localStorage.getItem(STORAGE_KEY) || '[]'); }
+    catch { return []; }
+  }
+
+  function saveRecent(arr) {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(arr.slice(0, MAX_RECENT)));
+  }
+
+  function pushRecent(mode) {
+    const arr = loadRecent().filter(m => m !== mode);
+    arr.unshift(mode);
+    saveRecent(arr);
+    renderRecentBar();
+  }
+
+  function renderRecentBar() {
+    const bar = document.getElementById('recent-modes-bar');
+    if (!bar) return;
+    const recent = loadRecent();
+    bar.innerHTML = '';
+    if (recent.length === 0) {
+      bar.textContent = 'No recent modes yet';
+      return;
+    }
+    recent.forEach(mode => {
+      const chip = document.createElement('button');
+      chip.className = 'recent-chip';
+      chip.textContent = mode.replace(/_/g, ' ');
+      chip.title = `Switch to ${mode}`;
+      chip.addEventListener('click', () => {
+        apiJson('POST', '/api/mode', { mode }).then(() => fetchStatus()).catch(() => {});
+        pushRecent(mode);
+      });
+      bar.appendChild(chip);
+    });
+  }
+
+  // Intercept mode button clicks to record recent mode
+  document.addEventListener('click', e => {
+    const btn = e.target.closest('.mode-btn');
+    if (btn && btn.dataset.mode) {
+      pushRecent(btn.dataset.mode);
+    }
+  });
+
+  renderRecentBar();
+})();
+
+
+// ─── Flash Message ────────────────────────────────────────────────────────────
+(function () {
+  const btn    = document.getElementById('flash-send-btn');
+  const txtEl  = document.getElementById('flash-text');
+  const durEl  = document.getElementById('flash-duration');
+  const colEl  = document.getElementById('flash-color');
+  const status = document.getElementById('flash-status');
+  if (!btn) return;
+
+  btn.addEventListener('click', async () => {
+    const text     = (txtEl?.value || '').trim();
+    const duration = parseInt(durEl?.value || '10', 10);
+    const color    = colEl?.value || '#89b4fa';
+    if (!text) { if (status) { status.textContent = 'Enter a message first'; status.style.color = 'var(--red)'; } return; }
+
+    btn.disabled = true;
+    if (status) { status.textContent = 'Sending…'; status.style.color = 'var(--overlay0)'; }
+    try {
+      await apiJson('POST', '/api/flash', { text, duration, color });
+      if (status) { status.textContent = `✓ Showing for ${duration}s`; status.style.color = 'var(--green)'; }
+    } catch (e) {
+      if (status) { status.textContent = 'Error: ' + e.message; status.style.color = 'var(--red)'; }
+    } finally {
+      btn.disabled = false;
+      setTimeout(() => { if (status) status.textContent = ''; }, 4000);
+    }
+  });
+})();
+
+
+// ─── Keyboard Shortcuts Help Overlay ─────────────────────────────────────────
+(function () {
+  // Build overlay on first press of '?'
+  let overlayEl = null;
+
+  function buildOverlay() {
+    const el = document.createElement('div');
+    el.id = 'shortcuts-overlay';
+    el.innerHTML = `
+      <div class="shortcuts-card">
+        <div class="shortcuts-header">
+          <h2 style="margin:0">⌨ Keyboard Shortcuts</h2>
+          <button id="shortcuts-close-btn" class="icon-btn" title="Close">✕</button>
+        </div>
+        <table class="shortcuts-table">
+          <thead><tr><th>Key</th><th>Action</th></tr></thead>
+          <tbody>
+            <tr><td><kbd>/</kbd></td><td>Focus mode search</td></tr>
+            <tr><td><kbd>Esc</kbd></td><td>Clear search / close overlay</td></tr>
+            <tr><td><kbd>?</kbd></td><td>Toggle shortcuts overlay</td></tr>
+            <tr><td><kbd>F</kbd></td><td>Freeze / unfreeze display</td></tr>
+            <tr><td><kbd>Shift+R</kbd></td><td>Random mode</td></tr>
+            <tr><td><kbd>Shift+V</kbd></td><td>Speedometer gauge</td></tr>
+            <tr><td><kbd>Shift+P</kbd></td><td>Disk pie</td></tr>
+            <tr><td><kbd>Shift+H</kbd></td><td>Thermal dashboard</td></tr>
+            <tr><td><kbd>Space</kbd></td><td>Refresh preview</td></tr>
+          </tbody>
+        </table>
+      </div>
+    `;
+    el.addEventListener('click', e => { if (e.target === el) closeOverlay(); });
+    document.body.appendChild(el);
+    document.getElementById('shortcuts-close-btn')?.addEventListener('click', closeOverlay);
+    return el;
+  }
+
+  function openOverlay() {
+    if (!overlayEl) overlayEl = buildOverlay();
+    overlayEl.classList.add('visible');
+  }
+  function closeOverlay() {
+    overlayEl?.classList.remove('visible');
+  }
+
+  document.addEventListener('keydown', e => {
+    if (document.activeElement.tagName === 'INPUT' || document.activeElement.tagName === 'TEXTAREA') return;
+    if (e.key === '?') { e.preventDefault(); overlayEl?.classList.contains('visible') ? closeOverlay() : openOverlay(); }
+    if (e.key === 'Escape' && overlayEl?.classList.contains('visible')) closeOverlay();
+  });
+})();
+

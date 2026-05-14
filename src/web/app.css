@@ -1619,3 +1619,108 @@ button.btn-danger:hover   { opacity: 0.85; }
   vertical-align: middle;
   line-height: 1.4;
 }
+
+/* ── Favorite star ───────────────────────────────────────────────────── */
+.fav-star {
+  position: absolute;
+  top: 2px;
+  right: 3px;
+  font-size: 0.65rem;
+  line-height: 1;
+  color: var(--overlay0);
+  cursor: pointer;
+  z-index: 2;
+  transition: color 0.15s;
+}
+.fav-star:hover { color: var(--yellow); }
+.mode-btn .fav-star { opacity: 0.5; }
+.mode-btn:hover .fav-star,
+.mode-btn.active .fav-star { opacity: 1; }
+
+/* ── Recent modes bar ───────────────────────────────────────────────── */
+.recent-modes-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-top: 0.4rem;
+  flex-wrap: wrap;
+}
+.recent-modes-label {
+  font-size: 0.75rem;
+  color: var(--overlay0);
+  white-space: nowrap;
+}
+.recent-modes-bar {
+  display: flex;
+  gap: 0.3rem;
+  flex-wrap: wrap;
+}
+.recent-chip {
+  font-size: 0.72rem;
+  padding: 1px 7px;
+  border-radius: 12px;
+  border: 1px solid var(--surface2);
+  background: var(--surface0);
+  color: var(--subtext1);
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+  white-space: nowrap;
+}
+.recent-chip:hover {
+  background: var(--blue);
+  color: var(--base);
+  border-color: var(--blue);
+}
+
+/* ── Keyboard shortcuts overlay ──────────────────────────────────────── */
+#shortcuts-overlay {
+  display: none;
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.6);
+  z-index: 9999;
+  align-items: center;
+  justify-content: center;
+}
+#shortcuts-overlay.visible {
+  display: flex;
+}
+.shortcuts-card {
+  background: var(--mantle);
+  border: 1px solid var(--surface2);
+  border-radius: 12px;
+  padding: 1.5rem 2rem;
+  min-width: 340px;
+  max-width: 480px;
+  box-shadow: 0 8px 32px rgba(0,0,0,0.6);
+}
+.shortcuts-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 1rem;
+}
+.shortcuts-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.88rem;
+}
+.shortcuts-table th {
+  text-align: left;
+  padding: 0.3rem 0.5rem;
+  color: var(--subtext0);
+  border-bottom: 1px solid var(--surface1);
+}
+.shortcuts-table td {
+  padding: 0.3rem 0.5rem;
+  color: var(--text);
+}
+.shortcuts-table kbd {
+  display: inline-block;
+  padding: 1px 5px;
+  background: var(--surface1);
+  border: 1px solid var(--surface2);
+  border-radius: 4px;
+  font-family: var(--font-mono, monospace);
+  font-size: 0.82rem;
+}

@@ -8825,6 +8825,199 @@ pub fn render_particle_clock() -> DynamicImage {
 
 
 
+// ─── Snake Screensaver ────────────────────────────────────────────────────────
+
+#[derive(Clone, PartialEq)]
+enum SnakeDir { Up, Down, Left, Right }
+
+struct SnakeState {
+    // Snake body as (col, row) grid positions; head = first element
+    body: std::collections::VecDeque<(i32, i32)>,
+    dir:  SnakeDir,
+    food: (i32, i32),
+    score: u32,
+    dead: bool,
+    tick: u64,
+}
+
+const SNAKE_COLS: i32 = 32;
+const SNAKE_ROWS: i32 = 32;
+
+static SNAKE_STATE: std::sync::OnceLock<std::sync::Mutex<SnakeState>> = std::sync::OnceLock::new();
+
+fn new_snake_state(seed: u64) -> SnakeState {
+    let lcg = |s: u64| s.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+    let mut s = lcg(seed);
+    // Snake starts in center heading right
+    let mut body = std::collections::VecDeque::new();
+    body.push_back((SNAKE_COLS/2, SNAKE_ROWS/2));
+    body.push_back((SNAKE_COLS/2 - 1, SNAKE_ROWS/2));
+    body.push_back((SNAKE_COLS/2 - 2, SNAKE_ROWS/2));
+    // Place food randomly, not on snake
+    s = lcg(s);
+    let fx = (s % SNAKE_COLS as u64) as i32;
+    s = lcg(s);
+    let fy = (s % SNAKE_ROWS as u64) as i32;
+    SnakeState { body, dir: SnakeDir::Right, food: (fx, fy), score: 0, dead: false, tick: 0 }
+}
+
+/// AI-controlled snake screensaver — automatic game with Catppuccin colours.
+pub fn render_snake() -> DynamicImage {
+    let tick_now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0);
+
+    let mut state = SNAKE_STATE.get_or_init(|| std::sync::Mutex::new(new_snake_state(tick_now)))
+        .lock().unwrap();
+
+    state.tick += 1;
+
+    let lcg = |s: u64| s.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+
+    if state.dead {
+        // Respawn after death
+        *state = new_snake_state(state.tick.wrapping_mul(7919));
+    }
+
+    // ── AI: simple greedy pathfinding towards food ────────────────────────
+    // Every 1 tick, decide direction. Try to move towards food, avoiding self.
+    let (hx, hy) = *state.body.front().unwrap();
+    let (fx, fy) = state.food;
+
+    // Candidate moves ordered by preference (closer to food first)
+    let mut candidates: Vec<SnakeDir> = Vec::new();
+    if fx > hx { candidates.push(SnakeDir::Right); }
+    if fx < hx { candidates.push(SnakeDir::Left); }
+    if fy > hy { candidates.push(SnakeDir::Down); }
+    if fy < hy { candidates.push(SnakeDir::Up); }
+    // Add remaining directions as fallback
+    for d in [SnakeDir::Right, SnakeDir::Left, SnakeDir::Down, SnakeDir::Up] {
+        if !candidates.contains(&d) { candidates.push(d); }
+    }
+
+    // Don't reverse
+    let forbidden = match state.dir {
+        SnakeDir::Up    => SnakeDir::Down,
+        SnakeDir::Down  => SnakeDir::Up,
+        SnakeDir::Left  => SnakeDir::Right,
+        SnakeDir::Right => SnakeDir::Left,
+    };
+    candidates.retain(|d| *d != forbidden);
+
+    // Pick first safe move (doesn't hit self or wall)
+    fn next_pos(hx: i32, hy: i32, d: &SnakeDir) -> (i32, i32) {
+        match d {
+            SnakeDir::Up    => (hx, hy - 1),
+            SnakeDir::Down  => (hx, hy + 1),
+            SnakeDir::Left  => (hx - 1, hy),
+            SnakeDir::Right => (hx + 1, hy),
+        }
+    }
+
+    let body_set: std::collections::HashSet<(i32, i32)> = state.body.iter().cloned().collect();
+    let chosen_dir = candidates.into_iter().find(|d| {
+        let (nx, ny) = next_pos(hx, hy, d);
+        nx >= 0 && ny >= 0 && nx < SNAKE_COLS && ny < SNAKE_ROWS && !body_set.contains(&(nx, ny))
+    });
+
+    if let Some(d) = chosen_dir {
+        state.dir = d;
+    }
+
+    // Move snake
+    let (nhx, nhy) = next_pos(hx, hy, &state.dir);
+    if nhx < 0 || nhy < 0 || nhx >= SNAKE_COLS || nhy >= SNAKE_ROWS
+        || state.body.contains(&(nhx, nhy))
+    {
+        state.dead = true;
+    } else {
+        state.body.push_front((nhx, nhy));
+        if (nhx, nhy) == state.food {
+            // Eat food — don't remove tail (snake grows)
+            state.score += 1;
+            // Place new food
+            let mut seed = state.tick.wrapping_mul(31337);
+            let body_set2: std::collections::HashSet<_> = state.body.iter().cloned().collect();
+            loop {
+                seed = lcg(seed);
+                let fx2 = (seed % SNAKE_COLS as u64) as i32;
+                seed = lcg(seed);
+                let fy2 = (seed % SNAKE_ROWS as u64) as i32;
+                if !body_set2.contains(&(fx2, fy2)) {
+                    state.food = (fx2, fy2);
+                    break;
+                }
+            }
+        } else {
+            state.body.pop_back();
+        }
+    }
+
+    // ── Render ──────────────────────────────────────────────────────────────
+    let font = font_bold();
+    let mut img = RgbImage::new(480, 480);
+    for p in img.pixels_mut() { *p = BG; }
+
+    let cell_w = 480 / SNAKE_COLS;
+    let cell_h = 480 / SNAKE_ROWS;
+
+    // Grid background
+    for row in 0..SNAKE_ROWS {
+        for col in 0..SNAKE_COLS {
+            if (row + col) % 2 == 0 {
+                let x = (col * cell_w) as u32;
+                let y = (row * cell_h) as u32;
+                let rect = imageproc::rect::Rect::at(x as i32, y as i32)
+                    .of_size(cell_w as u32, cell_h as u32);
+                imageproc::drawing::draw_filled_rect_mut(&mut img, rect, Rgb([20, 20, 33]));
+            }
+        }
+    }
+
+    // Draw food
+    {
+        let (fc, fr) = state.food;
+        let fx = fc * cell_w;
+        let fy = fr * cell_h;
+        let rect = imageproc::rect::Rect::at(fx + 2, fy + 2)
+            .of_size((cell_w - 4) as u32, (cell_h - 4) as u32);
+        imageproc::drawing::draw_filled_rect_mut(&mut img, rect, RED);
+    }
+
+    // Draw snake
+    for (i, &(sc, sr)) in state.body.iter().enumerate() {
+        let sx = sc * cell_w;
+        let sy = sr * cell_h;
+        let col = if i == 0 {
+            GREEN  // head
+        } else {
+            // Body fades from green to teal
+            let t = (i as f32 / state.body.len() as f32).min(1.0);
+            let r = (GREEN.0[0] as f32 * (1.0-t) + TEAL.0[0] as f32 * t) as u8;
+            let g = (GREEN.0[1] as f32 * (1.0-t) + TEAL.0[1] as f32 * t) as u8;
+            let b = (GREEN.0[2] as f32 * (1.0-t) + TEAL.0[2] as f32 * t) as u8;
+            Rgb([r, g, b])
+        };
+        let margin = if i == 0 { 0 } else { 1 };
+        let rect = imageproc::rect::Rect::at(sx + margin, sy + margin)
+            .of_size(((cell_w - margin * 2).max(1)) as u32, ((cell_h - margin * 2).max(1)) as u32);
+        imageproc::drawing::draw_filled_rect_mut(&mut img, rect, col);
+    }
+
+    // Score overlay
+    let score_str = format!("Snake  Score: {}", state.score);
+    let sw = text_width(&font, PxScale::from(14.0), &score_str);
+    // Semi-transparent background
+    let bg_rect = imageproc::rect::Rect::at(0, 0).of_size(sw as u32 + 8, 20);
+    imageproc::drawing::draw_filled_rect_mut(&mut img, bg_rect, Rgb([0, 0, 0]));
+    draw_text_mut(&mut img, GREEN, 4, 2, PxScale::from(14.0), &font, &score_str);
+
+    DynamicImage::ImageRgb8(img)
+}
+
+
+
 #[cfg(test)]
 mod bounce_ball_tests {
     use super::*;
@@ -8845,3 +9038,1297 @@ mod bounce_ball_tests {
         assert_eq!(img2.width(), 480);
     }
 }
+
+// ─── 3D Spinning Cube ────────────────────────────────────────────────────────
+
+static CUBE_TICK: std::sync::OnceLock<std::sync::Mutex<u64>> = std::sync::OnceLock::new();
+
+/// Project a 3D point through X/Y rotation matrices, then perspective-divide.
+fn project_cube_vertex(x: f64, y: f64, z: f64, rx: f64, ry: f64) -> (f64, f64) {
+    // Rotate around Y axis
+    let x1 = x * ry.cos() + z * ry.sin();
+    let y1 = y;
+    let z1 = -x * ry.sin() + z * ry.cos();
+    // Rotate around X axis
+    let x2 = x1;
+    let y2 = y1 * rx.cos() - z1 * rx.sin();
+    let z2 = y1 * rx.sin() + z1 * rx.cos();
+    // Perspective
+    let fov = 400.0_f64;
+    let dist = 4.0_f64;
+    let w = fov / (dist + z2);
+    (240.0 + x2 * w, 240.0 - y2 * w)
+}
+
+pub fn render_cube_3d() -> DynamicImage {
+    let tick = {
+        let t = CUBE_TICK.get_or_init(|| std::sync::Mutex::new(0));
+        let mut g = t.lock().unwrap();
+        let v = *g;
+        *g = g.wrapping_add(1);
+        v
+    };
+
+    use std::f64::consts::PI;
+
+    let ry = (tick as f64 * 0.018) % (2.0 * PI);
+    let rx = (tick as f64 * 0.011) % (2.0 * PI);
+
+    // 8 unit cube vertices, scaled to 1.4
+    let s = 1.4_f64;
+    let verts: [(f64,f64,f64); 8] = [
+        (-s,-s,-s), ( s,-s,-s), ( s, s,-s), (-s, s,-s),
+        (-s,-s, s), ( s,-s, s), ( s, s, s), (-s, s, s),
+    ];
+
+    // 12 edges (pairs of vertex indices)
+    let edges: [(usize,usize); 12] = [
+        (0,1),(1,2),(2,3),(3,0),   // back face
+        (4,5),(5,6),(6,7),(7,4),   // front face
+        (0,4),(1,5),(2,6),(3,7),   // connecting edges
+    ];
+
+    // Face sets for depth-based coloring (front-facing face indices)
+    let face_colors: [Rgb<u8>; 6] = [BLUE, MAUVE, TEAL, GREEN, PEACH, YELLOW];
+
+    let projected: Vec<(f64,f64)> = verts.iter()
+        .map(|&(x,y,z)| project_cube_vertex(x, y, z, rx, ry))
+        .collect();
+
+    let mut img = RgbImage::new(480, 480);
+    for p in img.pixels_mut() { *p = BG; }
+
+    // Draw subtle grid floor
+    for i in 0..=8i32 {
+        let t = i as f64 / 8.0;
+        let x1 = (40.0 + t * 400.0) as i32;
+        let x2 = (40.0 + t * 400.0) as i32;
+        let fade = Rgb([25u8, 25, 40]);
+        imageproc::drawing::draw_line_segment_mut(&mut img, (40.0, 380.0), (x1 as f32, 440.0), fade);
+        imageproc::drawing::draw_line_segment_mut(&mut img, (x2 as f32, 380.0), (440.0, 440.0), fade);
+    }
+
+    // Draw edges, colored by which face they belong to
+    let edge_colors: [Rgb<u8>; 12] = [
+        BLUE, BLUE, BLUE, BLUE,
+        TEAL, TEAL, TEAL, TEAL,
+        MAUVE, MAUVE, GREEN, GREEN,
+    ];
+
+    for (ei, &(a, b)) in edges.iter().enumerate() {
+        let (x0, y0) = projected[a];
+        let (x1, y1) = projected[b];
+        let col = edge_colors[ei];
+        // Draw thick line by drawing a few offset copies
+        for dx in -1i32..=1 {
+            for dy in -1i32..=1 {
+                if dx == 0 && dy == 0 { continue; }
+                imageproc::drawing::draw_line_segment_mut(
+                    &mut img,
+                    (x0 as f32 + dx as f32, y0 as f32 + dy as f32),
+                    (x1 as f32 + dx as f32, y1 as f32 + dy as f32),
+                    Rgb([col.0[0]/3, col.0[1]/3, col.0[2]/3]),
+                );
+            }
+        }
+        imageproc::drawing::draw_antialiased_line_segment_mut(
+            &mut img,
+            (x0 as i32, y0 as i32),
+            (x1 as i32, y1 as i32),
+            col,
+            interpolate,
+        );
+    }
+
+    // Vertex dots
+    for (i, &(px, py)) in projected.iter().enumerate() {
+        let col = face_colors[i % 6];
+        for dx in -2i32..=2 {
+            for dy in -2i32..=2 {
+                if (dx*dx + dy*dy) <= 4 {
+                    let ix = (px as i32 + dx).clamp(0, 479) as u32;
+                    let iy = (py as i32 + dy).clamp(0, 479) as u32;
+                    img.put_pixel(ix, iy, col);
+                }
+            }
+        }
+    }
+
+    let font = font_bold();
+    draw_text_mut(&mut img, OVERLAY0, 8, 458, PxScale::from(14.0), &font, "3D Cube");
+
+    DynamicImage::ImageRgb8(img)
+}
+
+
+// ─── DVD Bounce Screensaver ───────────────────────────────────────────────────
+
+struct DvdState {
+    x: f32,
+    y: f32,
+    vx: f32,
+    vy: f32,
+    color_idx: usize,
+    tick: u64,
+}
+
+static DVD_STATE: std::sync::OnceLock<std::sync::Mutex<DvdState>> = std::sync::OnceLock::new();
+
+pub fn render_dvd_bounce() -> DynamicImage {
+    const LABEL: &str = "ttlcd";
+    const FONT_SZ: f32 = 56.0;
+    // Approximate text dimensions
+    const TEXT_W: f32 = 170.0;
+    const TEXT_H: f32 = 56.0;
+
+    let palette: [Rgb<u8>; 6] = [BLUE, MAUVE, TEAL, GREEN, PEACH, YELLOW];
+
+    let state_lock = DVD_STATE.get_or_init(|| std::sync::Mutex::new(DvdState {
+        x: 40.0, y: 60.0, vx: 2.3, vy: 1.7, color_idx: 0, tick: 0,
+    }));
+
+    let mut state = state_lock.lock().unwrap();
+
+    // Step
+    state.x += state.vx;
+    state.y += state.vy;
+
+    let mut bounced = false;
+    if state.x < 10.0 || state.x + TEXT_W > 470.0 {
+        state.vx = -state.vx;
+        state.x = state.x.clamp(10.0, 470.0 - TEXT_W);
+        bounced = true;
+    }
+    if state.y < 10.0 || state.y + TEXT_H > 460.0 {
+        state.vy = -state.vy;
+        state.y = state.y.clamp(10.0, 460.0 - TEXT_H);
+        bounced = true;
+    }
+    if bounced {
+        state.color_idx = (state.color_idx + 1) % palette.len();
+    }
+    state.tick += 1;
+
+    let col = palette[state.color_idx];
+    let (tx, ty) = (state.x as i32, state.y as i32);
+
+    let mut img = RgbImage::new(480, 480);
+    for p in img.pixels_mut() { *p = BG; }
+
+    // Subtle scanlines
+    for row in (0u32..480).step_by(4) {
+        for col_x in 0u32..480 {
+            let p = img.get_pixel_mut(col_x, row);
+            p.0[0] = p.0[0].saturating_add(4);
+            p.0[1] = p.0[1].saturating_add(4);
+            p.0[2] = p.0[2].saturating_add(4);
+        }
+    }
+
+    // Glow shadow
+    let font = font_bold();
+    let glow = Rgb([col.0[0]/4, col.0[1]/4, col.0[2]/4]);
+    for offx in [-2i32, 0, 2] {
+        for offy in [-2i32, 0, 2] {
+            draw_text_mut(&mut img, glow, tx + offx, ty + offy, PxScale::from(FONT_SZ), &font, LABEL);
+        }
+    }
+    draw_text_mut(&mut img, col, tx, ty, PxScale::from(FONT_SZ), &font, LABEL);
+
+    DynamicImage::ImageRgb8(img)
+}
+
+
+// ─── Binary Clock ─────────────────────────────────────────────────────────────
+
+pub fn render_binary_clock() -> DynamicImage {
+    use chrono::Timelike;
+
+    let now = chrono::Local::now();
+    let h  = now.hour();
+    let m  = now.minute();
+    let s  = now.second();
+
+    // Binary clock shows 6 columns: H tens, H units, M tens, M units, S tens, S units
+    // Rows: bit 3 (top) to bit 0 (bottom) = 4 rows
+    let digits: [u8; 6] = [
+        (h / 10) as u8, (h % 10) as u8,
+        (m / 10) as u8, (m % 10) as u8,
+        (s / 10) as u8, (s % 10) as u8,
+    ];
+
+    let col_colors: [Rgb<u8>; 6] = [BLUE, BLUE, GREEN, GREEN, MAUVE, MAUVE];
+
+    let cell = 52i32;   // cell size
+    let gap  = 16i32;   // gap between cells
+    // Total width for 6 columns: 6*52 + 5*16 = 312 + 80 = 392, centered: (480-392)/2 = 44
+    let start_x = 44i32;
+    let start_y = 100i32;  // vertical center area
+
+    let mut img = RgbImage::new(480, 480);
+    for p in img.pixels_mut() { *p = BG; }
+
+    let font = font_bold();
+
+    // Title
+    draw_text_mut(&mut img, TEXT, 160, 30, PxScale::from(28.0), &font, "Binary Clock");
+    draw_text_mut(&mut img, OVERLAY0, 155, 62, PxScale::from(18.0), &font, "H  H  M  M  S  S");
+
+    for (col_idx, &digit) in digits.iter().enumerate() {
+        let cx = start_x + col_idx as i32 * (cell + gap);
+        let color = col_colors[col_idx];
+
+        for row in 0..4u8 {
+            let bit = 3 - row;  // bit 3 at top, bit 0 at bottom
+            let on = (digit >> bit) & 1 == 1;
+            let cy = start_y + row as i32 * (cell + gap);
+
+            let rect = imageproc::rect::Rect::at(cx, cy).of_size(cell as u32, cell as u32);
+            let fill = if on {
+                color
+            } else {
+                SURFACE0
+            };
+            imageproc::drawing::draw_filled_rect_mut(&mut img, rect, fill);
+
+            // Inner lighter border for ON cells
+            if on {
+                let bright = Rgb([
+                    (color.0[0] as u32 + 60).min(255) as u8,
+                    (color.0[1] as u32 + 60).min(255) as u8,
+                    (color.0[2] as u32 + 60).min(255) as u8,
+                ]);
+                imageproc::drawing::draw_hollow_rect_mut(&mut img,
+                    imageproc::rect::Rect::at(cx+1, cy+1).of_size(cell as u32 - 2, cell as u32 - 2),
+                    bright);
+            }
+
+            // Bit power label
+            let label = format!("{}", 1 << bit);
+            let lw = text_width(&font, PxScale::from(14.0), &label);
+            let lx = cx + (cell - lw as i32) / 2;
+            let ly = cy + (cell - 14) / 2;
+            let label_col = if on { BG } else { OVERLAY0 };
+            draw_text_mut(&mut img, label_col, lx, ly, PxScale::from(14.0), &font, &label);
+        }
+    }
+
+    // Decimal time readout at the bottom
+    let time_str = format!("{:02}:{:02}:{:02}", h, m, s);
+    let tw = text_width(&font, PxScale::from(48.0), &time_str);
+    draw_text_mut(&mut img, TEXT, (480 - tw as i32)/2 + 1, 431, PxScale::from(48.0), &font, &time_str);
+    draw_text_mut(&mut img, BLUE, (480 - tw as i32)/2, 430, PxScale::from(48.0), &font, &time_str);
+
+    DynamicImage::ImageRgb8(img)
+}
+
+
+// ─── Radar Display ────────────────────────────────────────────────────────────
+
+static RADAR_TICK: std::sync::OnceLock<std::sync::Mutex<u64>> = std::sync::OnceLock::new();
+
+pub fn render_radar() -> DynamicImage {
+    use std::f64::consts::PI;
+
+    let tick = {
+        let t = RADAR_TICK.get_or_init(|| std::sync::Mutex::new(0));
+        let mut g = t.lock().unwrap();
+        let v = *g;
+        *g = g.wrapping_add(1);
+        v
+    };
+
+    let mut sys = System::new();
+    sys.refresh_cpu_all();
+    sys.refresh_memory();
+    let cpus = sys.cpus();
+    let n_cpus = cpus.len().max(1);
+    let cpu_loads: Vec<f32> = cpus.iter().map(|c| c.cpu_usage()).collect();
+
+    let cx = 240i32;
+    let cy = 240i32;
+    let r_max = 210.0f64;
+
+    let mut img = RgbImage::new(480, 480);
+    for p in img.pixels_mut() { *p = BG; }
+
+    // Draw concentric rings
+    for ri in 1..=5u32 {
+        let rr = (r_max * ri as f64 / 5.0) as f32;
+        let ring_col = Rgb([20u8, 30, 45]);
+        // Draw circle manually with line segments
+        let segs = 120;
+        for s in 0..segs {
+            let a0 = s as f64 * 2.0 * PI / segs as f64;
+            let a1 = (s + 1) as f64 * 2.0 * PI / segs as f64;
+            let x0 = cx as f32 + rr * a0.cos() as f32;
+            let y0 = cy as f32 + rr * a0.sin() as f32;
+            let x1 = cx as f32 + rr * a1.cos() as f32;
+            let y1 = cy as f32 + rr * a1.sin() as f32;
+            imageproc::drawing::draw_line_segment_mut(&mut img, (x0, y0), (x1, y1), ring_col);
+        }
+    }
+
+    // Draw grid cross
+    let grid_col = Rgb([20u8, 30, 45]);
+    imageproc::drawing::draw_line_segment_mut(&mut img, (cx as f32, (cy - 215) as f32), (cx as f32, (cy + 215) as f32), grid_col);
+    imageproc::drawing::draw_line_segment_mut(&mut img, ((cx - 215) as f32, cy as f32), ((cx + 215) as f32, cy as f32), grid_col);
+
+    // Sweep arc: 20° wide, decaying trail
+    let sweep_angle = (tick as f64 * 0.05) % (2.0 * PI);
+    let trail_len = std::f64::consts::PI * 0.4;  // 72° trail
+
+    for trail_step in 0..60u32 {
+        let a = sweep_angle - (trail_step as f64 / 60.0) * trail_len;
+        let fade = 1.0 - trail_step as f64 / 60.0;
+        let alpha = (fade * 40.0) as u8;
+        let col = Rgb([0u8, (40.0 * fade) as u8, (alpha).min(50)]);
+
+        // Fill a thin wedge by drawing many radii
+        for ri in 0..=(r_max as u32) {
+            let px = (cx as f64 + ri as f64 * a.cos()) as i32;
+            let py = (cy as f64 + ri as f64 * a.sin()) as i32;
+            if px >= 0 && px < 480 && py >= 0 && py < 480 {
+                let existing = img.get_pixel(px as u32, py as u32);
+                img.put_pixel(px as u32, py as u32, Rgb([
+                    existing.0[0].saturating_add(col.0[0]),
+                    existing.0[1].saturating_add(col.0[1]),
+                    existing.0[2].saturating_add(col.0[2]),
+                ]));
+            }
+        }
+    }
+
+    // Draw sweep line (bright green)
+    let sweep_col = Rgb([0u8, 200, 80]);
+    for ri in 0..=(r_max as u32) {
+        let px = (cx as f64 + ri as f64 * sweep_angle.cos()) as i32;
+        let py = (cy as f64 + ri as f64 * sweep_angle.sin()) as i32;
+        if px >= 0 && px < 480 && py >= 0 && py < 480 {
+            img.put_pixel(px as u32, py as u32, sweep_col);
+        }
+    }
+
+    // Plot CPU blips as dots on the radar
+    // Each CPU is placed at an angle proportional to its index, radius proportional to load
+    let mut seed = tick.wrapping_mul(2654435761);
+    let lcg_r = |s: u64| s.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+
+    for (i, &load) in cpu_loads.iter().enumerate() {
+        let angle = (i as f64 / n_cpus as f64) * 2.0 * PI;
+        let rad = (load as f64 / 100.0) * r_max * 0.9;
+
+        // Jitter (same each frame per core)
+        seed = lcg_r(seed);
+        let jitter_a = (seed as f64 / u64::MAX as f64 - 0.5) * 0.15;
+        seed = lcg_r(seed);
+        let jitter_r = (seed as f64 / u64::MAX as f64) * 8.0;
+
+        let final_angle = angle + jitter_a;
+        let final_rad   = (rad + jitter_r).min(r_max);
+
+        let bx = (cx as f64 + final_rad * final_angle.cos()) as i32;
+        let by = (cy as f64 + final_rad * final_angle.sin()) as i32;
+
+        // Glow
+        let blip_col = if load > 85.0 { RED }
+            else if load > 60.0 { YELLOW }
+            else { GREEN };
+
+        // Proximity to sweep determines brightness
+        let angle_diff = {
+            let d = (final_angle - sweep_angle).rem_euclid(2.0 * PI);
+            d.min(2.0 * PI - d)
+        };
+        let glow = if angle_diff < trail_len { (1.0 - angle_diff / trail_len).powf(0.5) } else { 0.0 };
+
+        if glow > 0.1 {
+            for dx in -3i32..=3 {
+                for dy in -3i32..=3 {
+                    let dist2 = dx*dx + dy*dy;
+                    if dist2 <= 9 {
+                        let px2 = (bx + dx).clamp(0, 479) as u32;
+                        let py2 = (by + dy).clamp(0, 479) as u32;
+                        let bright = (glow * 255.0 * (1.0 - dist2 as f64/9.0)) as u8;
+                        let existing = img.get_pixel(px2, py2);
+                        img.put_pixel(px2, py2, Rgb([
+                            existing.0[0].saturating_add(blip_col.0[0] / 4 * bright / 64),
+                            existing.0[1].saturating_add(blip_col.0[1] / 4 * bright / 64),
+                            existing.0[2].saturating_add(blip_col.0[2] / 4 * bright / 64),
+                        ]));
+                    }
+                }
+            }
+        }
+
+        // Always draw a faint dot
+        if bx >= 0 && bx < 480 && by >= 0 && by < 480 {
+            let faint = Rgb([blip_col.0[0]/4, blip_col.0[1]/4, blip_col.0[2]/4]);
+            img.put_pixel(bx as u32, by as u32, faint);
+        }
+    }
+
+    // Center dot
+    for dx in -3i32..=3 {
+        for dy in -3i32..=3 {
+            if dx*dx+dy*dy <= 9 {
+                img.put_pixel((cx+dx) as u32, (cy+dy) as u32, GREEN);
+            }
+        }
+    }
+
+    let font = font_bold();
+    // Ring labels
+    for ri in 1..=5u32 {
+        let pct = ri * 20;
+        let label = format!("{}%", pct);
+        let lx = cx as f32 + (r_max * ri as f64 / 5.0 + 3.0) as f32;
+        draw_text_mut(&mut img, OVERLAY0, lx as i32, cy + 2, PxScale::from(11.0), &font, &label);
+    }
+    draw_text_mut(&mut img, GREEN, 4, 4, PxScale::from(14.0), &font, "CPU RADAR");
+    draw_text_mut(&mut img, OVERLAY0, 320, 4, PxScale::from(12.0), &font, &format!("{} cores", n_cpus));
+
+    DynamicImage::ImageRgb8(img)
+}
+
+
+
+// ─── Oscilloscope CPU Waveform ────────────────────────────────────────────────
+
+static OSCILLO_HISTORY: std::sync::OnceLock<std::sync::Mutex<std::collections::VecDeque<f32>>> =
+    std::sync::OnceLock::new();
+
+pub fn render_oscilloscope() -> DynamicImage {
+    const SAMPLES: usize = 240;
+    const GREEN_PHOSPHOR: Rgb<u8> = Rgb([0, 220, 100]);
+    const DIM_PHOSPHOR:   Rgb<u8> = Rgb([0,  55,  25]);
+
+    let history_lock = OSCILLO_HISTORY.get_or_init(|| {
+        let mut dq = std::collections::VecDeque::with_capacity(SAMPLES + 1);
+        for _ in 0..SAMPLES { dq.push_back(0.0f32); }
+        std::sync::Mutex::new(dq)
+    });
+
+    let mut sys = System::new();
+    sys.refresh_cpu_all();
+    sys.refresh_memory();
+    let cpu_pct: f32 = {
+        let cpus = sys.cpus();
+        if cpus.is_empty() { 0.0 }
+        else { cpus.iter().map(|c| c.cpu_usage()).sum::<f32>() / cpus.len() as f32 }
+    };
+    let mem_pct: f32 = if sys.total_memory() > 0 {
+        sys.used_memory() as f32 / sys.total_memory() as f32 * 100.0
+    } else { 0.0 };
+
+    {
+        let mut hist = history_lock.lock().unwrap();
+        hist.push_back(cpu_pct);
+        if hist.len() > SAMPLES { hist.pop_front(); }
+    }
+
+    let hist = history_lock.lock().unwrap();
+    let samples: Vec<f32> = hist.iter().cloned().collect();
+    drop(hist);
+
+    let mut img = RgbImage::new(480, 480);
+    for p in img.pixels_mut() { *p = Rgb([0, 8, 4]); }  // deep green-black
+
+    let font = font_bold();
+
+    // Horizontal grid lines at 25%, 50%, 75%
+    for pct_level in [25u32, 50, 75] {
+        let y = (480 - (pct_level as f32 / 100.0 * 400.0) as u32 - 40).min(479);
+        for x in (0..480u32).step_by(6) {
+            if x + 2 < 480 {
+                img.put_pixel(x, y, Rgb([0, 30, 15]));
+                img.put_pixel(x+1, y, Rgb([0, 30, 15]));
+            }
+        }
+        let label = format!("{}%", pct_level);
+        draw_text_mut(&mut img, Rgb([0, 60, 30]), 2, y as i32 - 8, PxScale::from(12.0), &font, &label);
+    }
+
+    // Vertical time markers every 60 samples (2-second marks)
+    for i in (0..SAMPLES).step_by(60) {
+        let x = (i as f32 / SAMPLES as f32 * 480.0) as u32;
+        for y in (40..440u32).step_by(4) {
+            if y + 1 < 480 { img.put_pixel(x, y, Rgb([0, 25, 12])); }
+        }
+    }
+
+    // Draw CPU waveform with vertical phosphor glow
+    for (i, &val) in samples.iter().enumerate() {
+        if i == 0 { continue; }
+        let x0 = ((i - 1) as f32 / SAMPLES as f32 * 478.0) as i32;
+        let x1 = (i as f32 / SAMPLES as f32 * 478.0) as i32;
+        let y0 = (440 - (samples[i-1] / 100.0 * 400.0) as i32).max(40).min(440);
+        let y1 = (440 - (val / 100.0 * 400.0) as i32).max(40).min(440);
+
+        // Glow (dim, wider)
+        imageproc::drawing::draw_antialiased_line_segment_mut(
+            &mut img,
+            (x0, (y0-1).max(0)), (x1, (y1-1).max(0)),
+            DIM_PHOSPHOR, interpolate,
+        );
+        imageproc::drawing::draw_antialiased_line_segment_mut(
+            &mut img,
+            (x0, (y0+1).min(479)), (x1, (y1+1).min(479)),
+            DIM_PHOSPHOR, interpolate,
+        );
+        // Main line
+        imageproc::drawing::draw_antialiased_line_segment_mut(
+            &mut img,
+            (x0, y0), (x1, y1),
+            GREEN_PHOSPHOR, interpolate,
+        );
+    }
+
+    // RAM usage bar at bottom (thin, blue)
+    let ram_w = (mem_pct / 100.0 * 480.0) as u32;
+    let ram_rect = imageproc::rect::Rect::at(0, 462).of_size(ram_w.max(1).min(480), 6);
+    imageproc::drawing::draw_filled_rect_mut(&mut img, ram_rect, BLUE);
+
+    // Scanline overlay (subtle)
+    for row in (0u32..480).step_by(2) {
+        for col in 0u32..480 {
+            if let Some(p) = img.get_pixel_mut_checked(col, row) {
+                p.0[1] = p.0[1].saturating_sub(4);
+            }
+        }
+    }
+
+    // Labels
+    draw_text_mut(&mut img, GREEN_PHOSPHOR, 180, 6, PxScale::from(20.0), &font, "CPU OSCILLOSCOPE");
+    let cpu_str = format!("CPU {:5.1}%  RAM {:5.1}%", cpu_pct, mem_pct);
+    let tw = text_width(&font, PxScale::from(16.0), &cpu_str);
+    draw_text_mut(&mut img, GREEN_PHOSPHOR, (480-tw as i32)/2, 452, PxScale::from(16.0), &font, &cpu_str);
+
+    DynamicImage::ImageRgb8(img)
+}
+
+
+// ─── Lissajous Curves ────────────────────────────────────────────────────────
+
+static LISSAJOUS_TICK: std::sync::OnceLock<std::sync::Mutex<u64>> = std::sync::OnceLock::new();
+
+pub fn render_lissajous() -> DynamicImage {
+    use std::f64::consts::PI;
+
+    let tick = {
+        let t = LISSAJOUS_TICK.get_or_init(|| std::sync::Mutex::new(0));
+        let mut g = t.lock().unwrap();
+        let v = *g;
+        *g = g.wrapping_add(1);
+        v
+    };
+
+    let mut img = RgbImage::new(480, 480);
+    for p in img.pixels_mut() { *p = BG; }
+
+    // Phase offset slowly advances
+    let delta = (tick as f64 * 0.007) % (2.0 * PI);
+
+    // Cycle through interesting frequency ratios: (1,2), (2,3), (3,4), (1,3), (3,5)
+    let ratios: [(f64,f64); 5] = [(1.0,2.0),(2.0,3.0),(3.0,4.0),(1.0,3.0),(3.0,5.0)];
+    let cycle_len = 400u64;  // ticks per ratio
+    let ratio_idx = ((tick / cycle_len) % ratios.len() as u64) as usize;
+    let (a, b) = ratios[ratio_idx];
+
+    // Blend between two consecutive ratios for smooth transition
+    let transition = (tick % cycle_len) as f64 / cycle_len as f64;
+    let next_idx = (ratio_idx + 1) % ratios.len();
+    let (na, nb) = ratios[next_idx];
+    let blend = if transition > 0.8 { (transition - 0.8) / 0.2 } else { 0.0 };
+    let fa = a * (1.0 - blend) + na * blend;
+    let fb = b * (1.0 - blend) + nb * blend;
+
+    let cx = 240.0f64;
+    let cy = 240.0f64;
+    let amp = 210.0f64;
+
+    // Draw curve with N_POINTS points, colour by phase
+    let n_pts = 2048usize;
+    let palette: [Rgb<u8>; 6] = [BLUE, MAUVE, TEAL, GREEN, PEACH, YELLOW];
+
+    let mut prev: Option<(i32,i32)> = None;
+    for i in 0..=n_pts {
+        let t = i as f64 / n_pts as f64 * 2.0 * PI;
+        let px = (cx + amp * (fa * t + delta).sin()) as i32;
+        let py = (cy + amp * (fb * t).sin()) as i32;
+
+        let col_idx = (i * palette.len() / n_pts) % palette.len();
+        let col = palette[col_idx];
+
+        if let Some((lx, ly)) = prev {
+            if px >= 0 && px < 480 && py >= 0 && py < 480 {
+                imageproc::drawing::draw_antialiased_line_segment_mut(
+                    &mut img,
+                    (lx, ly), (px, py),
+                    col, interpolate,
+                );
+            }
+        }
+        prev = Some((px, py));
+    }
+
+    // Center dot
+    for dx in -3i32..=3 {
+        for dy in -3i32..=3 {
+            if dx*dx+dy*dy <= 9 {
+                let ix = (cx as i32 + dx).clamp(0,479) as u32;
+                let iy = (cy as i32 + dy).clamp(0,479) as u32;
+                img.put_pixel(ix, iy, TEXT);
+            }
+        }
+    }
+
+    let font = font_bold();
+    let ratio_str = format!("Lissajous  {:.0}:{:.0}  δ={:.2}", fa, fb, delta % (2.0*PI));
+    draw_text_mut(&mut img, OVERLAY0, 8, 458, PxScale::from(14.0), &font, &ratio_str);
+
+    DynamicImage::ImageRgb8(img)
+}
+
+
+
+// ─── Pong AI Screensaver ──────────────────────────────────────────────────────
+
+struct PongState {
+    ball_x:  f32,
+    ball_y:  f32,
+    ball_vx: f32,
+    ball_vy: f32,
+    left_y:  f32,
+    right_y: f32,
+    left_score:  u32,
+    right_score: u32,
+    tick: u64,
+}
+
+fn new_pong_state(seed: u64) -> PongState {
+    let mut s = seed;
+    let lcg = |v: u64| v.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+    s = lcg(s);
+    let angle_frac = (s as f32 / u64::MAX as f32 - 0.5) * 0.8;
+    let speed = 3.2f32;
+    let vx = if (s >> 32) & 1 == 0 { speed } else { -speed };
+    PongState {
+        ball_x: 240.0, ball_y: 240.0,
+        ball_vx: vx,
+        ball_vy: speed * angle_frac,
+        left_y:  200.0, right_y: 200.0,
+        left_score: 0, right_score: 0,
+        tick: 0,
+    }
+}
+
+static PONG_STATE: std::sync::OnceLock<std::sync::Mutex<PongState>> = std::sync::OnceLock::new();
+
+pub fn render_pong() -> DynamicImage {
+    const PADDLE_W: f32 = 10.0;
+    const PADDLE_H: f32 = 70.0;
+    const BALL_R:   f32 = 8.0;
+    const AI_SPEED: f32 = 3.8;
+    const LEFT_X:   f32 = 24.0;
+    const RIGHT_X:  f32 = 446.0;
+    const W: f32 = 480.0;
+    const H: f32 = 480.0;
+
+    let state_lock = PONG_STATE.get_or_init(|| std::sync::Mutex::new(new_pong_state(42)));
+    let mut state = state_lock.lock().unwrap();
+    state.tick += 1;
+
+    // ── AI paddle movement ─────────────────────────────────────────────────────
+    // Left paddle tracks ball only when ball moves left
+    if state.ball_vx < 0.0 {
+        let target_l = state.ball_y - PADDLE_H / 2.0;
+        let diff_l = target_l - state.left_y;
+        state.left_y += diff_l.clamp(-AI_SPEED, AI_SPEED);
+    }
+    // Right paddle tracks ball only when ball moves right
+    if state.ball_vx > 0.0 {
+        let target_r = state.ball_y - PADDLE_H / 2.0;
+        let diff_r = target_r - state.right_y;
+        state.right_y += diff_r.clamp(-AI_SPEED, AI_SPEED);
+    }
+    state.left_y  = state.left_y .clamp(20.0, H - PADDLE_H - 20.0);
+    state.right_y = state.right_y.clamp(20.0, H - PADDLE_H - 20.0);
+
+    // ── Ball movement ──────────────────────────────────────────────────────────
+    state.ball_x += state.ball_vx;
+    state.ball_y += state.ball_vy;
+
+    // Top/bottom walls
+    if state.ball_y - BALL_R < 20.0 {
+        state.ball_y = 20.0 + BALL_R;
+        state.ball_vy = state.ball_vy.abs();
+    }
+    if state.ball_y + BALL_R > H - 20.0 {
+        state.ball_y = H - 20.0 - BALL_R;
+        state.ball_vy = -state.ball_vy.abs();
+    }
+
+    // Left paddle collision
+    if state.ball_x - BALL_R < LEFT_X + PADDLE_W
+        && state.ball_x + BALL_R > LEFT_X
+        && state.ball_y > state.left_y
+        && state.ball_y < state.left_y + PADDLE_H
+        && state.ball_vx < 0.0
+    {
+        state.ball_vx = state.ball_vx.abs() * 1.03;
+        let hit_pos = (state.ball_y - state.left_y - PADDLE_H / 2.0) / (PADDLE_H / 2.0);
+        state.ball_vy = hit_pos * 4.5;
+    }
+
+    // Right paddle collision
+    if state.ball_x + BALL_R > RIGHT_X
+        && state.ball_x - BALL_R < RIGHT_X + PADDLE_W
+        && state.ball_y > state.right_y
+        && state.ball_y < state.right_y + PADDLE_H
+        && state.ball_vx > 0.0
+    {
+        state.ball_vx = -(state.ball_vx.abs() * 1.03);
+        let hit_pos = (state.ball_y - state.right_y - PADDLE_H / 2.0) / (PADDLE_H / 2.0);
+        state.ball_vy = hit_pos * 4.5;
+    }
+
+    // Cap ball speed
+    let spd = (state.ball_vx.powi(2) + state.ball_vy.powi(2)).sqrt();
+    if spd > 9.0 {
+        state.ball_vx = state.ball_vx / spd * 9.0;
+        state.ball_vy = state.ball_vy / spd * 9.0;
+    }
+
+    // Score / reset
+    if state.ball_x < 0.0 {
+        state.right_score += 1;
+        *state = PongState { left_score: state.left_score, right_score: state.right_score, ..new_pong_state(state.tick) };
+    } else if state.ball_x > W {
+        state.left_score += 1;
+        *state = PongState { left_score: state.left_score, right_score: state.right_score, ..new_pong_state(state.tick.wrapping_add(7919)) };
+    }
+
+    let (bx, by) = (state.ball_x, state.ball_y);
+    let (lx, ly) = (LEFT_X,  state.left_y);
+    let (rx, ry) = (RIGHT_X, state.right_y);
+    let (ls, rs) = (state.left_score, state.right_score);
+
+    // ── Render ─────────────────────────────────────────────────────────────────
+    let mut img = RgbImage::new(480, 480);
+    for p in img.pixels_mut() { *p = BG; }
+    let font = font_bold();
+
+    // Centre dashed line
+    for y in (20u32..460).step_by(14) {
+        let cr = imageproc::rect::Rect::at(238, y as i32).of_size(4, 8);
+        imageproc::drawing::draw_filled_rect_mut(&mut img, cr, SURFACE0);
+    }
+
+    // Top/bottom boundary lines
+    let line_col = OVERLAY0;
+    for x in 0u32..480 {
+        img.put_pixel(x, 18, line_col);
+        img.put_pixel(x, 462, line_col);
+    }
+
+    // Draw paddles
+    let lrect = imageproc::rect::Rect::at(lx as i32, ly as i32)
+        .of_size(PADDLE_W as u32, PADDLE_H as u32);
+    imageproc::drawing::draw_filled_rect_mut(&mut img, lrect, BLUE);
+    let rrect = imageproc::rect::Rect::at(rx as i32, ry as i32)
+        .of_size(PADDLE_W as u32, PADDLE_H as u32);
+    imageproc::drawing::draw_filled_rect_mut(&mut img, rrect, GREEN);
+
+    // Ball glow
+    for dx in -3i32..=3 {
+        for dy in -3i32..=3 {
+            if dx*dx+dy*dy <= 9 {
+                let px2 = (bx as i32 + dx).clamp(0, 479) as u32;
+                let py2 = (by as i32 + dy).clamp(0, 479) as u32;
+                img.put_pixel(px2, py2, Rgb([YELLOW.0[0]/3, YELLOW.0[1]/3, YELLOW.0[2]/3]));
+            }
+        }
+    }
+    // Ball core
+    for dx in -4i32..=4 {
+        for dy in -4i32..=4 {
+            if dx*dx+dy*dy <= 16 {
+                let px2 = (bx as i32 + dx).clamp(0, 479) as u32;
+                let py2 = (by as i32 + dy).clamp(0, 479) as u32;
+                img.put_pixel(px2, py2, YELLOW);
+            }
+        }
+    }
+
+    // Scores
+    let ls_str = format!("{}", ls);
+    let rs_str = format!("{}", rs);
+    let lw = text_width(&font, PxScale::from(36.0), &ls_str);
+    draw_text_mut(&mut img, BLUE,  (200 - lw as i32 / 2).max(0), 4, PxScale::from(36.0), &font, &ls_str);
+    draw_text_mut(&mut img, GREEN, 270, 4, PxScale::from(36.0), &font, &rs_str);
+
+    DynamicImage::ImageRgb8(img)
+}
+
+
+// ─── Flash Message Renderer (used by /api/flash endpoint) ────────────────────
+
+/// Render a full-screen text overlay.  `text` may contain `\n` for newlines.
+pub fn render_flash_message(text: &str, hex_color: &str) -> DynamicImage {
+    let col = parse_hex_color(hex_color).unwrap_or(TEXT);
+    let mut img = RgbImage::new(480, 480);
+    for p in img.pixels_mut() { *p = BG; }
+    let font = font_bold();
+
+    let lines: Vec<&str> = text.lines().collect();
+    let n = lines.len() as i32;
+    let line_h = 40i32;
+    let base_y = 240 - n * line_h / 2;
+
+    // Draw a subtle card background
+    let card_w = 440u32;
+    let card_h = (n as u32 * line_h as u32 + 40).max(80);
+    let card_x = (480 - card_w as i32) / 2;
+    let card_y = base_y - 20;
+    let card_rect = imageproc::rect::Rect::at(card_x, card_y).of_size(card_w, card_h);
+    imageproc::drawing::draw_filled_rect_mut(&mut img, card_rect, SURFACE0);
+    imageproc::drawing::draw_hollow_rect_mut(&mut img, card_rect, col);
+
+    for (i, line) in lines.iter().enumerate() {
+        let y = base_y + i as i32 * line_h;
+        let sz = if n == 1 { 48.0 } else { 36.0 };
+        let tw = text_width(&font, PxScale::from(sz), line);
+        let tx = (480 - tw as i32) / 2;
+        // Shadow
+        draw_text_mut(&mut img, BG, tx+1, y+1, PxScale::from(sz), &font, line);
+        draw_text_mut(&mut img, col, tx, y, PxScale::from(sz), &font, line);
+    }
+
+    // Timestamp
+    let ts = chrono::Local::now().format("%H:%M:%S").to_string();
+    let tsw = text_width(&font, PxScale::from(14.0), &ts);
+    draw_text_mut(&mut img, OVERLAY0, 480 - tsw as i32 - 8, 462, PxScale::from(14.0), &font, &ts);
+
+    DynamicImage::ImageRgb8(img)
+}
+
+fn parse_hex_color(hex: &str) -> Option<Rgb<u8>> {
+    let h = hex.trim_start_matches('#');
+    if h.len() != 6 { return None; }
+    let r = u8::from_str_radix(&h[0..2], 16).ok()?;
+    let g = u8::from_str_radix(&h[2..4], 16).ok()?;
+    let b = u8::from_str_radix(&h[4..6], 16).ok()?;
+    Some(Rgb([r, g, b]))
+}
+
+
+
+// ─── Neon Clock ───────────────────────────────────────────────────────────────
+
+/// Clock with heavy neon-phosphor glow effect — coloured outer glow layers + sharp inner text.
+pub fn render_neon_clock() -> DynamicImage {
+    let now = chrono::Local::now();
+    let h  = now.hour();
+    let m  = now.minute();
+    let s  = now.second();
+
+    let time_str = format!("{:02}:{:02}:{:02}", h, m, s);
+    let date_str = now.format("%A, %B %-d").to_string();
+
+    // Colour cycles through hue over 60 seconds
+    let hue_t = s as f32 / 60.0;
+    let neon_col = hsl_to_rgb(hue_t, 1.0, 0.6);
+    let dark_col = Rgb([
+        (neon_col.0[0] as f32 * 0.2) as u8,
+        (neon_col.0[1] as f32 * 0.2) as u8,
+        (neon_col.0[2] as f32 * 0.2) as u8,
+    ]);
+
+    let mut img = RgbImage::new(480, 480);
+    for p in img.pixels_mut() { *p = Rgb([2, 2, 10]); }  // near-black with slight blue tint
+
+    let font = font_bold();
+
+    // ── Time string with glow layers ──────────────────────────────────────────
+    let sz = 86.0f32;
+    let tw = text_width(&font, PxScale::from(sz), &time_str);
+    let tx = (480 - tw as i32) / 2;
+    let ty = 150i32;
+
+    // 5 glow layers, progressively dimmer and larger offsets
+    for glow_r in [6i32, 4, 3, 2, 1] {
+        let dim = Rgb([
+            (dark_col.0[0] as f32 * (1.5 - glow_r as f32 * 0.2)).min(255.0) as u8,
+            (dark_col.0[1] as f32 * (1.5 - glow_r as f32 * 0.2)).min(255.0) as u8,
+            (dark_col.0[2] as f32 * (1.5 - glow_r as f32 * 0.2)).min(255.0) as u8,
+        ]);
+        for dx in [-glow_r, 0, glow_r] {
+            for dy in [-glow_r, 0, glow_r] {
+                draw_text_mut(&mut img, dim, tx + dx, ty + dy, PxScale::from(sz), &font, &time_str);
+            }
+        }
+    }
+
+    // Medium glow (neon colour at 50%)
+    let mid_col = Rgb([neon_col.0[0]/2, neon_col.0[1]/2, neon_col.0[2]/2]);
+    for (dx, dy) in [(-2i32,-2i32),(-2,2),(2,-2),(2,2)] {
+        draw_text_mut(&mut img, mid_col, tx + dx, ty + dy, PxScale::from(sz), &font, &time_str);
+    }
+
+    // Bright core
+    draw_text_mut(&mut img, neon_col, tx, ty, PxScale::from(sz), &font, &time_str);
+
+    // ── Date ──────────────────────────────────────────────────────────────────
+    let dw = text_width(&font, PxScale::from(24.0), &date_str);
+    let dx_pos = (480 - dw as i32) / 2;
+    // Date with smaller glow
+    let dim_date = Rgb([dark_col.0[0]*2, dark_col.0[1]*2, dark_col.0[2]*2]);
+    for offset in [(-1i32,-1),(1,-1),(-1,1),(1,1)] {
+        draw_text_mut(&mut img, dim_date, dx_pos + offset.0, 275 + offset.1, PxScale::from(24.0), &font, &date_str);
+    }
+    draw_text_mut(&mut img, neon_col, dx_pos, 275, PxScale::from(24.0), &font, &date_str);
+
+    // ── Decorative separator line with glow ───────────────────────────────────
+    let y_sep = 305i32;
+    for x in 60..420i32 {
+        let t = (x - 60) as f32 / 360.0;
+        let alpha = ((-((t - 0.5) * 4.0).powi(2)).exp() * 255.0) as u8;
+        let px = img.get_pixel(x as u32, y_sep as u32).clone();
+        img.put_pixel(x as u32, y_sep as u32, Rgb([
+            px.0[0].saturating_add(neon_col.0[0].saturating_mul(alpha) / 255),
+            px.0[1].saturating_add(neon_col.0[1].saturating_mul(alpha) / 255),
+            px.0[2].saturating_add(neon_col.0[2].saturating_mul(alpha) / 255),
+        ]));
+    }
+
+    // ── Seconds arc ───────────────────────────────────────────────────────────
+    let cx = 240i32;
+    let cy = 420i32;
+    let arc_r = 55.0f64;
+    let sec_frac = s as f64 / 60.0;
+    use std::f64::consts::PI;
+    let start_a = -PI / 2.0;
+    let _end_a   = start_a + sec_frac * 2.0 * PI;
+
+    // Background arc (dim)
+    let n_segs = 120;
+    for i in 0..n_segs {
+        let a0 = start_a + i as f64 * 2.0 * PI / n_segs as f64;
+        let a1 = start_a + (i + 1) as f64 * 2.0 * PI / n_segs as f64;
+        let x0 = cx as f32 + arc_r as f32 * a0.cos() as f32;
+        let y0 = cy as f32 + arc_r as f32 * a0.sin() as f32;
+        let x1 = cx as f32 + arc_r as f32 * a1.cos() as f32;
+        let y1 = cy as f32 + arc_r as f32 * a1.sin() as f32;
+        imageproc::drawing::draw_line_segment_mut(&mut img, (x0, y0), (x1, y1), Rgb([15, 15, 30]));
+    }
+    // Active arc
+    let arc_segs = (sec_frac * n_segs as f64) as usize;
+    for i in 0..arc_segs {
+        let a0 = start_a + i as f64 * 2.0 * PI / n_segs as f64;
+        let a1 = start_a + (i + 1) as f64 * 2.0 * PI / n_segs as f64;
+        let x0 = cx as f32 + arc_r as f32 * a0.cos() as f32;
+        let y0 = cy as f32 + arc_r as f32 * a0.sin() as f32;
+        let x1 = cx as f32 + arc_r as f32 * a1.cos() as f32;
+        let y1 = cy as f32 + arc_r as f32 * a1.sin() as f32;
+        imageproc::drawing::draw_antialiased_line_segment_mut(
+            &mut img, (x0 as i32, y0 as i32), (x1 as i32, y1 as i32), neon_col, interpolate,
+        );
+    }
+
+    // Seconds number in arc
+    let sstr = format!("{:02}s", s);
+    let sw = text_width(&font, PxScale::from(18.0), &sstr);
+    draw_text_mut(&mut img, neon_col, cx - sw as i32/2, cy - 9, PxScale::from(18.0), &font, &sstr);
+
+    DynamicImage::ImageRgb8(img)
+}
+
+/// HSL → RGB colour conversion (h, s, l all 0..1).
+fn hsl_to_rgb(h: f32, s: f32, l: f32) -> Rgb<u8> {
+    let c = (1.0 - (2.0 * l - 1.0).abs()) * s;
+    let x = c * (1.0 - ((h * 6.0) % 2.0 - 1.0).abs());
+    let m = l - c / 2.0;
+    let (r1, g1, b1) = match (h * 6.0) as u32 {
+        0 => (c, x, 0.0),
+        1 => (x, c, 0.0),
+        2 => (0.0, c, x),
+        3 => (0.0, x, c),
+        4 => (x, 0.0, c),
+        _ => (c, 0.0, x),
+    };
+    Rgb([((r1 + m) * 255.0) as u8, ((g1 + m) * 255.0) as u8, ((b1 + m) * 255.0) as u8])
+}
+
+
+// ─── Network Heatmap ─────────────────────────────────────────────────────────
+
+const NET_HEATMAP_COLS: usize = 60;
+
+static NET_HM_RX_HISTORY: std::sync::OnceLock<std::sync::Mutex<std::collections::VecDeque<f64>>> =
+    std::sync::OnceLock::new();
+static NET_HM_TX_HISTORY: std::sync::OnceLock<std::sync::Mutex<std::collections::VecDeque<f64>>> =
+    std::sync::OnceLock::new();
+static NET_HM_PREV_RX: std::sync::OnceLock<std::sync::Mutex<u64>> = std::sync::OnceLock::new();
+static NET_HM_PREV_TX: std::sync::OnceLock<std::sync::Mutex<u64>> = std::sync::OnceLock::new();
+
+pub fn render_net_heatmap() -> DynamicImage {
+    // ── Gather data ───────────────────────────────────────────────────────────
+    let (total_rx, total_tx): (u64, u64) = {
+        let mut rx = 0u64;
+        let mut tx = 0u64;
+        if let Ok(content) = std::fs::read_to_string("/proc/net/dev") {
+            for line in content.lines().skip(2) {
+                let parts: Vec<&str> = line.split_whitespace().collect();
+                if parts.len() >= 10 {
+                    let iface = parts[0].trim_end_matches(':');
+                    if iface == "lo" { continue; }
+                    rx += parts[1].parse::<u64>().unwrap_or(0);
+                    tx += parts[9].parse::<u64>().unwrap_or(0);
+                }
+            }
+        }
+        (rx, tx)
+    };
+
+    let delta_rx: f64 = {
+        let mut prev = NET_HM_PREV_RX.get_or_init(|| std::sync::Mutex::new(0)).lock().unwrap();
+        let d = if total_rx > *prev { (total_rx - *prev) as f64 } else { 0.0 };
+        *prev = total_rx;
+        d
+    };
+    let delta_tx: f64 = {
+        let mut prev = NET_HM_PREV_TX.get_or_init(|| std::sync::Mutex::new(0)).lock().unwrap();
+        let d = if total_tx > *prev { (total_tx - *prev) as f64 } else { 0.0 };
+        *prev = total_tx;
+        d
+    };
+
+    let init_dq = || {
+        let mut dq = std::collections::VecDeque::with_capacity(NET_HEATMAP_COLS + 1);
+        for _ in 0..NET_HEATMAP_COLS { dq.push_back(0.0f64); }
+        std::sync::Mutex::new(dq)
+    };
+    {
+        let mut rx_hist = NET_HM_RX_HISTORY.get_or_init(init_dq).lock().unwrap();
+        rx_hist.push_back(delta_rx);
+        if rx_hist.len() > NET_HEATMAP_COLS { rx_hist.pop_front(); }
+    }
+    {
+        let mut tx_hist = NET_HM_TX_HISTORY.get_or_init(init_dq).lock().unwrap();
+        tx_hist.push_back(delta_tx);
+        if tx_hist.len() > NET_HEATMAP_COLS { tx_hist.pop_front(); }
+    }
+
+    let rx_samples: Vec<f64> = NET_HM_RX_HISTORY.get_or_init(init_dq).lock().unwrap().iter().cloned().collect();
+    let tx_samples: Vec<f64> = NET_HM_TX_HISTORY.get_or_init(init_dq).lock().unwrap().iter().cloned().collect();
+
+    let max_rx = rx_samples.iter().cloned().fold(1.0f64, f64::max);
+    let max_tx = tx_samples.iter().cloned().fold(1.0f64, f64::max);
+    let global_max = max_rx.max(max_tx).max(1024.0);  // at least 1 KB
+
+    let mut img = RgbImage::new(480, 480);
+    for p in img.pixels_mut() { *p = BG; }
+    let font = font_bold();
+
+    draw_text_mut(&mut img, TEXT, 8, 8, PxScale::from(22.0), &font, "Network Heatmap");
+
+    let grid_x = 80i32;
+    let grid_w = 380i32;
+    let cell_w = grid_w as f32 / NET_HEATMAP_COLS as f32;
+
+    let legend_labels = ["Rx (↓)", "Tx (↑)"];
+    let section_ys = [60i32, 265i32];
+    let samples_list = [&rx_samples, &tx_samples];
+
+    for (si, &samples) in samples_list.iter().enumerate() {
+        let base_y = section_ys[si];
+        draw_text_mut(&mut img, SUBTEXT, 4, base_y, PxScale::from(14.0), &font, legend_labels[si]);
+
+        let grid_h = 180i32;
+
+        for (col_idx, &val) in samples.iter().enumerate() {
+            let frac = (val / global_max).min(1.0) as f32;
+            let x0 = (grid_x as f32 + col_idx as f32 * cell_w) as i32;
+            let x1 = (grid_x as f32 + (col_idx + 1) as f32 * cell_w).ceil() as i32;
+            let bar_h = (frac * grid_h as f32) as i32;
+            if bar_h == 0 { continue; }
+
+            // Colour: blue(low) → teal(mid) → green(high)
+            let col = if frac < 0.33 {
+                let t = frac / 0.33;
+                let r = (BLUE.0[0] as f32 * (1.0-t) + TEAL.0[0] as f32 * t) as u8;
+                let g = (BLUE.0[1] as f32 * (1.0-t) + TEAL.0[1] as f32 * t) as u8;
+                let b = (BLUE.0[2] as f32 * (1.0-t) + TEAL.0[2] as f32 * t) as u8;
+                Rgb([r, g, b])
+            } else if frac < 0.66 {
+                let t = (frac - 0.33) / 0.33;
+                let r = (TEAL.0[0] as f32 * (1.0-t) + GREEN.0[0] as f32 * t) as u8;
+                let g = (TEAL.0[1] as f32 * (1.0-t) + GREEN.0[1] as f32 * t) as u8;
+                let b = (TEAL.0[2] as f32 * (1.0-t) + GREEN.0[2] as f32 * t) as u8;
+                Rgb([r, g, b])
+            } else {
+                let t = (frac - 0.66) / 0.34;
+                let r = (GREEN.0[0] as f32 * (1.0-t) + YELLOW.0[0] as f32 * t) as u8;
+                let g = (GREEN.0[1] as f32 * (1.0-t) + YELLOW.0[1] as f32 * t) as u8;
+                let b = (GREEN.0[2] as f32 * (1.0-t) + YELLOW.0[2] as f32 * t) as u8;
+                Rgb([r, g, b])
+            };
+
+            let y0 = base_y + grid_h - bar_h;
+            let rect = imageproc::rect::Rect::at(x0, y0)
+                .of_size((x1 - x0).max(1) as u32, bar_h as u32);
+            imageproc::drawing::draw_filled_rect_mut(&mut img, rect, col);
+        }
+
+        // Baseline
+        for x in grid_x..(grid_x + grid_w) {
+            let by = base_y + grid_h;
+            if by < 480 { img.put_pixel(x as u32, by as u32, SURFACE0); }
+        }
+
+        // Current value label
+        let cur_rx = delta_rx;
+        let cur_tx = delta_tx;
+        let cur = if si == 0 { cur_rx } else { cur_tx };
+        let label = human_bytes(cur) + "/s";
+        draw_text_mut(&mut img, SUBTEXT, grid_x + grid_w - text_width(&font, PxScale::from(14.0), &label) as i32 + 4, base_y, PxScale::from(14.0), &font, &label);
+
+        // Max label
+        let max_label = human_bytes(global_max) + " max";
+        draw_text_mut(&mut img, OVERLAY0, grid_x, base_y + grid_h - 20, PxScale::from(12.0), &font, &max_label);
+    }
+
+    // Time axis labels
+    draw_text_mut(&mut img, OVERLAY0, grid_x, 456, PxScale::from(11.0), &font, "← older");
+    let newer = format!("{} newer →", chrono::Local::now().format("%H:%M:%S"));
+    let nw = text_width(&font, PxScale::from(11.0), &newer);
+    draw_text_mut(&mut img, OVERLAY0, 480 - nw as i32 - 4, 456, PxScale::from(11.0), &font, &newer);
+
+    DynamicImage::ImageRgb8(img)
+}
+
+
+
+// ─── Word Clock ───────────────────────────────────────────────────────────────
+
+/// Convert a time to English words.  Returns a Vec of lines (2-4 words each).
+fn time_to_words(h: u32, m: u32) -> Vec<String> {
+    let mins_to_word = |n: u32| match n {
+        5  => "FIVE",
+        10 => "TEN",
+        15 => "QUARTER",
+        20 => "TWENTY",
+        25 => "TWENTY FIVE",
+        30 => "HALF",
+        _  => "",
+    };
+    let hour_word = |h: u32| match h % 12 {
+        0  => "TWELVE",
+        1  => "ONE",
+        2  => "TWO",
+        3  => "THREE",
+        4  => "FOUR",
+        5  => "FIVE",
+        6  => "SIX",
+        7  => "SEVEN",
+        8  => "EIGHT",
+        9  => "NINE",
+        10 => "TEN",
+        11 => "ELEVEN",
+        _  => "TWELVE",
+    };
+
+    let rounded = (m / 5) * 5;
+    let h_display = if rounded > 30 { (h + 1) % 24 } else { h };
+
+    match rounded {
+        0  => vec!["IT IS".into(), hour_word(h_display).into(), "O'CLOCK".into()],
+        30 => vec!["HALF".into(), "PAST".into(), hour_word(h_display).into()],
+        15 => vec!["QUARTER".into(), "PAST".into(), hour_word(h_display).into()],
+        45 => vec!["QUARTER".into(), "TO".into(), hour_word(h_display).into()],
+        n if n <= 30 => {
+            let mw = mins_to_word(n);
+            if mw.is_empty() {
+                vec![hour_word(h_display).into(), "O'CLOCK".into()]
+            } else if mw.contains(' ') {
+                let parts: Vec<&str> = mw.splitn(2, ' ').collect();
+                vec![parts[0].into(), parts[1].into(), "PAST".into(), hour_word(h_display).into()]
+            } else {
+                vec![mw.into(), "PAST".into(), hour_word(h_display).into()]
+            }
+        },
+        n => {
+            let to_min = 60 - n;
+            let mw = mins_to_word(to_min);
+            if mw.is_empty() {
+                vec![hour_word(h_display).into(), "O'CLOCK".into()]
+            } else if mw.contains(' ') {
+                let parts: Vec<&str> = mw.splitn(2, ' ').collect();
+                vec![parts[0].into(), parts[1].into(), "TO".into(), hour_word(h_display).into()]
+            } else {
+                vec![mw.into(), "TO".into(), hour_word(h_display).into()]
+            }
+        },
+    }
+}
+
+pub fn render_word_clock() -> DynamicImage {
+    let now = chrono::Local::now();
+    let h = now.hour();
+    let m = now.minute();
+    let s = now.second();
+
+    let words = time_to_words(h, m);
+    let n = words.len() as i32;
+
+    let mut img = RgbImage::new(480, 480);
+    for p in img.pixels_mut() { *p = BG; }
+    let font = font_bold();
+
+    // Choose font size based on word count and longest line
+    let max_len = words.iter().map(|w| w.len()).max().unwrap_or(1);
+    let font_sz: f32 = if max_len <= 7 && n <= 3 { 72.0 }
+                       else if max_len <= 10 { 56.0 }
+                       else { 44.0 };
+
+    let line_h = (font_sz * 1.25) as i32;
+    let total_h = n * line_h;
+    let base_y = (480 - total_h) / 2;
+
+    // Subtle second-tick colour pulse
+    let pulse = s as f32 / 59.0;
+    let text_col = Rgb([
+        (TEXT.0[0] as f32 * (0.85 + 0.15 * pulse)) as u8,
+        (TEXT.0[1] as f32 * (0.85 + 0.15 * pulse)) as u8,
+        (TEXT.0[2] as f32 * (0.85 + 0.15 * pulse)) as u8,
+    ]);
+
+    for (i, word) in words.iter().enumerate() {
+        let tw = text_width(&font, PxScale::from(font_sz), word);
+        let tx = (480 - tw as i32) / 2;
+        let ty = base_y + i as i32 * line_h;
+
+        // Shadow
+        draw_text_mut(&mut img, SURFACE0, tx+2, ty+2, PxScale::from(font_sz), &font, word);
+
+        // Accent: first word in BLUE, last in MAUVE, middle in text colour
+        let col = if i == 0 { BLUE }
+                  else if i as i32 == n - 1 { MAUVE }
+                  else { text_col };
+        draw_text_mut(&mut img, col, tx, ty, PxScale::from(font_sz), &font, word);
+    }
+
+    // Thin progress bar at bottom (minute progress)
+    let bar_w = (m as f32 / 60.0 * 480.0) as u32;
+    let bar = imageproc::rect::Rect::at(0, 474).of_size(bar_w.max(1), 6);
+    imageproc::drawing::draw_filled_rect_mut(&mut img, bar, BLUE);
+
+    // Date in corner
+    let date_str = now.format("%-d %b %Y").to_string();
+    let dw = text_width(&font, PxScale::from(14.0), &date_str);
+    draw_text_mut(&mut img, OVERLAY0, 480 - dw as i32 - 8, 8, PxScale::from(14.0), &font, &date_str);
+
+    DynamicImage::ImageRgb8(img)
+}
+

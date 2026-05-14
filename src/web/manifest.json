@@ -1,0 +1,16 @@
+{
+  "name": "ttlcd Panel Controller",
+  "short_name": "ttlcd",
+  "description": "Web interface for the ttlcd USB LCD panel daemon",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#1e1e2e",
+  "theme_color": "#89b4fa",
+  "icons": [
+    {
+      "src": "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='12' fill='%231e1e2e'/><text y='70' font-size='60' text-anchor='middle' x='50'>🖥</text></svg>",
+      "sizes": "any",
+      "type": "image/svg+xml"
+    }
+  ]
+}
