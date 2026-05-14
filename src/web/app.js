@@ -465,6 +465,34 @@ async function fetchPanelInfo() {
   } catch (_) {}
 }
 
+async function fetchUsbDevices() {
+  try {
+    const d = await apiJson('GET', '/api/usb/devices');
+    const countEl = document.getElementById('info-usb-count');
+    const listEl  = document.getElementById('info-usb-list');
+    if (countEl) countEl.textContent = `${d.count} device${d.count !== 1 ? 's' : ''}`;
+    if (listEl) {
+      listEl.innerHTML = (d.devices || []).map(dev => {
+        const label = dev.product || `${dev.vid}:${dev.pid}`;
+        const serial = dev.serial ? ` (${dev.serial})` : '';
+        const match = dev.vid === '264a' && dev.pid === '2343';
+        const style = match ? 'color:var(--green);font-weight:600' : '';
+        return `<div style="${style}">${dev.vid}:${dev.pid} — ${label}${serial}</div>`;
+      }).join('');
+    }
+  } catch (_) {}
+}
+
+(function initListUsbBtn() {
+  const btn = document.getElementById('list-usb-btn');
+  if (!btn) return;
+  btn.addEventListener('click', async () => {
+    btn.disabled = true;
+    await fetchUsbDevices();
+    btn.disabled = false;
+  });
+})();
+
 // ─── System snapshot ──────────────────────────────────────────────────────────
 async function fetchSnapshot() {
   try {

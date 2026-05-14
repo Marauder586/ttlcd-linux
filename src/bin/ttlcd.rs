@@ -1967,6 +1967,7 @@ async fn run_daemon(
             // Panel hardware info
             .route("/api/panel/info",       web::get().to(api_panel_info))
             .route("/api/panel/reconnect", web::post().to(api_panel_reconnect))
+            .route("/api/usb/devices",    web::get().to(api_usb_devices))
             // Large text banner (POST to display, GET to fetch last banner)
             .route("/api/banner",         web::post().to(api_banner))
             // Modes with descriptions
@@ -6123,6 +6124,67 @@ async fn api_panel_reconnect(state: web::Data<DaemonState>) -> impl Responder {
     HttpResponse::Ok().json(serde_json::json!({
         "ok": true,
         "message": "reconnect attempt scheduled — check /api/panel/info in a few seconds"
+    }))
+}
+
+// ─── USB device listing endpoint ─────────────────────────────────────────────
+
+/// GET /api/usb/devices — list all USB devices visible to the system via rusb.
+///
+/// Returns a JSON array of `{ bus, device, vid, pid, manufacturer, product, serial }`.
+/// Useful for diagnosing why the panel isn't found (wrong VID:PID, permissions, etc.).
+async fn api_usb_devices() -> impl Responder {
+    #[derive(serde::Serialize)]
+    struct UsbDev {
+        bus:    u8,
+        device: u8,
+        vid:    String,
+        pid:    String,
+        manufacturer: Option<String>,
+        product:      Option<String>,
+        serial:       Option<String>,
+    }
+
+    let devices = tokio::task::spawn_blocking(|| -> Vec<UsbDev> {
+        use rusb::UsbContext as _;
+        let ctx = match rusb::Context::new() {
+            Ok(c) => c,
+            Err(_) => return Vec::new(),
+        };
+        let devs = match ctx.devices() {
+            Ok(d) => d,
+            Err(_) => return Vec::new(),
+        };
+        let mut result = Vec::new();
+        for dev in devs.iter() {
+            let desc = match dev.device_descriptor() {
+                Ok(d) => d,
+                Err(_) => continue,
+            };
+            let bus    = dev.bus_number();
+            let device = dev.address();
+            let vid    = format!("{:04x}", desc.vendor_id());
+            let pid    = format!("{:04x}", desc.product_id());
+
+            // Try to open and read string descriptors (may fail without permissions)
+            // Try to open and read string descriptors (may fail without permissions)
+            let (manufacturer, product, serial) = if let Ok(handle) = dev.open() {
+                let m = handle.read_manufacturer_string_ascii(&desc).ok();
+                let p = handle.read_product_string_ascii(&desc).ok();
+                let s = handle.read_serial_number_string_ascii(&desc).ok();
+                (m, p, s)
+            } else {
+                (None, None, None)
+            };
+
+            result.push(UsbDev { bus, device, vid, pid, manufacturer, product, serial });
+        }
+        result
+    }).await.unwrap_or_default();
+
+    HttpResponse::Ok().json(serde_json::json!({
+        "count": devices.len(),
+        "devices": devices,
     }))
 }
 
