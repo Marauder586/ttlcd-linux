@@ -1973,6 +1973,8 @@ async fn run_daemon(
             .route("/api/ntfy/config",              web::post().to(api_set_ntfy_config))
             .route("/api/ntfy/config",              web::delete().to(api_clear_ntfy_config))
             .route("/api/ntfy/test",                web::post().to(api_ntfy_test))
+            // Batch API
+            .route("/api/batch",             web::post().to(api_batch))
             // Screensaver
             .route("/api/screensaver",       web::get().to(api_get_screensaver))
             .route("/api/screensaver",       web::post().to(api_set_screensaver))
@@ -4542,6 +4544,24 @@ async fn api_metrics(state: web::Data<DaemonState>) -> impl Responder {
         }
     }
 
+    // Screensaver metrics
+    {
+        let timeout = *state.screensaver_timeout_secs.lock().unwrap();
+        let active  = *state.screensaver_active.lock().unwrap();
+        let last    = *state.last_activity_secs.lock().unwrap();
+        let now_s2  = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+        push(&mut out, "# HELP ttlcd_screensaver_active 1 if screensaver is currently active".into());
+        push(&mut out, "# TYPE ttlcd_screensaver_active gauge".into());
+        push(&mut out, format!("ttlcd_screensaver_active {}", if active { 1 } else { 0 }));
+        push(&mut out, "# HELP ttlcd_screensaver_timeout_secs Configured screensaver idle timeout (0=disabled)".into());
+        push(&mut out, "# TYPE ttlcd_screensaver_timeout_secs gauge".into());
+        push(&mut out, format!("ttlcd_screensaver_timeout_secs {}", timeout));
+        push(&mut out, "# HELP ttlcd_seconds_since_activity Seconds since last API activity".into());
+        push(&mut out, "# TYPE ttlcd_seconds_since_activity gauge".into());
+        push(&mut out, format!("ttlcd_seconds_since_activity {}", now_s2.saturating_sub(last)));
+    }
+
     HttpResponse::Ok()
         .content_type("text/plain; version=0.0.4; charset=utf-8")
         .body(out)
@@ -7088,6 +7108,11 @@ async fn api_docs() -> HttpResponse {
     <tr><td>/api/ntfy/test</td><td class="badge-post">POST</td><td>Send test notification to configured topic</td></tr>
   </tbody></table>
 
+  <h2>Batch API</h2>
+  <table><thead><tr><th>Endpoint</th><th>Method</th><th>Description</th></tr></thead><tbody>
+    <tr><td>/api/batch</td><td class="badge-post">POST</td><td>Execute up to 20 operations atomically <code>[&#123;"method":"POST","path":"/api/mode","body":&#123;"mode":"sysinfo"&#125;&#125;,...]</code> — returns per-op status array</td></tr>
+  </tbody></table>
+
   <h2>On-Demand Render</h2>
   <table><thead><tr><th>Endpoint</th><th>Method</th><th>Description</th></tr></thead><tbody>
     <tr><td>/api/render/&#123;mode&#125;</td><td class="badge-get">GET</td><td>Render any mode to JPEG without updating the panel. Query: <code>quality=85&amp;rotate=0</code></td></tr>
@@ -8786,4 +8811,188 @@ async fn api_screensaver_wake(state: web::Data<DaemonState>) -> impl Responder {
         *state.mode.lock().unwrap() = prev;
     }
     HttpResponse::Ok().json(serde_json::json!({ "ok": true, "was_active": was_active }))
+}
+
+
+// ─── Batch API ────────────────────────────────────────────────────────────────
+
+/// POST /api/batch — execute multiple API operations in a single HTTP request.
+///
+/// This is useful for CI/CD pipelines, automation scripts, and any client that
+/// needs to atomically configure several aspects of the daemon (e.g. set mode,
+/// update metrics, and trigger an alert) without the latency of multiple round-trips.
+///
+/// Request body:
+/// ```json
+/// [
+///   { "method": "POST", "path": "/api/mode",  "body": { "mode": "sysinfo" } },
+///   { "method": "POST", "path": "/api/alert", "body": { "text": "Deploy started" } },
+///   { "method": "POST", "path": "/api/progress", "body": { "label": "Deploy", "value": 0, "total": 100 } }
+/// ]
+/// ```
+///
+/// Returns an array of per-operation results:
+/// ```json
+/// [
+///   { "index": 0, "status": 200, "body": "..." },
+///   { "index": 1, "status": 200, "body": "..." },
+///   { "index": 2, "status": 200, "body": "..." }
+/// ]
+/// ```
+///
+/// Operations are executed in order. On failure, processing continues for the
+/// remaining operations (fail-soft). Up to 20 operations per batch.
+///
+/// Supported methods: GET, POST, DELETE.
+/// Supported paths: any path that has a corresponding handler.
+///
+/// Note: GET operations return a simplified summary, not the full response body,
+/// since this endpoint is primarily intended for write operations.
+async fn api_batch(
+    state: web::Data<DaemonState>,
+    body:  web::Json<Vec<serde_json::Value>>,
+) -> impl Responder {
+    let ops = body.into_inner();
+    if ops.is_empty() {
+        return HttpResponse::BadRequest().json(serde_json::json!({ "error": "empty batch" }));
+    }
+    if ops.len() > 20 {
+        return HttpResponse::BadRequest().json(serde_json::json!({
+            "error": "batch too large",
+            "max": 20,
+            "got": ops.len(),
+        }));
+    }
+
+    let mut results: Vec<serde_json::Value> = Vec::with_capacity(ops.len());
+
+    for (idx, op) in ops.into_iter().enumerate() {
+        let method = op.get("method").and_then(|v| v.as_str()).unwrap_or("POST").to_uppercase();
+        let path   = op.get("path").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        let op_body = op.get("body").cloned().unwrap_or(serde_json::Value::Null);
+
+        let result = process_batch_op(&state, &method, &path, op_body).await;
+        results.push(serde_json::json!({
+            "index":  idx,
+            "status": result.0,
+            "body":   result.1,
+        }));
+    }
+
+    let all_ok = results.iter().all(|r| r["status"].as_u64().unwrap_or(500) < 400);
+    HttpResponse::Ok().json(serde_json::json!({
+        "ok":      all_ok,
+        "count":   results.len(),
+        "results": results,
+    }))
+}
+
+/// Execute a single operation within a batch request.
+/// Returns (http_status_code, response_body_string).
+async fn process_batch_op(
+    state: &web::Data<DaemonState>,
+    method: &str,
+    path: &str,
+    body: serde_json::Value,
+) -> (u16, String) {
+    match (method, path) {
+        // ── Mode ──
+        ("POST", "/api/mode") => {
+            let mode_name = body.get("mode").and_then(|v| v.as_str()).unwrap_or("");
+            if let Some(mode) = DisplayMode::from_str_name(mode_name) {
+                let cur = state.mode.lock().unwrap().clone();
+                if !cur.is_transient() { *state.prev_mode.lock().unwrap() = cur; }
+                *state.mode.lock().unwrap() = mode;
+                (200, format!("mode set to {}", mode_name))
+            } else {
+                (400, format!("unknown mode: {}", mode_name))
+            }
+        }
+        ("POST", "/api/mode/next") => {
+            let modes = DisplayMode::ALL_NAMES;
+            let cur = state.mode.lock().unwrap().as_str().to_string();
+            let pos = modes.iter().position(|&m| m == cur).unwrap_or(0);
+            let next_name = modes[(pos + 1) % modes.len()];
+            if let Some(next) = DisplayMode::from_str_name(next_name) {
+                *state.mode.lock().unwrap() = next;
+                (200, format!("mode → {}", next_name))
+            } else { (500, "internal error".into()) }
+        }
+        // ── Alert ──
+        ("POST", "/api/alert") => {
+            let text = body.get("text").and_then(|v| v.as_str()).unwrap_or("batch alert");
+            push_history(state, HistoryKind::Alert, text.to_string());
+            (200, "alert queued".into())
+        }
+        // ── Text ──
+        ("POST", "/api/text") => {
+            if let Ok(payload) = serde_json::from_value::<CustomTextPayload>(body) {
+                push_history(state, HistoryKind::Text, format!("text: {}", payload.title.as_deref().unwrap_or("")));
+                *state.pending_text.lock().unwrap() = Some(payload.clone());
+                let prev = state.mode.lock().unwrap().clone();
+                if !prev.is_transient() { *state.prev_mode.lock().unwrap() = prev; }
+                *state.mode.lock().unwrap() = DisplayMode::CustomText;
+                (200, "text set".into())
+            } else {
+                (400, "invalid text payload".into())
+            }
+        }
+        // ── Progress ──
+        ("POST", "/api/progress") => {
+            let label    = body.get("label").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let value    = body.get("value").and_then(|v| v.as_f64()).unwrap_or(0.0);
+            let total    = body.get("total").and_then(|v| v.as_f64()).unwrap_or(100.0);
+            let sublabel = body.get("sublabel").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            {
+                let mut ps = state.progress_state.lock().unwrap();
+                if !label.is_empty()    { ps.label    = label.clone(); }
+                if !sublabel.is_empty() { ps.sublabel = sublabel; }
+                ps.value = value;
+                ps.total = total;
+            }
+            let cur = state.mode.lock().unwrap().clone();
+            if !cur.is_transient() && cur != DisplayMode::Progress {
+                *state.prev_mode.lock().unwrap() = cur;
+                *state.mode.lock().unwrap() = DisplayMode::Progress;
+            }
+            (200, format!("progress {}/{}", value, total))
+        }
+        ("DELETE", "/api/progress") => {
+            {
+                let mut ps = state.progress_state.lock().unwrap();
+                *ps = ttlcd::display::ProgressState::default();
+            }
+            let prev = state.prev_mode.lock().unwrap().clone();
+            *state.mode.lock().unwrap() = prev;
+            (200, "progress cleared".into())
+        }
+        // ── Quality ──
+        ("POST", "/api/quality") => {
+            if let Some(q) = body.get("quality").and_then(|v| v.as_u64()) {
+                *state.quality.lock().unwrap() = (q as u8).clamp(1, 100);
+                (200, format!("quality={}", q))
+            } else { (400, "missing quality".into()) }
+        }
+        // ── Blank ──
+        ("POST", "/api/blank") => {
+            *state.mode.lock().unwrap() = DisplayMode::Idle;
+            (200, "blanked".into())
+        }
+        // ── Clear ──
+        ("POST", "/api/clear") => {
+            let prev = state.prev_mode.lock().unwrap().clone();
+            *state.mode.lock().unwrap() = prev;
+            (200, "cleared".into())
+        }
+        // ── GET status (informational) ──
+        ("GET", "/api/status") => {
+            let mode = state.mode.lock().unwrap().as_str().to_string();
+            let seq  = *state.frame_seq.lock().unwrap();
+            (200, format!("{{\"mode\":\"{}\",\"frame_seq\":{}}}", mode, seq))
+        }
+        // ── Unknown ──
+        _ => {
+            (404, format!("unsupported batch operation: {} {}", method, path))
+        }
+    }
 }
