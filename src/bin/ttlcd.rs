@@ -78,6 +78,8 @@ use ttlcd::{
         render_speedometer_gauge,
         render_disk_pie,
         render_thermal_dashboard,
+        render_plasma,
+        render_fireworks,
         read_docker_containers,
         read_user_sessions,
         HttpMonitorResult,
@@ -789,6 +791,8 @@ enum DisplayMode {
     SpeedometerGauge,
     DiskPie,
     ThermalDashboard,
+    Plasma,
+    Fireworks,
     Idle,
     CustomImage,
     CustomText,
@@ -798,7 +802,7 @@ enum DisplayMode {
 impl DisplayMode {
     const ALL_NAMES: &'static [&'static str] = &[
         "clock", "big_clock", "clock_sysinfo", "sysinfo", "cpu_detail",
-        "network", "disk_usage", "process_top", "temperature", "memory_detail", "countdown", "cpu_graph", "net_graph", "recent_alerts", "process_memory", "disk_io", "calendar", "stopwatch", "metrics", "weather", "notes", "qr_code", "pomodoro", "battery", "world_clock", "ticker", "http_status", "shell_cmd", "ping_monitor", "dashboard", "log_tail", "cpu_freq", "hostname_ip", "rss_feed", "service_status", "net_connections", "uptime_fancy", "os_info", "docker_status", "logged_in_users", "load_graph", "mem_graph", "progress", "matrix_rain", "temp_graph", "disk_io_graph", "graphs_overview", "analog_clock", "ping_graph", "status_overview", "game_of_life", "led_clock", "bounce_ball", "net_speed_graph", "cpu_core_bars", "speedometer_gauge", "disk_pie", "thermal_dashboard", "idle",
+        "network", "disk_usage", "process_top", "temperature", "memory_detail", "countdown", "cpu_graph", "net_graph", "recent_alerts", "process_memory", "disk_io", "calendar", "stopwatch", "metrics", "weather", "notes", "qr_code", "pomodoro", "battery", "world_clock", "ticker", "http_status", "shell_cmd", "ping_monitor", "dashboard", "log_tail", "cpu_freq", "hostname_ip", "rss_feed", "service_status", "net_connections", "uptime_fancy", "os_info", "docker_status", "logged_in_users", "load_graph", "mem_graph", "progress", "matrix_rain", "temp_graph", "disk_io_graph", "graphs_overview", "analog_clock", "ping_graph", "status_overview", "game_of_life", "led_clock", "bounce_ball", "net_speed_graph", "cpu_core_bars", "speedometer_gauge", "disk_pie", "thermal_dashboard", "plasma", "fireworks", "idle",
     ];
 
     fn from_str_name(s: &str) -> Option<Self> {
@@ -858,6 +862,8 @@ impl DisplayMode {
             "speedometer_gauge"   => Some(DisplayMode::SpeedometerGauge),
             "disk_pie"            => Some(DisplayMode::DiskPie),
             "thermal_dashboard"   => Some(DisplayMode::ThermalDashboard),
+            "plasma"              => Some(DisplayMode::Plasma),
+            "fireworks"           => Some(DisplayMode::Fireworks),
             "idle"             => Some(DisplayMode::Idle),
             "custom_text"   => Some(DisplayMode::CustomText),
             "slideshow"     => Some(DisplayMode::Slideshow),
@@ -925,6 +931,8 @@ impl DisplayMode {
     DisplayMode::SpeedometerGauge => "speedometer_gauge",
     DisplayMode::DiskPie          => "disk_pie",
     DisplayMode::ThermalDashboard => "thermal_dashboard",
+    DisplayMode::Plasma        => "plasma",
+    DisplayMode::Fireworks     => "fireworks",
             DisplayMode::Idle           => "idle",
             DisplayMode::CustomImage  => "image",
             DisplayMode::CustomText   => "custom_text",
@@ -2466,6 +2474,8 @@ fn display_loop(panel: Arc<Mutex<Option<Panel>>>, state: DaemonState) {
                 DisplayMode::SpeedometerGauge => (render_speedometer_gauge(), 2),
                 DisplayMode::DiskPie          => (render_disk_pie(), 10),
                 DisplayMode::ThermalDashboard => (render_thermal_dashboard(), 5),
+                DisplayMode::Plasma        => (render_plasma(), 0),
+                DisplayMode::Fireworks     => (render_fireworks(), 0),
                 DisplayMode::MatrixRain => (render_matrix_rain(), 0),
                 DisplayMode::Idle
                 | DisplayMode::CustomImage
@@ -5876,6 +5886,8 @@ async fn api_status_badge(state: web::Data<DaemonState>) -> impl Responder {
         "speedometer_gauge"                    => "#89dceb",  // sky
         "disk_pie"                             => "#a6e3a1",  // green
         "thermal_dashboard"                    => "#fab387",  // peach
+        "plasma"                               => "#cba6f7",  // mauve
+        "fireworks"                            => "#f38ba8",  // red
         "status_overview"                      => "#89dceb",  // sky
         "analog_clock"                         => "#cba6f7",  // mauve
         "net_speed_graph"                      => "#a6e3a1",  // green
@@ -8854,6 +8866,8 @@ async fn api_render_mode_preview(
             DisplayMode::SpeedometerGauge => render_speedometer_gauge(),
             DisplayMode::DiskPie          => render_disk_pie(),
             DisplayMode::ThermalDashboard => render_thermal_dashboard(),
+            DisplayMode::Plasma        => render_plasma(),
+            DisplayMode::Fireworks     => render_fireworks(),
             DisplayMode::MatrixRain       => render_matrix_rain(),
             DisplayMode::Progress     => {
                 let ps = state_clone.progress_state.lock().unwrap().clone();

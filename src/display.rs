@@ -7655,8 +7655,8 @@ pub fn render_bounce_ball() -> DynamicImage {
 
 // ─── Speedometer Gauge ───────────────────────────────────────────────────────
 
-/// Render two large analog speedometer gauges: CPU% (top) and RAM% (bottom).
-/// Each gauge is a filled half-circle arc with a needle, labels, and min/max marks.
+/// Render two large analog speedometer gauges side-by-side: CPU% (left) and RAM% (right).
+/// Each gauge is a filled arc with needle, tick marks, labels, and value display.
 pub fn render_speedometer_gauge() -> DynamicImage {
     use std::f64::consts::PI;
     use sysinfo::{System, MemoryRefreshKind, CpuRefreshKind};
@@ -7667,143 +7667,181 @@ pub fn render_speedometer_gauge() -> DynamicImage {
     sys.refresh_cpu_specifics(CpuRefreshKind::everything());
     sys.refresh_memory_specifics(MemoryRefreshKind::everything());
 
-    let cpu_pct  = sys.global_cpu_usage() as f64;
-    let ram_pct  = if sys.total_memory() > 0 {
+    let cpu_pct = sys.global_cpu_usage() as f64;
+    let ram_pct = if sys.total_memory() > 0 {
         sys.used_memory() as f64 / sys.total_memory() as f64 * 100.0
     } else { 0.0 };
+
+    // Also get temperature for subtitle
+    let temp: f32 = {
+        use sysinfo::Components;
+        let comps = Components::new_with_refreshed_list();
+        comps.iter().filter_map(|c| c.temperature()).filter(|t| t.is_finite() && *t > 0.0).fold(0.0_f32, f32::max)
+    };
 
     let font = font_bold();
 
     let mut img = RgbImage::new(480, 480);
     for p in img.pixels_mut() { *p = BG; }
 
-    // ── Draw a single gauge into a region of the image ──────────────────────
-    let draw_gauge = |img: &mut RgbImage, cx: i32, cy: i32, r: i32,
-                      value: f64, label: &str, unit: &str| {
-        // Gauge spans from 210° to 330° (total 240° arc, half-circle style)
-        let start_angle = 210.0_f64.to_radians();
-        let end_angle   = 330.0_f64.to_radians();
-        let arc_span    = 240.0_f64.to_radians(); // = end - start going clockwise
+    // Title bar
+    let title = "System Gauges";
+    let tw = text_width(&font, PxScale::from(24.0), title);
+    draw_text_mut(&mut img, TEXT, (480 - tw) / 2, 6, PxScale::from(24.0), &font, title);
 
-        let angle_for_pct = |pct: f64| -> f64 {
-            // 0% → start_angle, 100% → end_angle, going clockwise
-            start_angle + (pct / 100.0) * arc_span
+    // Subtitle: temp + timestamp
+    let now = chrono::Local::now();
+    let sub = if temp > 0.0 {
+        format!("{:.0}°C  {:02}:{:02}:{:02}", temp, now.hour(), now.minute(), now.second())
+    } else {
+        format!("{:02}:{:02}:{:02}", now.hour(), now.minute(), now.second())
+    };
+    let sw = text_width(&font, PxScale::from(16.0), &sub);
+    draw_text_mut(&mut img, OVERLAY0, (480 - sw) / 2, 34, PxScale::from(16.0), &font, &sub);
+
+    // ── Core draw_gauge closure ────────────────────────────────────────────────
+    // Gauge spans 225° to 315° (clockwise, i.e. -135° to +135° from the bottom)
+    // In standard screen coords (y down): start at bottom-left, end at bottom-right
+    let draw_gauge = |img: &mut RgbImage, cx: i32, cy: i32, r: i32,
+                      value: f64, label: &str, unit: &str, max_val: f64| {
+        // Arc from 225° to 315° going clockwise = 270 degrees total
+        // In math angles (y up), 225° = bottom-left, 315° = bottom-right
+        // In screen angles (y down), same numbers but sin/cos are affected
+        // We'll use screen coords: angle 0 = right, increases clockwise
+        // Start at 225° screen (SW), end at 315° screen (SE)
+        let start_deg = 225.0_f64;
+        let _end_deg  = 315.0_f64;
+        // Arc goes clockwise from start to end via top (0° at right, going up through 270°)
+        // Arc span = 270 degrees total (225→360→45→135→315 via top, but that's 360-225+315=450... no)
+        // Let's do it simply: start 225°, end 315°, span=270° going counterclockwise
+        // (i.e., decreasing degrees from 225 → 180 → 90 → 0 → 315)
+        // In screen coords angle a: x = cx + r*cos(a), y = cy + r*sin(a)
+        // We want: 0% at 225° (bottom-left), 100% at 315° (bottom-right)
+        // Going counterclockwise (decreasing angle) from 225° to 315°:
+        // that's 225 → 180 → 90 → 0/360 → 315 = 270° span counterclockwise
+        let arc_span_deg = 270.0_f64;
+
+        // Convert angle function: 0..100% → screen angle
+        let angle_for = |pct: f64| -> f64 {
+            // Start at 225°, go counterclockwise (decreasing) by arc_span_deg * pct/100
+            let a_deg = start_deg - (arc_span_deg * (pct / 100.0).clamp(0.0, 1.0));
+            a_deg.to_radians()
         };
 
-        // ── Background arc (full track) ──────────────────────────────────
-        for deg in 0..3600_i32 {
-            let a = deg as f64 * 0.1_f64.to_radians();
-            // Clamp to our arc
-            let norm = (a - start_angle).rem_euclid(2.0 * PI);
-            let norm_end = (end_angle - start_angle).rem_euclid(2.0 * PI);
-            if norm > norm_end { continue; }
-
-            for rr in (r - 26)..r {
-                let px = cx + (rr as f64 * a.cos()) as i32;
-                let py = cy + (rr as f64 * a.sin()) as i32;
-                if px >= 0 && py >= 0 && (px as u32) < img.width() && (py as u32) < img.height() {
-                    img.put_pixel(px as u32, py as u32, SURFACE0);
+        // ── Background circle (behind gauge) ─────────────────────────────
+        for dy in -r..=r {
+            for dx in -r..=r {
+                if dx*dx + dy*dy <= (r-1)*(r-1) && dx*dx + dy*dy > (r-30)*(r-30) {
+                    // Only draw in the arc region
+                    let a_deg = (dy as f64).atan2(dx as f64).to_degrees();
+                    // Normalize to 0..360
+                    let a_norm = if a_deg < 0.0 { a_deg + 360.0 } else { a_deg };
+                    // Check if in arc (225° → CCW → 315°, covers top half + small bottom bits)
+                    // Arc covers: from 315° going up to 225° = 315°..360°, 0°..225°
+                    let in_arc = if a_norm <= 225.0 || a_norm >= 315.0 { true } else { false };
+                    if in_arc {
+                        let px = (cx + dx) as u32;
+                        let py = (cy + dy) as u32;
+                        if px < img.width() && py < img.height() {
+                            img.put_pixel(px, py, SURFACE0);
+                        }
+                    }
                 }
             }
         }
 
-        // ── Coloured value arc ────────────────────────────────────────────
-        let value_angle = angle_for_pct(value.clamp(0.0, 100.0));
-        // Color: green < 50%, yellow < 75%, red >= 75%
-        let arc_color = if value < 50.0 { GREEN } else if value < 75.0 { YELLOW } else { RED };
+        // ── Coloured value arc ───────────────────────────────────────────
+        let val_pct = (value / max_val).clamp(0.0, 1.0) * 100.0;
+        let arc_color = if val_pct < 50.0 { GREEN } else if val_pct < 75.0 { YELLOW } else { RED };
 
-        for deg in 0..3600_i32 {
-            let a = deg as f64 * 0.1_f64.to_radians();
-            let norm = (a - start_angle).rem_euclid(2.0 * PI);
-            let norm_val = (value_angle - start_angle).rem_euclid(2.0 * PI);
-            if norm > norm_val { continue; }
-
-            for rr in (r - 26)..r {
-                let px = cx + (rr as f64 * a.cos()) as i32;
-                let py = cy + (rr as f64 * a.sin()) as i32;
+        // Draw arc by sampling angles
+        let steps = 2700_i32; // 0.1° increments
+        for step in 0..=steps {
+            // From 225° down to 315° counterclockwise
+            let a_deg = start_deg - (arc_span_deg * step as f64 / steps as f64);
+            if a_deg < (start_deg - arc_span_deg * (val_pct / 100.0)) { break; }
+            let a = a_deg.to_radians();
+            for rr in (r-28)..(r-2) {
+                let px = (cx as f64 + rr as f64 * a.cos()) as i32;
+                let py = (cy as f64 + rr as f64 * a.sin()) as i32;
                 if px >= 0 && py >= 0 && (px as u32) < img.width() && (py as u32) < img.height() {
                     img.put_pixel(px as u32, py as u32, arc_color);
                 }
             }
         }
 
-        // ── Tick marks ────────────────────────────────────────────────────
-        for tick in 0..=10 {
-            let pct = tick as f64 * 10.0;
-            let ta = angle_for_pct(pct);
-            let inner_r = if tick % 5 == 0 { r - 42 } else { r - 36 };
-            for rr in inner_r..(r + 2) {
-                let px = cx + (rr as f64 * ta.cos()) as i32;
-                let py = cy + (rr as f64 * ta.sin()) as i32;
+        // ── Tick marks (0, 25, 50, 75, 100%) ────────────────────────────
+        for tick_pct_10 in 0..=10 {
+            let tick_pct = tick_pct_10 as f64 * 10.0;
+            let a = angle_for(tick_pct);
+            let (is_major, tick_inner) = if tick_pct_10 % 5 == 0 { (true, r-44) } else { (false, r-36) };
+            for rr in tick_inner..(r+3) {
+                let px = (cx as f64 + rr as f64 * a.cos()) as i32;
+                let py = (cy as f64 + rr as f64 * a.sin()) as i32;
                 if px >= 0 && py >= 0 && (px as u32) < img.width() && (py as u32) < img.height() {
-                    img.put_pixel(px as u32, py as u32, OVERLAY0);
+                    img.put_pixel(px as u32, py as u32, if is_major { OVERLAY0 } else { SURFACE0 });
                 }
             }
         }
 
-        // ── Needle ────────────────────────────────────────────────────────
-        let na = angle_for_pct(value.clamp(0.0, 100.0));
-        let needle_len = (r - 30) as f64;
-        let nx = cx as f32 + (needle_len * na.cos()) as f32;
-        let ny = cy as f32 + (needle_len * na.sin()) as f32;
-        // Draw a 3px-wide needle
+        // ── Needle ───────────────────────────────────────────────────────
+        let na = angle_for(val_pct);
+        let nl = r as f64 - 32.0;
+        let nx = cx as f32 + (nl * na.cos()) as f32;
+        let ny = cy as f32 + (nl * na.sin()) as f32;
         for offset in -1_i32..=1 {
             let perp = na + PI / 2.0;
-            let sx = cx as f32 + (offset as f64 * perp.cos() * 2.0) as f32;
-            let sy = cy as f32 + (offset as f64 * perp.sin() * 2.0) as f32;
-            let lx = nx + (offset as f64 * perp.cos() * 2.0) as f32;
-            let ly = ny + (offset as f64 * perp.sin() * 2.0) as f32;
+            let sx = cx as f32 + (offset as f64 * perp.cos()) as f32;
+            let sy = cy as f32 + (offset as f64 * perp.sin()) as f32;
+            let lx = nx + (offset as f64 * perp.cos()) as f32;
+            let ly = ny + (offset as f64 * perp.sin()) as f32;
             draw_antialiased_line_segment_mut(img, (sx as i32, sy as i32),
                 (lx as i32, ly as i32), WHITE, interpolate);
         }
 
-        // ── Center pivot dot ──────────────────────────────────────────────
-        for dy in -6_i32..=6 {
-            for dx in -6_i32..=6 {
-                if dx*dx + dy*dy <= 36 {
+        // ── Pivot dot ────────────────────────────────────────────────────
+        for dy in -5_i32..=5 {
+            for dx in -5_i32..=5 {
+                if dx*dx + dy*dy <= 25 {
                     let px = (cx + dx) as u32;
                     let py = (cy + dy) as u32;
                     if px < img.width() && py < img.height() {
-                        img.put_pixel(px, py, TEXT);
+                        img.put_pixel(px, py, arc_color);
                     }
                 }
             }
         }
 
-        // ── Label text (e.g. "CPU") ───────────────────────────────────────
-        let lw = text_width(&font, PxScale::from(26.0), label);
-        draw_text_mut(img, TEXT, cx - lw / 2, cy - 46, PxScale::from(26.0), &font, label);
+        // ── Label ────────────────────────────────────────────────────────
+        let lw = text_width(&font, PxScale::from(22.0), label);
+        draw_text_mut(img, TEXT, cx - lw / 2, cy - r - 8, PxScale::from(22.0), &font, label);
 
         // ── Value text ───────────────────────────────────────────────────
-        let val_str = format!("{:.1}{}", value, unit);
-        let vw = text_width(&font, PxScale::from(34.0), &val_str);
-        draw_text_mut(img, arc_color, cx - vw / 2, cy + 18, PxScale::from(34.0), &font, &val_str);
+        let val_str = format!("{:.0}{}", value, unit);
+        let vw = text_width(&font, PxScale::from(30.0), &val_str);
+        draw_text_mut(img, arc_color, cx - vw / 2, cy + 14, PxScale::from(30.0), &font, &val_str);
 
-        // ── Min / max labels ─────────────────────────────────────────────
-        let zero_a = angle_for_pct(0.0);
-        let max_a  = angle_for_pct(100.0);
-        let lbl_r  = r + 16;
-        let zero_x = cx + (lbl_r as f64 * zero_a.cos()) as i32 - 4;
-        let zero_y = cy + (lbl_r as f64 * zero_a.sin()) as i32 - 6;
-        draw_text_mut(img, OVERLAY0, zero_x, zero_y, PxScale::from(16.0), &font, "0");
-        let max_x = cx + (lbl_r as f64 * max_a.cos()) as i32 - 10;
-        let max_y = cy + (lbl_r as f64 * max_a.sin()) as i32 - 6;
-        draw_text_mut(img, OVERLAY0, max_x, max_y, PxScale::from(16.0), &font, "100");
+        // ── 0 and max labels ─────────────────────────────────────────────
+        let a0   = angle_for(0.0);
+        let a100 = angle_for(100.0);
+        let lr   = r + 18;
+        let x0   = cx + (lr as f64 * a0.cos()) as i32 - 4;
+        let y0   = cy + (lr as f64 * a0.sin()) as i32 - 6;
+        draw_text_mut(img, OVERLAY0, x0, y0, PxScale::from(15.0), &font, "0");
+        let x100 = cx + (lr as f64 * a100.cos()) as i32 - 14;
+        let y100 = cy + (lr as f64 * a100.sin()) as i32 - 6;
+        let max_str = format!("{:.0}", max_val);
+        draw_text_mut(img, OVERLAY0, x100, y100, PxScale::from(15.0), &font, &max_str);
     };
 
-    // Draw CPU gauge in top half
-    draw_gauge(&mut img, 240, 200, 170, cpu_pct, "CPU", "%");
-    // Draw RAM gauge in bottom half
-    draw_gauge(&mut img, 240, 400, 68, ram_pct, "RAM", "%");
-
-    // Divider line
-    for x in 20..460_u32 {
-        if x < img.width() { img.put_pixel(x, 285, SURFACE0); }
-    }
+    let gauge_r = 170_i32;
+    // CPU gauge: left side
+    draw_gauge(&mut img, 120, 310, gauge_r, cpu_pct, "CPU", "%", 100.0);
+    // RAM gauge: right side
+    draw_gauge(&mut img, 360, 310, gauge_r, ram_pct, "RAM", "%", 100.0);
 
     DynamicImage::ImageRgb8(img)
 }
-
 // ─── Disk Pie Chart ───────────────────────────────────────────────────────────
 
 /// Render disk partitions as a pie chart with used/free sectors and labels.
@@ -8000,6 +8038,241 @@ pub fn render_thermal_dashboard() -> DynamicImage {
 
     DynamicImage::ImageRgb8(img)
 }
+
+
+// ─── Plasma / Sine Wave Screensaver ─────────────────────────────────────────
+
+static PLASMA_TICK: std::sync::OnceLock<std::sync::Mutex<u64>> = std::sync::OnceLock::new();
+
+/// Animated plasma/sine-wave colour field screensaver.
+/// Uses multiple overlapping sine waves in Catppuccin Mocha palette.
+pub fn render_plasma() -> DynamicImage {
+    let tick = {
+        let m = PLASMA_TICK.get_or_init(|| std::sync::Mutex::new(0));
+        let mut t = m.lock().unwrap();
+        let v = *t;
+        *t = t.wrapping_add(1);
+        v
+    };
+
+    let t = tick as f64 * 0.04; // animation speed
+
+    let mut img = RgbImage::new(480, 480);
+    let w = 480.0_f64;
+    let h = 480.0_f64;
+
+    // Catppuccin Mocha-inspired palette wave
+    for y in 0..480_u32 {
+        for x in 0..480_u32 {
+            let fx = x as f64 / w;
+            let fy = y as f64 / h;
+
+            // Multiple overlapping sine waves
+            let v1 = (fx * 10.0 + t).sin();
+            let v2 = (fy * 8.0 + t * 0.7).sin();
+            let v3 = ((fx + fy) * 6.0 + t * 1.3).sin();
+            let cx2 = fx - 0.5 + 0.3 * (t * 0.5).sin();
+            let cy2 = fy - 0.5 + 0.3 * (t * 0.7).cos();
+            let v4  = (cx2*cx2 + cy2*cy2).sqrt() * 12.0 + t;
+            let v4  = v4.sin();
+
+            // Combine into a value 0..1
+            let v = (v1 + v2 + v3 + v4) / 4.0; // -1..1
+            let v = (v + 1.0) / 2.0; // 0..1
+
+            // Map to Catppuccin-inspired colours
+            // We blend between a few Catppuccin mocha colours
+            let r; let g; let b;
+            if v < 0.25 {
+                // BG to BLUE
+                let t2 = v / 0.25;
+                r = (30.0 + (137.0 - 30.0) * t2) as u8;
+                g = (30.0 + (180.0 - 30.0) * t2) as u8;
+                b = (46.0 + (250.0 - 46.0) * t2) as u8;
+            } else if v < 0.5 {
+                // BLUE to MAUVE
+                let t2 = (v - 0.25) / 0.25;
+                r = (137.0 + (203.0 - 137.0) * t2) as u8;
+                g = (180.0 + (166.0 - 180.0) * t2) as u8;
+                b = (250.0 + (247.0 - 250.0) * t2) as u8;
+            } else if v < 0.75 {
+                // MAUVE to TEAL
+                let t2 = (v - 0.5) / 0.25;
+                r = (203.0 + (148.0 - 203.0) * t2) as u8;
+                g = (166.0 + (226.0 - 166.0) * t2) as u8;
+                b = (247.0 + (213.0 - 247.0) * t2) as u8;
+            } else {
+                // TEAL to BG
+                let t2 = (v - 0.75) / 0.25;
+                r = (148.0 + (30.0 - 148.0) * t2) as u8;
+                g = (226.0 + (30.0 - 226.0) * t2) as u8;
+                b = (213.0 + (46.0 - 213.0) * t2) as u8;
+            }
+
+            img.put_pixel(x, y, Rgb([r, g, b]));
+        }
+    }
+
+    // Subtle time overlay
+    let font = font_bold();
+    let now = chrono::Local::now();
+    let ts = format!("{:02}:{:02}:{:02}", now.hour(), now.minute(), now.second());
+    let tw = text_width(&font, PxScale::from(24.0), &ts);
+    // Drop shadow
+    draw_text_mut(&mut img, Rgb([0, 0, 0]), (480 - tw) / 2 + 1, 449, PxScale::from(24.0), &font, &ts);
+    draw_text_mut(&mut img, WHITE,           (480 - tw) / 2,     448, PxScale::from(24.0), &font, &ts);
+
+    DynamicImage::ImageRgb8(img)
+}
+
+// ─── Fireworks Screensaver ─────────────────────────────────────────────────────
+
+#[derive(Clone)]
+struct Firework {
+    // Burst origin
+    bx: f32,
+    by: f32,
+    // List of particles: (x, y, vx, vy, life, max_life, color_idx)
+    particles: Vec<(f32, f32, f32, f32, u8, u8, u8)>,
+    // Rocket: (x, y, vy, active)
+    rocket: Option<(f32, f32, f32)>,
+    trail: Vec<(f32, f32)>,
+}
+
+static FIREWORKS: std::sync::OnceLock<std::sync::Mutex<Vec<Firework>>> = std::sync::OnceLock::new();
+static FIREWORKS_TICK: std::sync::OnceLock<std::sync::Mutex<u64>> = std::sync::OnceLock::new();
+
+pub fn render_fireworks() -> DynamicImage {
+    let tick = {
+        let m = FIREWORKS_TICK.get_or_init(|| std::sync::Mutex::new(0));
+        let mut t = m.lock().unwrap();
+        let v = *t;
+        *t = t.wrapping_add(1);
+        v
+    };
+
+    let mut fws = FIREWORKS.get_or_init(|| std::sync::Mutex::new(Vec::new()))
+        .lock().unwrap();
+
+    // LCG pseudo-random
+    let lcg = |s: u64| -> u64 {
+        s.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407)
+    };
+    let mut seed = tick.wrapping_mul(7919).wrapping_add(tick / 37 + 1);
+
+    // Colors (Catppuccin Mocha palette)
+    let colors: &[Rgb<u8>] = &[RED, GREEN, BLUE, YELLOW, MAUVE, TEAL, PEACH, WHITE];
+
+    // Spawn a new rocket every ~20 ticks
+    if tick % 20 == 0 || fws.is_empty() {
+        seed = lcg(seed);
+        let bx = 40.0 + (seed % 400) as f32;
+        seed = lcg(seed);
+        let by = 60.0 + (seed % 200) as f32;
+        fws.push(Firework {
+            bx,
+            by,
+            particles: Vec::new(),
+            rocket: Some((bx, 460.0, -6.0 - (seed % 4) as f32 * 0.8)),
+            trail: Vec::new(),
+        });
+    }
+
+    let mut img = RgbImage::new(480, 480);
+    for p in img.pixels_mut() { *p = BG; }
+
+    // Update and draw all fireworks
+    let mut to_remove = Vec::new();
+    for (idx, fw) in fws.iter_mut().enumerate() {
+        let mut remove = false;
+
+        if let Some((rx, ry, rvy)) = fw.rocket {
+            // Update rocket
+            let ny = ry + rvy;
+            if ny <= fw.by {
+                // Explode!
+                fw.rocket = None;
+                seed = lcg(seed);
+                let n_particles = 40 + (seed % 30) as usize;
+                seed = lcg(seed);
+                let col_idx = (seed % colors.len() as u64) as u8;
+                let max_life: u8 = 30 + (seed % 20) as u8;
+                for i in 0..n_particles {
+                    seed = lcg(seed.wrapping_add(i as u64));
+                    let angle = (i as f64 * 2.0 * std::f64::consts::PI / n_particles as f64)
+                        + (seed % 100) as f64 * 0.01;
+                    let spd: f32 = 1.5 + (seed % 30) as f32 * 0.1;
+                    let vx = (angle.cos() * spd as f64) as f32;
+                    let vy = (angle.sin() * spd as f64) as f32;
+                    fw.particles.push((fw.bx, fw.by, vx, vy, max_life, max_life, col_idx));
+                }
+            } else {
+                fw.rocket = Some((rx, ny, rvy));
+                fw.trail.push((rx, ny));
+                if fw.trail.len() > 8 { fw.trail.remove(0); }
+                // Draw rocket trail
+                for (ti, &(tx, ty)) in fw.trail.iter().enumerate() {
+                    let alpha = ti as u8 * 30 + 10;
+                    let px = tx as i32; let py = ty as i32;
+                    if px >= 0 && py >= 0 && (px as u32) < 480 && (py as u32) < 480 {
+                        img.put_pixel(px as u32, py as u32, Rgb([alpha, alpha, alpha / 2]));
+                    }
+                }
+                // Draw rocket head
+                let rx2 = rx as i32; let ry2 = ny as i32;
+                if rx2 >= 0 && ry2 >= 0 && (rx2 as u32) < 480 && (ry2 as u32) < 480 {
+                    img.put_pixel(rx2 as u32, ry2 as u32, YELLOW);
+                }
+            }
+        }
+
+        // Update and draw particles
+        let mut alive = false;
+        for p in fw.particles.iter_mut() {
+            if p.4 == 0 { continue; }
+            alive = true;
+            p.0 += p.2;            // x += vx
+            p.1 += p.3;            // y += vy
+            p.3 += 0.08;           // gravity
+            p.4 = p.4.saturating_sub(1);
+
+            let px = p.0 as i32; let py = p.1 as i32;
+            if px >= 0 && py >= 0 && (px as u32) < 480 && (py as u32) < 480 {
+                // Fade by remaining life
+                let life_frac = p.4 as f32 / p.5 as f32;
+                let col = colors[p.6 as usize % colors.len()];
+                let r = (col.0[0] as f32 * life_frac) as u8;
+                let g = (col.0[1] as f32 * life_frac) as u8;
+                let b = (col.0[2] as f32 * life_frac) as u8;
+                img.put_pixel(px as u32, py as u32, Rgb([r, g, b]));
+                // 1-pixel glow
+                for (ddx, ddy) in &[(-1,0),(1,0),(0,-1),(0,1)] {
+                    let gx = px + ddx; let gy = py + ddy;
+                    if gx >= 0 && gy >= 0 && (gx as u32) < 480 && (gy as u32) < 480 {
+                        let gr = (col.0[0] as f32 * life_frac * 0.4) as u8;
+                        let gg = (col.0[1] as f32 * life_frac * 0.4) as u8;
+                        let gb = (col.0[2] as f32 * life_frac * 0.4) as u8;
+                        let existing = *img.get_pixel(gx as u32, gy as u32);
+                        img.put_pixel(gx as u32, gy as u32, Rgb([
+                            existing.0[0].saturating_add(gr),
+                            existing.0[1].saturating_add(gg),
+                            existing.0[2].saturating_add(gb),
+                        ]));
+                    }
+                }
+            }
+        }
+        if fw.rocket.is_none() && !alive { remove = true; }
+        if remove { to_remove.push(idx); }
+    }
+
+    for idx in to_remove.into_iter().rev() {
+        if idx < fws.len() { fws.remove(idx); }
+    }
+
+    DynamicImage::ImageRgb8(img)
+}
+
 
 
 #[cfg(test)]
