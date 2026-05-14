@@ -1678,56 +1678,146 @@ pub fn render_countdown(remaining_secs: i64, total_secs: i64, label: &str) -> Dy
     let bold = font_bold();
     let mono = font_mono();
 
-    let now      = Local::now();
-    let time_str = now.format("%H:%M:%S").to_string();
-    let tw = text_width(&mono, PxScale::from(22.0), &time_str);
-    draw_text_mut(&mut img, OVERLAY0, 480 - 20 - tw, 18, PxScale::from(22.0), &mono, &time_str);
+    let now = Local::now();
+    let ts  = now.format("%H:%M:%S").to_string();
 
+    // Header — label left, clock right
+    let header_label = if label.is_empty() { "COUNTDOWN" } else { label };
+    let header_label = if header_label.len() > 22 {
+        format!("{}…", &header_label[..21])
+    } else {
+        header_label.to_string()
+    };
+    draw_text_mut(&mut img, OVERLAY0, 16, 12, PxScale::from(20.0), &bold, &header_label);
+    let tw_ts = text_width(&mono, PxScale::from(18.0), &ts);
+    draw_text_mut(&mut img, OVERLAY0, 480 - 12 - tw_ts, 14, PxScale::from(18.0), &mono, &ts);
+    draw_divider(&mut img, 38);
+
+    // ── Finished state ────────────────────────────────────────────────────────
     if remaining_secs <= 0 {
-        // Time is up
-        draw_centered(&mut img, &bold, PxScale::from(60.0), 160, RED,  "TIME'S");
-        draw_centered(&mut img, &bold, PxScale::from(60.0), 230, RED,  "UP");
-        if !label.is_empty() {
-            draw_centered(&mut img, &bold, PxScale::from(22.0), 320, OVERLAY0, label);
+        // Pulsing TIME'S UP — alternate between RED and PEACH based on 1-second clock
+        let flash = (now.second() % 2) == 0;
+        let finish_color = if flash { RED } else { PEACH };
+        draw_centered(&mut img, &bold, PxScale::from(72.0), 150, finish_color, "TIME'S UP!");
+        // Draw a full red ring
+        let cx = 240_i32;
+        let cy = 300_i32;
+        for py in (cy - 80)..(cy + 80) {
+            for px in (cx - 80)..(cx + 80) {
+                let dist = (((px - cx).pow(2) + (py - cy).pow(2)) as f64).sqrt();
+                if dist >= 62.0 && dist <= 78.0 && px >= 0 && px < 480 && py >= 0 && py < 480 {
+                    img.put_pixel(px as u32, py as u32, if flash { RED } else { PEACH });
+                }
+            }
         }
+        draw_centered(&mut img, &bold, PxScale::from(22.0), 420, OVERLAY0, label);
         return DynamicImage::ImageRgb8(img);
     }
 
-    // Colour: green when > 50% left, yellow 20–50%, red < 20%
+    // ── Progress and color ────────────────────────────────────────────────────
     let frac_left = if total_secs > 0 {
         (remaining_secs as f32 / total_secs as f32).clamp(0.0, 1.0)
     } else { 1.0 };
-    let accent = if frac_left > 0.5 { GREEN } else if frac_left > 0.2 { YELLOW } else { RED };
+    // Urgency: last 10 seconds blink between accent and SURFACE1
+    let is_urgent = remaining_secs <= 10;
+    let flash_off = is_urgent && (now.second() % 2 == 1 || (now.nanosecond() / 500_000_000) == 1);
+    let accent = if frac_left > 0.5 { GREEN }
+                 else if frac_left > 0.2 { YELLOW }
+                 else { RED };
+    let display_color = if flash_off { SURFACE0 } else { accent };
 
-    // Format remaining time
+    // ── Circular arc ring ────────────────────────────────────────────────────
+    let cx = 240_i32;
+    let cy = 220_i32;
+    let r_outer = 130_i32;
+    let r_inner = 96_i32;
+
+    let two_pi = std::f64::consts::PI * 2.0;
+    let start_angle = -std::f64::consts::FRAC_PI_2; // top (12 o'clock)
+    let sweep = frac_left as f64 * two_pi;
+
+    // Background ring
+    for py in (cy - r_outer - 2)..(cy + r_outer + 2) {
+        for px in (cx - r_outer - 2)..(cx + r_outer + 2) {
+            let dx = (px - cx) as f64;
+            let dy = (py - cy) as f64;
+            let dist = (dx * dx + dy * dy).sqrt();
+            if dist >= r_inner as f64 && dist <= r_outer as f64 {
+                if px >= 0 && px < 480 && py >= 0 && py < 480 {
+                    img.put_pixel(px as u32, py as u32, SURFACE0);
+                }
+            }
+        }
+    }
+
+    // Progress arc (remaining portion)
+    for py in (cy - r_outer - 2)..(cy + r_outer + 2) {
+        for px in (cx - r_outer - 2)..(cx + r_outer + 2) {
+            let dx = (px - cx) as f64;
+            let dy = (py - cy) as f64;
+            let dist = (dx * dx + dy * dy).sqrt();
+            if dist >= r_inner as f64 && dist <= r_outer as f64 {
+                let angle = dy.atan2(dx);
+                let mut rel = angle - start_angle;
+                if rel < 0.0 { rel += two_pi; }
+                if rel <= sweep {
+                    if px >= 0 && px < 480 && py >= 0 && py < 480 {
+                        img.put_pixel(px as u32, py as u32, display_color);
+                    }
+                }
+            }
+        }
+    }
+
+    // ── Central time display ─────────────────────────────────────────────────
     let h = remaining_secs / 3600;
     let m = (remaining_secs % 3600) / 60;
     let s = remaining_secs % 60;
-    let (time_display, scale) = if h > 0 {
-        (format!("{:02}:{:02}:{:02}", h, m, s), PxScale::from(72.0))
+    let (time_display, time_scale) = if h > 0 {
+        (format!("{:02}:{:02}:{:02}", h, m, s), PxScale::from(60.0))
     } else {
-        (format!("{:02}:{:02}", m, s), PxScale::from(90.0))
+        (format!("{:02}:{:02}", m, s), PxScale::from(76.0))
     };
 
-    // Large countdown
-    let tw2 = text_width(&mono, scale, &time_display);
-    let x   = ((480 - tw2) / 2).max(0);
-    draw_text_mut(&mut img, accent, x, 140, scale, &mono, &time_display);
+    let tw_time = text_width(&mono, time_scale, &time_display);
+    let tx = cx - tw_time / 2;
+    let ty = cy - (time_scale.y / 2.0) as i32;
+    draw_text_mut(&mut img, display_color, tx, ty, time_scale, &mono, &time_display);
 
-    // Progress bar (remaining fraction)
-    draw_bar(&mut img, 20, 260, 440, 16, frac_left, accent);
+    // Elapsed % inside ring
+    let pct_str = format!("{:.0}%", frac_left * 100.0);
+    let pw = text_width(&bold, PxScale::from(18.0), &pct_str);
+    draw_text_mut(&mut img, OVERLAY0, cx - pw / 2, cy + (time_scale.y * 0.5) as i32 + 6,
+        PxScale::from(18.0), &bold, &pct_str);
 
-    // Label
-    if !label.is_empty() {
-        let lbl = if label.len() > 30 { format!("{}…", &label[..29]) } else { label.to_string() };
-        draw_centered(&mut img, &bold, PxScale::from(22.0), 296, SUBTEXT, &lbl);
+    // ── Stats row ────────────────────────────────────────────────────────────
+    draw_divider(&mut img, 365);
+
+    let remaining_str = format_uptime(remaining_secs as u64);
+    let elapsed_secs  = (total_secs - remaining_secs).max(0) as u64;
+    let elapsed_str   = format_uptime(elapsed_secs);
+
+    let left_str  = format!("Remaining: {}", remaining_str);
+    let right_str = format!("Elapsed: {}", elapsed_str);
+    draw_text_mut(&mut img, SUBTEXT, 16, 376, PxScale::from(16.0), &mono, &left_str);
+    let rw = text_width(&mono, PxScale::from(16.0), &right_str);
+    draw_text_mut(&mut img, SUBTEXT, 480 - 16 - rw, 376, PxScale::from(16.0), &mono, &right_str);
+
+    // ── Thin progress bar at bottom ───────────────────────────────────────────
+    let bar_y = 404_i32;
+    let bar_h = 14_i32;
+    draw_filled_rect_mut(&mut img, Rect::at(16, bar_y).of_size(448, bar_h as u32), SURFACE0);
+    let bar_fill = ((frac_left * 448.0) as i32).clamp(0, 448);
+    if bar_fill > 0 {
+        draw_filled_rect_mut(&mut img, Rect::at(16, bar_y).of_size(bar_fill as u32, bar_h as u32), display_color);
     }
 
-    // Time elapsed / remaining subtext
-    let _elapsed = total_secs - remaining_secs;
-    let pct = ((1.0 - frac_left) * 100.0) as u32;
-    let sub = format!("{}% elapsed  ({} remaining)", pct, format_uptime(remaining_secs as u64));
-    draw_centered(&mut img, &bold, PxScale::from(15.0), 336, OVERLAY0, &sub);
+    // ── Urgency indicator ─────────────────────────────────────────────────────
+    if is_urgent && !flash_off {
+        let warn_str = format!("⚠ {}s REMAINING", remaining_secs);
+        let ww = text_width(&bold, PxScale::from(20.0), &warn_str);
+        draw_text_mut(&mut img, RED, (480 - ww) / 2, 430, PxScale::from(20.0), &bold, &warn_str);
+    }
 
     DynamicImage::ImageRgb8(img)
 }

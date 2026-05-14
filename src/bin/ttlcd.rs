@@ -1742,7 +1742,7 @@ async fn run_daemon(
     // ── HTTP server ────────────────────────────────────────────────────────
     let web_state = web::Data::new(state.clone());
 
-    HttpServer::new(move || {
+    let server = HttpServer::new(move || {
         App::new()
             .wrap(actix_web::middleware::from_fn(auth_middleware))
             .wrap(actix_web::middleware::DefaultHeaders::new()
@@ -1988,9 +1988,39 @@ async fn run_daemon(
             .route("/static/app.js",      web::get().to(web_ui_js))
     })
     .bind((bind.as_str(), port))?
-    .run()
-    .await
-    .context("HTTP server error")?;
+    .run();
+
+    let handle = server.handle();
+    // ── Graceful shutdown handler ─────────────────────────────────────────────
+    // On SIGTERM or Ctrl-C: blank the LCD panel, then stop the HTTP server.
+    {
+        let panel_sd = Arc::clone(&panel);
+        let quality_sd = *state.quality.lock().unwrap();
+        tokio::spawn(async move {
+            tokio::signal::ctrl_c().await.ok();
+            log::info!("ttlcd: shutdown signal — blanking panel");
+            {
+                let mut guard = panel_sd.lock().unwrap();
+                if let Some(p) = guard.as_mut() {
+                    // Render a clean "shutdown" frame
+                    let goodbye = render_boot_splash(&format!("v{} — shutting down", env!("CARGO_PKG_VERSION")));
+                    if let Ok(jpeg) = encode_for_panel(&goodbye, quality_sd) {
+                        let _ = p.send_jpeg(&jpeg);
+                        // Brief pause so the user sees the goodbye frame
+                        std::thread::sleep(std::time::Duration::from_millis(800));
+                    }
+                    // Then blank the panel (all-black)
+                    let blank_img = image::DynamicImage::ImageRgb8(image::RgbImage::new(480, 480));
+                    if let Ok(jpeg) = encode_for_panel(&blank_img, 50) {
+                        let _ = p.send_jpeg(&jpeg);
+                    }
+                }
+            }
+            handle.stop(true).await;
+        });
+    }
+
+    server.await.context("HTTP server error")?;
 
     Ok(())
 }
