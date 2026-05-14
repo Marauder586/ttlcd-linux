@@ -100,6 +100,7 @@ use ttlcd::{
         render_breakout,
         render_spectrum, render_doom_fire, render_boids, render_tunnel, render_aurora, render_metaballs, render_sand, render_gravity,
         render_voronoi, render_reaction_diffusion, render_snowfall, render_hex_grid, render_bubble_chart,
+        render_conway_colors, render_julia_set, render_confetti,
         read_docker_containers,
         read_user_sessions,
         HttpMonitorResult,
@@ -843,6 +844,9 @@ enum DisplayMode {
     Snowfall,
     HexGrid,
     BubbleChart,
+    ConwayColors,
+    JuliaSet,
+    Confetti,
     Idle,
     CustomImage,
     CustomText,
@@ -852,7 +856,7 @@ enum DisplayMode {
 impl DisplayMode {
     const ALL_NAMES: &'static [&'static str] = &[
         "clock", "big_clock", "clock_sysinfo", "sysinfo", "cpu_detail",
-        "network", "disk_usage", "process_top", "temperature", "memory_detail", "countdown", "cpu_graph", "net_graph", "recent_alerts", "process_memory", "disk_io", "calendar", "stopwatch", "metrics", "weather", "notes", "qr_code", "pomodoro", "battery", "world_clock", "ticker", "http_status", "shell_cmd", "ping_monitor", "dashboard", "log_tail", "cpu_freq", "hostname_ip", "rss_feed", "service_status", "net_connections", "uptime_fancy", "os_info", "docker_status", "logged_in_users", "load_graph", "mem_graph", "progress", "matrix_rain", "temp_graph", "disk_io_graph", "graphs_overview", "analog_clock", "ping_graph", "status_overview", "game_of_life", "led_clock", "bounce_ball", "net_speed_graph", "cpu_core_bars", "speedometer_gauge", "disk_pie", "thermal_dashboard", "plasma", "fireworks", "cpu_heatmap", "starfield", "pulse", "minimal_clock", "particle_clock", "snake", "cube_3d", "dvd_bounce", "binary_clock", "radar", "oscilloscope", "lissajous", "pong", "neon_clock", "net_heatmap", "word_clock", "breakout", "spectrum", "doom_fire", "boids", "tunnel", "aurora", "metaballs", "sand", "gravity", "voronoi", "reaction_diffusion", "snowfall", "hex_grid", "bubble_chart", "idle",
+        "network", "disk_usage", "process_top", "temperature", "memory_detail", "countdown", "cpu_graph", "net_graph", "recent_alerts", "process_memory", "disk_io", "calendar", "stopwatch", "metrics", "weather", "notes", "qr_code", "pomodoro", "battery", "world_clock", "ticker", "http_status", "shell_cmd", "ping_monitor", "dashboard", "log_tail", "cpu_freq", "hostname_ip", "rss_feed", "service_status", "net_connections", "uptime_fancy", "os_info", "docker_status", "logged_in_users", "load_graph", "mem_graph", "progress", "matrix_rain", "temp_graph", "disk_io_graph", "graphs_overview", "analog_clock", "ping_graph", "status_overview", "game_of_life", "led_clock", "bounce_ball", "net_speed_graph", "cpu_core_bars", "speedometer_gauge", "disk_pie", "thermal_dashboard", "plasma", "fireworks", "cpu_heatmap", "starfield", "pulse", "minimal_clock", "particle_clock", "snake", "cube_3d", "dvd_bounce", "binary_clock", "radar", "oscilloscope", "lissajous", "pong", "neon_clock", "net_heatmap", "word_clock", "breakout", "spectrum", "doom_fire", "boids", "tunnel", "aurora", "metaballs", "sand", "gravity", "voronoi", "reaction_diffusion", "snowfall", "hex_grid", "bubble_chart", "conway_colors", "julia_set", "confetti", "idle",
     ];
 
     fn from_str_name(s: &str) -> Option<Self> {
@@ -944,6 +948,9 @@ impl DisplayMode {
             "snowfall"             => Some(DisplayMode::Snowfall),
             "hex_grid"             => Some(DisplayMode::HexGrid),
             "bubble_chart"         => Some(DisplayMode::BubbleChart),
+            "conway_colors"        => Some(DisplayMode::ConwayColors),
+            "julia_set"            => Some(DisplayMode::JuliaSet),
+            "confetti"             => Some(DisplayMode::Confetti),
             "idle"             => Some(DisplayMode::Idle),
             "custom_text"   => Some(DisplayMode::CustomText),
             "slideshow"     => Some(DisplayMode::Slideshow),
@@ -1043,6 +1050,9 @@ impl DisplayMode {
     DisplayMode::Snowfall      => "snowfall",
     DisplayMode::HexGrid       => "hex_grid",
     DisplayMode::BubbleChart   => "bubble_chart",
+    DisplayMode::ConwayColors  => "conway_colors",
+    DisplayMode::JuliaSet      => "julia_set",
+    DisplayMode::Confetti      => "confetti",
             DisplayMode::Idle           => "idle",
             DisplayMode::CustomImage  => "image",
             DisplayMode::CustomText   => "custom_text",
@@ -2735,6 +2745,9 @@ fn display_loop(panel: Arc<Mutex<Option<Panel>>>, state: DaemonState) {
                 DisplayMode::Snowfall      => (render_snowfall(), 0),
                 DisplayMode::HexGrid       => (render_hex_grid(), 1),
                 DisplayMode::BubbleChart   => (render_bubble_chart(), 1),
+                DisplayMode::ConwayColors  => (render_conway_colors(), 0),
+                DisplayMode::JuliaSet      => (render_julia_set(), 0),
+                DisplayMode::Confetti      => (render_confetti(), 0),
                 DisplayMode::MatrixRain => (render_matrix_rain(), 0),
                 DisplayMode::Idle
                 | DisplayMode::CustomImage
@@ -4184,6 +4197,9 @@ async fn api_modes_list() -> impl Responder {
         ModeInfo { name: "snowfall",         description: "Snowfall screensaver — 180 flakes drifting with wind, wobble, and soft glow" },
         ModeInfo { name: "hex_grid",         description: "Per-core CPU hex grid — each hexagon fill level = core load; colour = load category" },
         ModeInfo { name: "bubble_chart",     description: "Process CPU bubble chart — top processes as circles scaled by CPU%, colour by process name" },
+        ModeInfo { name: "conway_colors",   description: "Age-coloured Conway Game of Life — cells cycle through Catppuccin spectrum as they age" },
+        ModeInfo { name: "julia_set",        description: "Animated Julia set fractal — parameter c rotates to produce continuously morphing shapes" },
+        ModeInfo { name: "confetti",         description: "Celebration confetti — 120 rotating rectangular pieces drifting down with wind" },
         ModeInfo { name: "idle",           description: "Keepalive — no display update, prevents blank" },
     ];
     HttpResponse::Ok().json(modes)
@@ -6239,6 +6255,9 @@ async fn api_status_badge(state: web::Data<DaemonState>) -> impl Responder {
         "snowfall"                             => "#cdd6f4",  // text/white
         "hex_grid"                             => "#a6e3a1",  // green
         "bubble_chart"                         => "#89b4fa",  // blue
+        "conway_colors"                        => "#a6e3a1",  // green
+        "julia_set"                            => "#cba6f7",  // mauve
+        "confetti"                             => "#f9e2af",  // yellow
         "status_overview"                      => "#89dceb",  // sky
         "analog_clock"                         => "#cba6f7",  // mauve
         "net_speed_graph"                      => "#a6e3a1",  // green
@@ -6545,6 +6564,7 @@ async fn api_modes_catalog(_state: web::Data<DaemonState>) -> impl Responder {
             "matrix_rain"|"game_of_life"|"bounce_ball"|"plasma"|"fireworks"|"starfield"|
             "snake"|"cube_3d"|"dvd_bounce"|"lissajous"|"pong"|"breakout"|"doom_fire"|"boids"|"tunnel"|"aurora"|"metaballs"|"sand"|"gravity"|"voronoi"|"reaction_diffusion"|"snowfall" => "fun",
             "hex_grid"|"bubble_chart" => "system",
+            "conway_colors"|"julia_set"|"confetti" => "fun",
             _ => "other",
         }
     }
@@ -9442,6 +9462,9 @@ async fn api_render_mode_preview(
             DisplayMode::Breakout      => render_breakout(),
             DisplayMode::Spectrum      => render_spectrum(),
             DisplayMode::DoomFire      => render_doom_fire(),
+            DisplayMode::ConwayColors  => render_conway_colors(),
+            DisplayMode::JuliaSet      => render_julia_set(),
+            DisplayMode::Confetti      => render_confetti(),
             DisplayMode::Voronoi       => render_voronoi(),
             DisplayMode::HexGrid       => render_hex_grid(),
             DisplayMode::BubbleChart   => render_bubble_chart(),

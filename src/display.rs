@@ -11924,3 +11924,296 @@ pub fn render_bubble_chart() -> DynamicImage {
 
     DynamicImage::ImageRgb8(img)
 }
+
+// ─── Coloured Conway's Game of Life ───────────────────────────────────────────
+
+struct ColorLife {
+    // 0 = dead; 1..=255 = age (wraps at u8::MAX)
+    grid: Vec<u8>,
+    tick: u64,
+}
+
+static COLOR_LIFE_STATE: std::sync::OnceLock<std::sync::Mutex<ColorLife>> =
+    std::sync::OnceLock::new();
+
+/// Game of Life with age-based colouring.
+/// Dead cells are BG; living cells cycle through the Catppuccin spectrum
+/// from young (blue) through mature (green/yellow) to old (mauve/red).
+pub fn render_conway_colors() -> DynamicImage {
+    const W: usize = 160;
+    const H: usize = 160;
+    const CELL: u32 = 3;
+
+    let m = COLOR_LIFE_STATE.get_or_init(|| {
+        let mut seed = 0x4C1FE_u32;
+        let lcg = |s: &mut u32| -> u32 {
+            *s = s.wrapping_mul(1_664_525).wrapping_add(1_013_904_223); *s
+        };
+        let grid: Vec<u8> = (0..W * H).map(|_| {
+            if lcg(&mut seed) % 3 == 0 { 1 } else { 0 }
+        }).collect();
+        std::sync::Mutex::new(ColorLife { grid, tick: 0 })
+    });
+
+    let mut st = m.lock().unwrap();
+    st.tick += 1;
+
+    let old = st.grid.clone();
+    for y in 0..H {
+        let yn = (y + H - 1) % H;
+        let ys = (y + 1) % H;
+        for x in 0..W {
+            let xw = (x + W - 1) % W;
+            let xe = (x + 1) % W;
+            let alive = (old[yn*W+xw] > 0) as u8 + (old[yn*W+x] > 0) as u8
+                      + (old[yn*W+xe] > 0) as u8 + (old[y *W+xw] > 0) as u8
+                      + (old[y *W+xe] > 0) as u8 + (old[ys*W+xw] > 0) as u8
+                      + (old[ys*W+x ] > 0) as u8 + (old[ys*W+xe] > 0) as u8;
+            let was_alive = old[y * W + x] > 0;
+            st.grid[y * W + x] = if was_alive {
+                if alive == 2 || alive == 3 {
+                    old[y * W + x].saturating_add(1)   // grow older
+                } else {
+                    0  // die
+                }
+            } else if alive == 3 {
+                1   // born
+            } else {
+                0
+            };
+        }
+    }
+
+    // Colour ramp: age 1..64 = blue, 65..128 = teal, 129..192 = green,
+    // 193..224 = yellow, 225..255 = mauve/red
+    let age_col = |age: u8| -> Rgb<u8> {
+        let t = age as f32 / 255.0;
+        let lerp = |a: Rgb<u8>, b: Rgb<u8>, f: f32| Rgb([
+            (a[0] as f32 + (b[0] as f32 - a[0] as f32) * f) as u8,
+            (a[1] as f32 + (b[1] as f32 - a[1] as f32) * f) as u8,
+            (a[2] as f32 + (b[2] as f32 - a[2] as f32) * f) as u8,
+        ]);
+        if t < 0.33      { lerp(BLUE,   TEAL,   t / 0.33) }
+        else if t < 0.55 { lerp(TEAL,   GREEN,  (t - 0.33) / 0.22) }
+        else if t < 0.75 { lerp(GREEN,  YELLOW, (t - 0.55) / 0.20) }
+        else if t < 0.90 { lerp(YELLOW, PEACH,  (t - 0.75) / 0.15) }
+        else             { lerp(PEACH,  RED,    (t - 0.90) / 0.10) }
+    };
+
+    let mut img = RgbImage::new(480, 480);
+    for p in img.pixels_mut() { *p = BG; }
+
+    for cy in 0..H {
+        for cx in 0..W {
+            let age = st.grid[cy * W + cx];
+            if age == 0 { continue; }
+            let col  = age_col(age);
+            let px0  = cx as u32 * CELL;
+            let py0  = cy as u32 * CELL;
+            for dy in 0..CELL { for dx in 0..CELL {
+                img.put_pixel(px0 + dx, py0 + dy, col);
+            }}
+        }
+    }
+
+    // Respawn with a splash of new cells if population crashes
+    let live_count = st.grid.iter().filter(|&&c| c > 0).count();
+    if live_count < W * H / 20 {
+        let mut seed = st.tick as u32;
+        let lcg = |s: &mut u32| -> u32 {
+            *s = s.wrapping_mul(1_664_525).wrapping_add(1_013_904_223); *s
+        };
+        for _ in 0..W * H / 8 {
+            let idx = (lcg(&mut seed) as usize) % (W * H);
+            st.grid[idx] = 1;
+        }
+    }
+
+    DynamicImage::ImageRgb8(img)
+}
+
+// ─── Julia Set (Animated) ─────────────────────────────────────────────────────
+
+static JULIA_TICK: std::sync::OnceLock<std::sync::Mutex<u64>> =
+    std::sync::OnceLock::new();
+
+/// Animated Julia set fractal — the parameter c rotates slowly, producing
+/// a continuously morphing fractal.  Rendered at 240×240 (2×2 px cells).
+pub fn render_julia_set() -> DynamicImage {
+    let tick = {
+        let mut t = JULIA_TICK.get_or_init(|| std::sync::Mutex::new(0)).lock().unwrap();
+        *t += 1; *t
+    };
+    let tf = tick as f64;
+
+    // Animate c around a circle near the boundary of the Mandelbrot set
+    let angle = tf * 0.013;
+    let cr = 0.7885 * angle.cos();
+    let ci = 0.7885 * angle.sin();
+
+    const MAX_ITER: u32 = 64;
+    const ZOOM:     f64 = 1.5;    // 1.5 → shows the full Julia set
+    const CELL:     u32 = 2;
+    const GRID:     u32 = 240;
+
+    let mut img = RgbImage::new(480, 480);
+
+    // Colour palette: map iteration count to Catppuccin colour
+    let pal: [Rgb<u8>; 8] = [BG, BLUE, TEAL, GREEN, YELLOW, PEACH, RED, MAUVE];
+
+    for cy in 0..GRID {
+        for cx in 0..GRID {
+            // Map pixel to complex plane
+            let zr = (cx as f64 / GRID as f64 - 0.5) * 2.0 * ZOOM;
+            let zi = (cy as f64 / GRID as f64 - 0.5) * 2.0 * ZOOM;
+
+            // Iterate z → z² + c
+            let (mut zr, mut zi) = (zr, zi);
+            let mut iter = 0u32;
+            while zr * zr + zi * zi <= 4.0 && iter < MAX_ITER {
+                let tmp = zr * zr - zi * zi + cr;
+                zi = 2.0 * zr * zi + ci;
+                zr = tmp;
+                iter += 1;
+            }
+
+            // Smooth colouring using fractional escape count
+            let smooth = if iter < MAX_ITER {
+                let log2 = (zr * zr + zi * zi).ln().ln() / std::f64::consts::LN_2;
+                iter as f64 + 1.0 - log2
+            } else {
+                0.0 // inside set → background
+            };
+
+            let col = if smooth <= 0.0 {
+                BG
+            } else {
+                let t   = (smooth / MAX_ITER as f64).min(1.0);
+                let idx = (t * 6.99) as usize;
+                let frac= t * 7.0 - idx as f64;
+                let a   = pal[idx.min(6)];
+                let b   = pal[(idx + 1).min(7)];
+                Rgb([
+                    (a[0] as f64 + (b[0] as f64 - a[0] as f64) * frac) as u8,
+                    (a[1] as f64 + (b[1] as f64 - a[1] as f64) * frac) as u8,
+                    (a[2] as f64 + (b[2] as f64 - a[2] as f64) * frac) as u8,
+                ])
+            };
+
+            let px = cx * CELL; let py = cy * CELL;
+            img.put_pixel(px,     py,     col);
+            img.put_pixel(px + 1, py,     col);
+            img.put_pixel(px,     py + 1, col);
+            img.put_pixel(px + 1, py + 1, col);
+        }
+    }
+    DynamicImage::ImageRgb8(img)
+}
+
+// ─── Confetti ─────────────────────────────────────────────────────────────────
+
+#[derive(Clone)]
+struct Confetto {
+    x: f32, y: f32,
+    vx: f32, vy: f32,
+    rot: f32, rot_v: f32,
+    w: f32, h: f32,  // dimensions
+    color_idx: usize,
+}
+
+struct ConfettiState { pieces: Vec<Confetto>, seed: u32, tick: u64 }
+
+static CONFETTI_STATE: std::sync::OnceLock<std::sync::Mutex<ConfettiState>> =
+    std::sync::OnceLock::new();
+
+/// Celebration confetti — 120 coloured rectangular pieces drifting down
+/// with rotation, slight wind, and respawning from the top.
+pub fn render_confetti() -> DynamicImage {
+    const N: usize = 120;
+
+    let m = CONFETTI_STATE.get_or_init(|| {
+        let mut seed = 0xFEED_FAB1u32;
+        let lcg = |s: &mut u32| -> f32 {
+            *s = s.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            (*s as f32) / u32::MAX as f32
+        };
+        let pieces = (0..N).map(|i| Confetto {
+            x:       lcg(&mut seed) * 480.0,
+            y:       lcg(&mut seed) * 480.0,
+            vx:      (lcg(&mut seed) - 0.5) * 2.0,
+            vy:      1.5 + lcg(&mut seed) * 2.5,
+            rot:     lcg(&mut seed) * std::f32::consts::TAU,
+            rot_v:   (lcg(&mut seed) - 0.5) * 0.15,
+            w:       6.0 + lcg(&mut seed) * 10.0,
+            h:       4.0 + lcg(&mut seed) * 5.0,
+            color_idx: i % 7,
+        }).collect();
+        std::sync::Mutex::new(ConfettiState { pieces, seed: 0xABCD_EFu32, tick: 0 })
+    });
+
+    let mut st = m.lock().unwrap();
+    st.tick += 1;
+    let tf = st.tick as f32;
+
+    let wind = (tf * 0.008).sin() * 0.8;
+    let mut seed = st.seed;
+    let lcg = |s: &mut u32| -> f32 {
+        *s = s.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+        (*s as f32) / u32::MAX as f32
+    };
+
+    for piece in st.pieces.iter_mut() {
+        piece.x   += piece.vx + wind;
+        piece.y   += piece.vy;
+        piece.rot += piece.rot_v;
+        if piece.x < -20.0  { piece.x += 520.0; }
+        if piece.x > 500.0  { piece.x -= 520.0; }
+        if piece.y > 490.0 {
+            piece.y  = -10.0;
+            piece.x  = lcg(&mut seed) * 480.0;
+            piece.vx = (lcg(&mut seed) - 0.5) * 2.0;
+            piece.vy = 1.5 + lcg(&mut seed) * 2.5;
+        }
+    }
+    st.seed = seed;
+
+    let cols = [BLUE, GREEN, YELLOW, RED, MAUVE, TEAL, PEACH];
+    let mut img = RgbImage::new(480, 480);
+    for p in img.pixels_mut() { *p = BG; }
+
+    for piece in st.pieces.iter() {
+        let col  = cols[piece.color_idx % cols.len()];
+        let cos  = piece.rot.cos();
+        let sin  = piece.rot.sin();
+        let hw   = piece.w / 2.0;
+        let hh   = piece.h / 2.0;
+
+        // Draw a rotated rectangle as 4 filled scanlines
+        let corners = [
+            (-hw, -hh), (hw, -hh), (hw, hh), (-hw, hh),
+        ];
+        let world: Vec<(f32, f32)> = corners.iter().map(|&(lx, ly)| {
+            (piece.x + lx * cos - ly * sin, piece.y + lx * sin + ly * cos)
+        }).collect();
+
+        // Rasterise: find bounding box, test point-in-rotated-rect
+        let min_x = world.iter().map(|v| v.0).fold(f32::MAX, f32::min).max(0.0) as u32;
+        let max_x = world.iter().map(|v| v.0).fold(f32::MIN, f32::max).min(479.0) as u32;
+        let min_y = world.iter().map(|v| v.1).fold(f32::MAX, f32::min).max(0.0) as u32;
+        let max_y = world.iter().map(|v| v.1).fold(f32::MIN, f32::max).min(479.0) as u32;
+
+        for py in min_y..=max_y {
+            for px in min_x..=max_x {
+                // Transform to local coords
+                let dx = px as f32 - piece.x;
+                let dy = py as f32 - piece.y;
+                let lx =  dx * cos + dy * sin;
+                let ly = -dx * sin + dy * cos;
+                if lx.abs() <= hw && ly.abs() <= hh {
+                    img.put_pixel(px, py, col);
+                }
+            }
+        }
+    }
+    DynamicImage::ImageRgb8(img)
+}
