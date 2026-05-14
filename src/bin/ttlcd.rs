@@ -100,7 +100,7 @@ use ttlcd::{
         render_breakout,
         render_spectrum, render_doom_fire, render_boids, render_tunnel, render_aurora, render_metaballs, render_sand, render_gravity,
         render_voronoi, render_reaction_diffusion, render_snowfall, render_hex_grid, render_bubble_chart,
-        render_conway_colors, render_julia_set, render_confetti,
+        render_conway_colors, render_julia_set, render_confetti, render_cpu_3d_bars, render_system_health,
         read_docker_containers,
         read_user_sessions,
         HttpMonitorResult,
@@ -847,6 +847,8 @@ enum DisplayMode {
     ConwayColors,
     JuliaSet,
     Confetti,
+    Cpu3dBars,
+    SystemHealth,
     Idle,
     CustomImage,
     CustomText,
@@ -856,7 +858,7 @@ enum DisplayMode {
 impl DisplayMode {
     const ALL_NAMES: &'static [&'static str] = &[
         "clock", "big_clock", "clock_sysinfo", "sysinfo", "cpu_detail",
-        "network", "disk_usage", "process_top", "temperature", "memory_detail", "countdown", "cpu_graph", "net_graph", "recent_alerts", "process_memory", "disk_io", "calendar", "stopwatch", "metrics", "weather", "notes", "qr_code", "pomodoro", "battery", "world_clock", "ticker", "http_status", "shell_cmd", "ping_monitor", "dashboard", "log_tail", "cpu_freq", "hostname_ip", "rss_feed", "service_status", "net_connections", "uptime_fancy", "os_info", "docker_status", "logged_in_users", "load_graph", "mem_graph", "progress", "matrix_rain", "temp_graph", "disk_io_graph", "graphs_overview", "analog_clock", "ping_graph", "status_overview", "game_of_life", "led_clock", "bounce_ball", "net_speed_graph", "cpu_core_bars", "speedometer_gauge", "disk_pie", "thermal_dashboard", "plasma", "fireworks", "cpu_heatmap", "starfield", "pulse", "minimal_clock", "particle_clock", "snake", "cube_3d", "dvd_bounce", "binary_clock", "radar", "oscilloscope", "lissajous", "pong", "neon_clock", "net_heatmap", "word_clock", "breakout", "spectrum", "doom_fire", "boids", "tunnel", "aurora", "metaballs", "sand", "gravity", "voronoi", "reaction_diffusion", "snowfall", "hex_grid", "bubble_chart", "conway_colors", "julia_set", "confetti", "idle",
+        "network", "disk_usage", "process_top", "temperature", "memory_detail", "countdown", "cpu_graph", "net_graph", "recent_alerts", "process_memory", "disk_io", "calendar", "stopwatch", "metrics", "weather", "notes", "qr_code", "pomodoro", "battery", "world_clock", "ticker", "http_status", "shell_cmd", "ping_monitor", "dashboard", "log_tail", "cpu_freq", "hostname_ip", "rss_feed", "service_status", "net_connections", "uptime_fancy", "os_info", "docker_status", "logged_in_users", "load_graph", "mem_graph", "progress", "matrix_rain", "temp_graph", "disk_io_graph", "graphs_overview", "analog_clock", "ping_graph", "status_overview", "game_of_life", "led_clock", "bounce_ball", "net_speed_graph", "cpu_core_bars", "speedometer_gauge", "disk_pie", "thermal_dashboard", "plasma", "fireworks", "cpu_heatmap", "starfield", "pulse", "minimal_clock", "particle_clock", "snake", "cube_3d", "dvd_bounce", "binary_clock", "radar", "oscilloscope", "lissajous", "pong", "neon_clock", "net_heatmap", "word_clock", "breakout", "spectrum", "doom_fire", "boids", "tunnel", "aurora", "metaballs", "sand", "gravity", "voronoi", "reaction_diffusion", "snowfall", "hex_grid", "bubble_chart", "conway_colors", "julia_set", "confetti", "cpu_3d_bars", "system_health", "idle",
     ];
 
     fn from_str_name(s: &str) -> Option<Self> {
@@ -951,6 +953,8 @@ impl DisplayMode {
             "conway_colors"        => Some(DisplayMode::ConwayColors),
             "julia_set"            => Some(DisplayMode::JuliaSet),
             "confetti"             => Some(DisplayMode::Confetti),
+            "cpu_3d_bars"          => Some(DisplayMode::Cpu3dBars),
+            "system_health"        => Some(DisplayMode::SystemHealth),
             "idle"             => Some(DisplayMode::Idle),
             "custom_text"   => Some(DisplayMode::CustomText),
             "slideshow"     => Some(DisplayMode::Slideshow),
@@ -1053,6 +1057,8 @@ impl DisplayMode {
     DisplayMode::ConwayColors  => "conway_colors",
     DisplayMode::JuliaSet      => "julia_set",
     DisplayMode::Confetti      => "confetti",
+    DisplayMode::Cpu3dBars     => "cpu_3d_bars",
+    DisplayMode::SystemHealth  => "system_health",
             DisplayMode::Idle           => "idle",
             DisplayMode::CustomImage  => "image",
             DisplayMode::CustomText   => "custom_text",
@@ -2748,6 +2754,8 @@ fn display_loop(panel: Arc<Mutex<Option<Panel>>>, state: DaemonState) {
                 DisplayMode::ConwayColors  => (render_conway_colors(), 0),
                 DisplayMode::JuliaSet      => (render_julia_set(), 0),
                 DisplayMode::Confetti      => (render_confetti(), 0),
+                DisplayMode::Cpu3dBars     => (render_cpu_3d_bars(), 1),
+                DisplayMode::SystemHealth  => (render_system_health(), 1),
                 DisplayMode::MatrixRain => (render_matrix_rain(), 0),
                 DisplayMode::Idle
                 | DisplayMode::CustomImage
@@ -4200,6 +4208,8 @@ async fn api_modes_list() -> impl Responder {
         ModeInfo { name: "conway_colors",   description: "Age-coloured Conway Game of Life — cells cycle through Catppuccin spectrum as they age" },
         ModeInfo { name: "julia_set",        description: "Animated Julia set fractal — parameter c rotates to produce continuously morphing shapes" },
         ModeInfo { name: "confetti",         description: "Celebration confetti — 120 rotating rectangular pieces drifting down with wind" },
+        ModeInfo { name: "cpu_3d_bars",      description: "3D isometric CPU bars — per-core load as coloured 3D bars; green/yellow/red by load" },
+        ModeInfo { name: "system_health",    description: "System health traffic lights — CPU, RAM, Temp, Disk, Load as colour-coded indicators" },
         ModeInfo { name: "idle",           description: "Keepalive — no display update, prevents blank" },
     ];
     HttpResponse::Ok().json(modes)
@@ -6258,6 +6268,8 @@ async fn api_status_badge(state: web::Data<DaemonState>) -> impl Responder {
         "conway_colors"                        => "#a6e3a1",  // green
         "julia_set"                            => "#cba6f7",  // mauve
         "confetti"                             => "#f9e2af",  // yellow
+        "cpu_3d_bars"                          => "#fab387",  // peach
+        "system_health"                        => "#a6e3a1",  // green
         "status_overview"                      => "#89dceb",  // sky
         "analog_clock"                         => "#cba6f7",  // mauve
         "net_speed_graph"                      => "#a6e3a1",  // green
@@ -6565,6 +6577,7 @@ async fn api_modes_catalog(_state: web::Data<DaemonState>) -> impl Responder {
             "snake"|"cube_3d"|"dvd_bounce"|"lissajous"|"pong"|"breakout"|"doom_fire"|"boids"|"tunnel"|"aurora"|"metaballs"|"sand"|"gravity"|"voronoi"|"reaction_diffusion"|"snowfall" => "fun",
             "hex_grid"|"bubble_chart" => "system",
             "conway_colors"|"julia_set"|"confetti" => "fun",
+            "cpu_3d_bars"|"system_health" => "system",
             _ => "other",
         }
     }
@@ -9463,6 +9476,8 @@ async fn api_render_mode_preview(
             DisplayMode::Spectrum      => render_spectrum(),
             DisplayMode::DoomFire      => render_doom_fire(),
             DisplayMode::ConwayColors  => render_conway_colors(),
+            DisplayMode::Cpu3dBars     => render_cpu_3d_bars(),
+            DisplayMode::SystemHealth  => render_system_health(),
             DisplayMode::JuliaSet      => render_julia_set(),
             DisplayMode::Confetti      => render_confetti(),
             DisplayMode::Voronoi       => render_voronoi(),

@@ -12217,3 +12217,258 @@ pub fn render_confetti() -> DynamicImage {
     }
     DynamicImage::ImageRgb8(img)
 }
+
+// ─── 3-D Isometric CPU Bars ───────────────────────────────────────────────────
+
+/// Per-core CPU usage displayed as 3D isometric bars.
+/// Green = low, yellow = mid, orange = high, red = critical.
+pub fn render_cpu_3d_bars() -> DynamicImage {
+    let mut sys = System::new();
+    sys.refresh_cpu_all();
+    let cpus   = sys.cpus();
+    let n      = cpus.len().max(1);
+    let font   = font_bold();
+
+    let mut img = RgbImage::new(480, 480);
+    for p in img.pixels_mut() { *p = BG; }
+
+    // Isometric projection helpers
+    // Grid layout: up to 16 bars across, multiple rows
+    let cols = ((n as f32).sqrt().ceil() as usize).max(1).min(12);
+    let rows = (n + cols - 1) / cols;
+
+    let pad_x  = 16.0f32;
+    let pad_y  = 60.0f32;    // top margin for title
+    let cell_w = (480.0 - pad_x * 2.0) / cols as f32;
+    let cell_d = (480.0 - pad_y - 30.0) / (rows as f32 + 0.5) * 0.65;  // depth per row
+    let max_h  = cell_d * 2.0;     // max bar height in pixels
+
+    // Iso unit vectors: right (+X), back (+Y), up (+Z)
+    let iso_x  = |gx: f32, gy: f32| -> f32 { pad_x + gx * cell_w + gy * cell_w * 0.4 }
+    ;
+    let iso_y  = |_gx: f32, gy: f32, gz: f32| -> f32 {
+        pad_y + gy * cell_d - gz * (max_h / 1.0) + (rows as f32) * cell_d * 0.3
+    };
+
+    // Helper: draw a filled parallelogram (quad) top/side face
+    let draw_quad = |img: &mut RgbImage, pts: [(f32, f32); 4], col: Rgb<u8>| {
+        // Scan-fill between the two edge pairs (0-1 and 3-2)
+        let (y_min, y_max) = {
+            let ys = [pts[0].1, pts[1].1, pts[2].1, pts[3].1];
+            (ys.iter().cloned().fold(f32::MAX, f32::min) as i32,
+             ys.iter().cloned().fold(f32::MIN, f32::max) as i32)
+        };
+        for py in y_min.max(0)..=y_max.min(479) {
+            let yf = py as f32;
+            // Find x-intersections with all 4 edges
+            let mut xs: Vec<f32> = Vec::new();
+            for k in 0..4 {
+                let (ax, ay) = pts[k];
+                let (bx, by) = pts[(k + 1) % 4];
+                if (ay <= yf && by > yf) || (by <= yf && ay > yf) {
+                    xs.push(ax + (bx - ax) * (yf - ay) / (by - ay));
+                }
+            }
+            xs.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+            if xs.len() >= 2 {
+                let x0 = xs[0] as i32; let x1 = xs[xs.len()-1] as i32;
+                for px in x0.max(0)..=x1.min(479) {
+                    img.put_pixel(px as u32, py as u32, col);
+                }
+            }
+        }
+    };
+
+    for (i, cpu) in cpus.iter().enumerate() {
+        let load  = cpu.cpu_usage() / 100.0;
+        let col_  = i % cols; let row_ = i / cols;
+
+        let gx = col_ as f32; let gy = row_ as f32;
+        let bar_h = (load * max_h).max(2.0);
+
+        // Four 3D corners of the bar:
+        //   bl=back-left, br=back-right, fl=front-left, fr=front-right
+        let w = cell_w * 0.70;
+        let d = cell_d * 0.65;
+        let fx0 = iso_x(gx + 0.15, gy); let fx1 = iso_x(gx + 0.15 + w / cell_w, gy);
+        let bx0 = iso_x(gx + 0.15, gy + d / cell_d); let bx1 = iso_x(gx + 0.15 + w / cell_w, gy + d / cell_d);
+        let fy0 = iso_y(gx, gy, 0.0);
+        let fy1 = iso_y(gx, gy, bar_h / max_h);
+        let by0 = iso_y(gx, gy + d / cell_d, 0.0);
+        let by1 = iso_y(gx, gy + d / cell_d, bar_h / max_h);
+
+        let fill = if load < 0.4 { GREEN }
+                   else if load < 0.7 { YELLOW }
+                   else if load < 0.9 { PEACH }
+                   else               { RED };
+        let dark = Rgb([(fill[0] as u32 * 6 / 10) as u8, (fill[1] as u32 * 6 / 10) as u8, (fill[2] as u32 * 6 / 10) as u8]);
+        let side = Rgb([(fill[0] as u32 * 8 / 10) as u8, (fill[1] as u32 * 8 / 10) as u8, (fill[2] as u32 * 8 / 10) as u8]);
+
+        // Draw front face (brightest)
+        draw_quad(&mut img, [(fx0, fy0), (fx1, fy0), (fx1, fy1), (fx0, fy1)], fill);
+        // Draw top face (medium)
+        draw_quad(&mut img, [(fx0, fy1), (fx1, fy1), (bx1, by1), (bx0, by1)], side);
+        // Draw right face (darkest)
+        draw_quad(&mut img, [(fx1, fy0), (bx1, by0), (bx1, by1), (fx1, fy1)], dark);
+
+        // Core label
+        if w > 18.0 {
+            let lbl = format!("{}", i);
+            let lw  = text_width(&font, PxScale::from(10.0), &lbl);
+            draw_text_mut(&mut img, BG, (fx0 + (fx1 - fx0) / 2.0 - lw as f32 / 2.0) as i32,
+                          (fy0 + 2.0) as i32, PxScale::from(10.0), &font, &lbl);
+        }
+    }
+
+    // Title
+    let avg: f32 = cpus.iter().map(|c| c.cpu_usage()).sum::<f32>() / n as f32;
+    let title = format!("3D CPU Bars — {} cores  avg {:.0}%", n, avg);
+    let tw = text_width(&font, PxScale::from(18.0), &title);
+    draw_text_mut(&mut img, TEXT, (480 - tw) / 2, 8, PxScale::from(18.0), &font, &title);
+
+    DynamicImage::ImageRgb8(img)
+}
+
+// ─── System Health Dashboard ──────────────────────────────────────────────────
+
+/// 5 large traffic-light indicators: CPU · RAM · Temp · Disk · Network.
+/// Green = ok, yellow = warning, red = critical.
+pub fn render_system_health() -> DynamicImage {
+    use sysinfo::{Disks, Components};
+
+    let mut sys   = System::new();
+    sys.refresh_cpu_all();
+    sys.refresh_memory();
+    let disks     = Disks::new_with_refreshed_list();
+    let components= Components::new_with_refreshed_list();
+
+    let font = font_bold();
+    let small= font_mono();
+
+    let mut img = RgbImage::new(480, 480);
+    for p in img.pixels_mut() { *p = BG; }
+
+    // ── Helpers ──────────────────────────────────────────────────────────────
+    let draw_circle = |img: &mut RgbImage, cx: i32, cy: i32, r: i32, col: Rgb<u8>| {
+        let glow = Rgb([(col[0] as u32 * 5 / 10) as u8, (col[1] as u32 * 5 / 10) as u8, (col[2] as u32 * 5 / 10) as u8]);
+        let r2 = r * r;
+        let rg = r + 8;
+        for dy in -(rg)..(rg) {
+            for dx in -(rg)..(rg) {
+                let d2 = dx*dx + dy*dy;
+                if d2 > rg * rg { continue; }
+                let px = cx + dx; let py = cy + dy;
+                if px < 0 || px >= 480 || py < 0 || py >= 480 { continue; }
+                if d2 <= r2 {
+                    img.put_pixel(px as u32, py as u32, col);
+                } else {
+                    // Soft glow ring
+                    let fr = (dx*dx + dy*dy) as f32;
+                    let alpha = (1.0 - (fr.sqrt() - r as f32) / 8.0).max(0.0);
+                    let existing = img.get_pixel(px as u32, py as u32);
+                    img.put_pixel(px as u32, py as u32, Rgb([
+                        (existing[0] as f32 + glow[0] as f32 * alpha).min(255.0) as u8,
+                        (existing[1] as f32 + glow[1] as f32 * alpha).min(255.0) as u8,
+                        (existing[2] as f32 + glow[2] as f32 * alpha).min(255.0) as u8,
+                    ]));
+                }
+            }
+        }
+    };
+
+    let traffic = |pct: f32, warn: f32, crit: f32| -> Rgb<u8> {
+        if pct >= crit { RED } else if pct >= warn { YELLOW } else { GREEN }
+    };
+
+    // ── Compute metrics ───────────────────────────────────────────────────────
+    let n_cores = sys.cpus().len().max(1);
+    let cpu_pct = sys.cpus().iter().map(|c| c.cpu_usage()).sum::<f32>() / n_cores as f32;
+
+    let mem_used = sys.used_memory();
+    let mem_total= sys.total_memory().max(1);
+    let mem_pct  = mem_used as f32 / mem_total as f32 * 100.0;
+
+    let temp_max: f32 = components.iter()
+        .filter_map(|c| c.temperature())
+        .fold(0.0f32, f32::max);
+
+    let (disk_pct, disk_used_gb, disk_total_gb) = {
+        let (mut used, mut total) = (0u64, 0u64);
+        for d in disks.iter() {
+            total += d.total_space();
+            used  += d.total_space() - d.available_space();
+        }
+        let pct = if total > 0 { used as f32 / total as f32 * 100.0 } else { 0.0 };
+        (pct, used as f32 / 1_073_741_824.0, total as f32 / 1_073_741_824.0)
+    };
+
+    // ── Layout: 5 items in a 2-column + 1-column grid ─────────────────────────
+    // Row 1: CPU (left) | RAM (right)
+    // Row 2: Temp(left) | Disk (right)
+    // Row 3: centred Network status
+    let positions = [(120, 130), (360, 130), (120, 310), (360, 310), (240, 430)];
+    let r = 55i32;
+
+    // CPU
+    let (cx, cy) = positions[0];
+    draw_circle(&mut img, cx, cy, r, traffic(cpu_pct, 70.0, 90.0));
+    let lbl = format!("{:.0}%", cpu_pct);
+    let lw  = text_width(&font, PxScale::from(26.0), &lbl);
+    draw_text_mut(&mut img, BG, cx - lw / 2, cy - 14, PxScale::from(26.0), &font, &lbl);
+    let tw = text_width(&small, PxScale::from(14.0), "CPU");
+    draw_text_mut(&mut img, TEXT, cx - tw / 2, cy + 15, PxScale::from(14.0), &small, "CPU");
+
+    // RAM
+    let (cx, cy) = positions[1];
+    let ram_str = format!("{:.1}/{:.1}G", mem_used as f32 / 1_073_741_824.0, mem_total as f32 / 1_073_741_824.0);
+    draw_circle(&mut img, cx, cy, r, traffic(mem_pct, 70.0, 90.0));
+    let lbl2 = format!("{:.0}%", mem_pct);
+    let lw2  = text_width(&font, PxScale::from(26.0), &lbl2);
+    draw_text_mut(&mut img, BG, cx - lw2 / 2, cy - 18, PxScale::from(26.0), &font, &lbl2);
+    let rw   = text_width(&small, PxScale::from(12.0), &ram_str);
+    draw_text_mut(&mut img, BG, cx - rw / 2, cy + 4, PxScale::from(12.0), &small, &ram_str);
+    let tw2  = text_width(&small, PxScale::from(14.0), "RAM");
+    draw_text_mut(&mut img, TEXT, cx - tw2 / 2, cy + 20, PxScale::from(14.0), &small, "RAM");
+
+    // Temp
+    let (cx, cy) = positions[2];
+    let temp_col = if temp_max <= 0.0 { OVERLAY0 } else { traffic(temp_max, 70.0, 85.0) };
+    draw_circle(&mut img, cx, cy, r, temp_col);
+    let tlbl = if temp_max > 0.0 { format!("{:.0}°C", temp_max) } else { "N/A".to_string() };
+    let tlw  = text_width(&font, PxScale::from(24.0), &tlbl);
+    draw_text_mut(&mut img, BG, cx - tlw / 2, cy - 14, PxScale::from(24.0), &font, &tlbl);
+    let ttw  = text_width(&small, PxScale::from(14.0), "Temp");
+    draw_text_mut(&mut img, TEXT, cx - ttw / 2, cy + 15, PxScale::from(14.0), &small, "Temp");
+
+    // Disk
+    let (cx, cy) = positions[3];
+    draw_circle(&mut img, cx, cy, r, traffic(disk_pct, 80.0, 93.0));
+    let dlbl = format!("{:.0}%", disk_pct);
+    let dlw  = text_width(&font, PxScale::from(26.0), &dlbl);
+    draw_text_mut(&mut img, BG, cx - dlw / 2, cy - 18, PxScale::from(26.0), &font, &dlbl);
+    let dsub = format!("{:.0}/{:.0}G", disk_used_gb, disk_total_gb);
+    let dsw  = text_width(&small, PxScale::from(12.0), &dsub);
+    draw_text_mut(&mut img, BG, cx - dsw / 2, cy + 3, PxScale::from(12.0), &small, &dsub);
+    let dtw  = text_width(&small, PxScale::from(14.0), "Disk");
+    draw_text_mut(&mut img, TEXT, cx - dtw / 2, cy + 20, PxScale::from(14.0), &small, "Disk");
+
+    // Load average (replaces "network" — always available)
+    let (cx, cy) = positions[4];
+    let uptime = System::uptime();
+    let load1  = System::load_average().one as f32;
+    let load_col = traffic(load1 / n_cores as f32 * 100.0, 70.0, 90.0);
+    draw_circle(&mut img, cx, cy, r - 10, load_col);
+    let lload = format!("{:.2}", load1);
+    let llw   = text_width(&font, PxScale::from(22.0), &lload);
+    draw_text_mut(&mut img, BG, cx - llw / 2, cy - 12, PxScale::from(22.0), &font, &lload);
+    let ltw   = text_width(&small, PxScale::from(12.0), "Load");
+    draw_text_mut(&mut img, TEXT, cx - ltw / 2, cy + 10, PxScale::from(12.0), &small, "Load");
+
+    // Title + uptime
+    draw_text_mut(&mut img, TEXT, 8, 6, PxScale::from(20.0), &font, "System Health");
+    let up_str = format!("up {}d {:02}h", uptime / 86400, (uptime % 86400) / 3600);
+    let uw = text_width(&small, PxScale::from(14.0), &up_str);
+    draw_text_mut(&mut img, OVERLAY0, 480 - uw - 6, 10, PxScale::from(14.0), &small, &up_str);
+
+    DynamicImage::ImageRgb8(img)
+}
