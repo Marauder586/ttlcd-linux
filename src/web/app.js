@@ -4093,6 +4093,23 @@ async function fetchScreensaverStatus() {
   });
 })();
 
+// ─── Random mode button ────────────────────────────────────────────────────────
+(function initRandomModeBtn() {
+  const btn = document.getElementById('random-mode-btn');
+  if (!btn) return;
+  btn.addEventListener('click', async () => {
+    try {
+      const data = await apiJson('POST', '/api/mode/random');
+      log(`Random mode → ${data.mode}`);
+      setStatusMsg(quickStatus, `🎲 Switched to: ${data.mode}`, true);
+      updateActiveModeButton(data.mode);
+      await fetchStatus();
+    } catch (e) {
+      setStatusMsg(quickStatus, `Random mode error: ${e.message}`, false);
+    }
+  });
+})();
+
 // ─── USB Reconnect button ──────────────────────────────────────────────────────
 (function initReconnectUsbBtn() {
   const btn = document.getElementById('reconnect-usb-btn');
@@ -4164,6 +4181,13 @@ log('ttlcd web UI connected');
         break;
       case 'H':
         api('POST', '/api/mode', { mode: 'thermal_dashboard' }).then(() => fetchStatus()).catch(() => {});
+        break;
+      case 'R':
+        apiJson('POST', '/api/mode/random').then(d => {
+          log(`Random → ${d.mode}`);
+          updateActiveModeButton(d.mode);
+          fetchStatus();
+        }).catch(() => {});
         break;
     }
   });

@@ -1904,6 +1904,7 @@ async fn run_daemon(
             .route("/api/screenshot",     web::get().to(api_screenshot))
             // Mode listing and navigation
             .route("/api/modes",          web::get().to(api_modes_list))
+            .route("/api/mode/random",    web::post().to(api_mode_random))
             .route("/api/mode/next",      web::post().to(api_mode_next))
             .route("/api/mode/prev",      web::post().to(api_mode_prev))
             // Notification history
@@ -3969,6 +3970,36 @@ async fn api_modes_list() -> impl Responder {
         ModeInfo { name: "idle",           description: "Keepalive — no display update, prevents blank" },
     ];
     HttpResponse::Ok().json(modes)
+}
+
+/// POST /api/mode/random — switch to a random live mode (excludes idle, custom_text, custom_image, slideshow).
+async fn api_mode_random(state: web::Data<DaemonState>) -> impl Responder {
+    // Pick from live modes (not transient/idle)
+    let live_modes: Vec<&str> = DisplayMode::ALL_NAMES.iter()
+        .filter(|&&n| !matches!(n, "idle" | "custom_text" | "custom_image" | "slideshow"))
+        .copied()
+        .collect();
+    if live_modes.is_empty() {
+        return HttpResponse::InternalServerError().body("no live modes available");
+    }
+    // Use time-based seed for pseudo-random selection
+    let seed = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let idx = (seed as usize) % live_modes.len();
+    let chosen = live_modes[idx];
+    if let Some(new_mode) = DisplayMode::from_str_name(chosen) {
+        let cur = state.mode.lock().unwrap().clone();
+        if !cur.is_transient() {
+            *state.prev_mode.lock().unwrap() = cur;
+        }
+        *state.mode.lock().unwrap() = new_mode.clone();
+        push_history(&state, HistoryKind::System, format!("random mode → {}", chosen));
+        HttpResponse::Ok().json(serde_json::json!({ "ok": true, "mode": chosen }))
+    } else {
+        HttpResponse::InternalServerError().body(format!("mode {chosen} not found"))
+    }
 }
 
 /// POST /api/mode/next — advance to the next live mode (wraps around).
@@ -7224,7 +7255,8 @@ async fn api_docs() -> HttpResponse {
     <tr><td>/api/status</td><td class="badge-get">GET</td><td>Full daemon status (mode, version, frame_seq, rotation, etc.)</td></tr>
     <tr><td>/api/version</td><td class="badge-get">GET</td><td>Version string only</td></tr>
     <tr><td>/api/uptime</td><td class="badge-get">GET</td><td>Daemon uptime in seconds and human-readable</td></tr>
-    <tr><td>/api/panel/info</td><td class="badge-get">GET</td><td>USB panel hardware info (serial, firmware)</td></tr>
+    <tr><td>/api/panel/info</td><td class="badge-get">GET</td><td>USB panel hardware info (serial, firmware, connection status)</td></tr>
+    <tr><td>/api/panel/reconnect</td><td class="badge-post">POST</td><td>Trigger an immediate USB reconnect attempt (non-blocking)</td></tr>
     <tr><td>/api/modes</td><td class="badge-get">GET</td><td>List of all mode names</td></tr>
     <tr><td>/api/modes/info</td><td class="badge-get">GET</td><td>Mode names with descriptions</td></tr>
     <tr><td>/health</td><td class="badge-get">GET</td><td>Liveness probe (plain text)</td></tr>
