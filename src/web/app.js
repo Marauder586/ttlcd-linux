@@ -3995,6 +3995,9 @@ log('ttlcd web UI connected');
       case 'A':
         api('POST', '/api/mode', { mode: 'analog_clock' }).then(() => fetchStatus()).catch(() => {});
         break;
+      case 'X':
+        api('POST', '/api/mode', { mode: 'led_clock' }).then(() => fetchStatus()).catch(() => {});
+        break;
       case 'E':
         api('POST', '/api/mode', { mode: 'game_of_life' }).then(() => fetchStatus()).catch(() => {});
         break;

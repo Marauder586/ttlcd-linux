@@ -7360,3 +7360,184 @@ mod game_of_life_tests {
         assert_eq!(img1.width(), img2.width());
     }
 }
+
+
+// ─── 7-Segment LED Clock ───────────────────────────────────────────────────────
+
+/// Render a 7-segment LED display clock (480×480).
+///
+/// Each digit is drawn using rectangular segments (a–g, plus decimal point).
+/// The display shows HH:MM:SS in bright amber/orange Catppuccin Peach.
+pub fn render_led_clock() -> DynamicImage {
+    let mut img = blank();
+    let bold = font_bold();
+    let mono = font_mono();
+
+    let now = Local::now();
+    let h  = now.hour();
+    let m  = now.minute();
+    let s  = now.second();
+
+    //   ─── Segment definitions ─────────────────────────────────────────────
+    //   Segments: a (top), b (top-right), c (bottom-right), d (bottom),
+    //             e (bottom-left), f (top-left), g (middle)
+    //
+    //    aaa
+    //   f   b
+    //   f   b
+    //    ggg
+    //   e   c
+    //   e   c
+    //    ddd
+    //
+    //  digit → [a, b, c, d, e, f, g]
+    let segments: [[bool; 7]; 10] = [
+        [true,  true,  true,  true,  true,  true,  false], // 0
+        [false, true,  true,  false, false, false, false], // 1
+        [true,  true,  false, true,  true,  false, true],  // 2
+        [true,  true,  true,  true,  false, false, true],  // 3
+        [false, true,  true,  false, false, true,  true],  // 4
+        [true,  false, true,  true,  false, true,  true],  // 5
+        [true,  false, true,  true,  true,  true,  true],  // 6
+        [true,  true,  true,  false, false, false, false], // 7
+        [true,  true,  true,  true,  true,  true,  true],  // 8
+        [true,  true,  true,  true,  false, true,  true],  // 9
+    ];
+
+    let on_color  = PEACH;
+    let off_color = Rgb([PEACH.0[0] / 12, PEACH.0[1] / 12, PEACH.0[2] / 12]);
+
+    // Digit geometry (each digit occupies W x H px including gap)
+    let dw: i32 = 50; // digit width
+    let dh: i32 = 80; // digit height
+    let gap: i32 = 4; // gap between digit and separator
+
+    // Total clock row: 6 digits + 2 colons
+    // Layout: HH:MM:SS
+    // Position: center vertically around y=240
+    let total_w = 6 * dw + 2 * 18 + 2 * gap * 4; // approximate
+    let start_x = (480 - total_w) / 2;
+    let start_y = 155i32; // top of digits
+
+    let seg_thick: i32 = 5;
+
+    let draw_segment = |img: &mut image::RgbImage,
+                        x: i32, y: i32, w: i32, h: i32,
+                        segs: &[bool; 7],
+                        on_c: Rgb<u8>, off_c: Rgb<u8>| {
+        let st = seg_thick;
+        // a: top horizontal
+        {
+            let c = if segs[0] { on_c } else { off_c };
+            draw_filled_rect_mut(img, Rect::at(x + st, y).of_size((w - 2*st) as u32, st as u32), c);
+        }
+        // b: top-right vertical
+        {
+            let c = if segs[1] { on_c } else { off_c };
+            draw_filled_rect_mut(img, Rect::at(x + w - st, y + st).of_size(st as u32, (h/2 - st) as u32), c);
+        }
+        // c: bottom-right vertical
+        {
+            let c = if segs[2] { on_c } else { off_c };
+            draw_filled_rect_mut(img, Rect::at(x + w - st, y + h/2).of_size(st as u32, (h/2 - st) as u32), c);
+        }
+        // d: bottom horizontal
+        {
+            let c = if segs[3] { on_c } else { off_c };
+            draw_filled_rect_mut(img, Rect::at(x + st, y + h - st).of_size((w - 2*st) as u32, st as u32), c);
+        }
+        // e: bottom-left vertical
+        {
+            let c = if segs[4] { on_c } else { off_c };
+            draw_filled_rect_mut(img, Rect::at(x, y + h/2).of_size(st as u32, (h/2 - st) as u32), c);
+        }
+        // f: top-left vertical
+        {
+            let c = if segs[5] { on_c } else { off_c };
+            draw_filled_rect_mut(img, Rect::at(x, y + st).of_size(st as u32, (h/2 - st) as u32), c);
+        }
+        // g: middle horizontal
+        {
+            let c = if segs[6] { on_c } else { off_c };
+            draw_filled_rect_mut(img, Rect::at(x + st, y + h/2 - st/2).of_size((w - 2*st) as u32, st as u32), c);
+        }
+    };
+
+    let draw_colon = |img: &mut image::RgbImage, x: i32, y: i32, h: i32, flash: bool| {
+        let c = if flash { on_color } else { off_color };
+        let dot_size = 7i32;
+        draw_filled_rect_mut(img, Rect::at(x, y + h/4 - dot_size/2).of_size(dot_size as u32, dot_size as u32), c);
+        draw_filled_rect_mut(img, Rect::at(x, y + 3*h/4 - dot_size/2).of_size(dot_size as u32, dot_size as u32), c);
+    };
+
+    // Draw HH:MM:SS
+    let colon_w = 18i32;
+    let mut cx = start_x;
+    let flash = s % 2 == 0;
+
+    let digits = [h / 10, h % 10, m / 10, m % 10, s / 10, s % 10];
+    for (i, &d) in digits.iter().enumerate() {
+        // Colon after HH and MM
+        if i == 2 || i == 4 {
+            draw_colon(&mut img, cx, start_y, dh, flash);
+            cx += colon_w;
+        }
+        if (d as usize) < 10 {
+            draw_segment(&mut img, cx, start_y, dw, dh, &segments[d as usize], on_color, off_color);
+        }
+        cx += dw + gap;
+    }
+
+    // Glow effect: draw a subtle halo under digits using darker peach rects
+    // (already handled by the display itself)
+
+    // Date + day below
+    let date_str = now.format("%A, %B %-e, %Y").to_string();
+    let date_w   = text_width(&bold, PxScale::from(22.0), &date_str);
+    draw_text_mut(&mut img, SUBTEXT, ((480 - date_w) / 2).max(0), 260, PxScale::from(22.0), &bold, &date_str);
+
+    // Load average and uptime
+    let load    = System::load_average();
+    let uptime  = System::uptime();
+    let stat_str = format!(
+        "load {:.2}/{:.2}/{:.2}   up {}",
+        load.one, load.five, load.fifteen,
+        format_uptime(uptime)
+    );
+    let sw = text_width(&mono, PxScale::from(15.0), &stat_str);
+    draw_text_mut(&mut img, OVERLAY0, ((480 - sw) / 2).max(0), 294, PxScale::from(15.0), &mono, &stat_str);
+
+    // Hostname
+    let hostname = System::host_name().unwrap_or_else(|| "ttlcd".into());
+    let hw = text_width(&mono, PxScale::from(18.0), &hostname);
+    draw_text_mut(&mut img, MAUVE, ((480 - hw) / 2).max(0), 326, PxScale::from(18.0), &mono, &hostname);
+
+    // Decorative scanlines (subtle)
+    for y in (start_y as u32..(start_y + dh) as u32).step_by(4) {
+        for x in 0..480u32 {
+            if let Some(p) = img.get_pixel_checked(x, y) {
+                let r = p.0[0].saturating_sub(10);
+                let g = p.0[1].saturating_sub(10);
+                let b = p.0[2].saturating_sub(10);
+                img.put_pixel(x, y, Rgb([r, g, b]));
+            }
+        }
+    }
+
+    // Corner hash marks (CRT-style dressing)
+    draw_brackets(&mut img);
+
+    DynamicImage::ImageRgb8(img)
+}
+
+#[cfg(test)]
+mod led_clock_tests {
+    use super::*;
+
+    #[test]
+    fn test_render_led_clock_size() {
+        let img = render_led_clock();
+        assert_eq!(img.width(), 480);
+        assert_eq!(img.height(), 480);
+    }
+}
