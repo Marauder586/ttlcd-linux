@@ -3883,6 +3883,9 @@ log('ttlcd web UI connected');
         document.activeElement.tagName === 'SELECT') return;
     if (!e.shiftKey) return;
     switch (e.key) {
+      case 'A':
+        api('POST', '/api/mode', { mode: 'analog_clock' }).then(() => fetchStatus()).catch(() => {});
+        break;
       case 'N':
         api('POST', '/api/mode', { mode: 'net_speed_graph' }).then(() => fetchStatus()).catch(() => {});
         break;

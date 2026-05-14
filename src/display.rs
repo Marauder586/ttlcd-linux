@@ -6716,3 +6716,176 @@ mod cpu_core_bars_tests {
         assert_eq!(img.height(), 480);
     }
 }
+
+// ─── Analog Clock ─────────────────────────────────────────────────────────────
+
+/// Render an analog clock face (480×480).
+///
+/// Shows hour, minute, and second hands on a circular dial with Catppuccin
+/// Mocha styling.  Date and load average are shown below the clock face.
+pub fn render_analog_clock() -> DynamicImage {
+    use std::f64::consts::PI;
+    let mut img = blank();
+    let bold = font_bold();
+    let mono = font_mono();
+
+    let now  = Local::now();
+    let h    = now.hour()   as f64;
+    let m    = now.minute() as f64;
+    let s    = now.second() as f64;
+
+    let cx = 240i32;
+    let cy = 220i32;
+    let r  = 185i32;   // outer radius of clock face
+
+    // ── Clock face ────────────────────────────────────────────────────────
+    // Fill circle background (slightly lighter than base)
+    let face_bg = Rgb([30u8, 30, 46]);
+    for py in (cy - r)..(cy + r) {
+        for px in (cx - r)..(cx + r) {
+            let dx = (px - cx) as f64;
+            let dy = (py - cy) as f64;
+            if dx * dx + dy * dy <= (r as f64) * (r as f64) {
+                if py >= 0 && px >= 0 && (py as u32) < img.height() && (px as u32) < img.width() {
+                    img.put_pixel(px as u32, py as u32, face_bg);
+                }
+            }
+        }
+    }
+
+    // ── Outer ring ────────────────────────────────────────────────────────
+    for angle_deg in 0..720 {
+        let angle = angle_deg as f64 * PI / 360.0;
+        let px = cx + ((r as f64 - 1.0) * angle.sin()) as i32;
+        let py = cy - ((r as f64 - 1.0) * angle.cos()) as i32;
+        if px >= 0 && py >= 0 && (px as u32) < img.width() && (py as u32) < img.height() {
+            img.put_pixel(px as u32, py as u32, SURFACE0);
+        }
+    }
+
+    // ── Hour tick marks ───────────────────────────────────────────────────
+    for i in 0..12 {
+        let tick_angle = i as f64 * PI / 6.0;
+        let (tick_sin, tick_cos) = (tick_angle.sin(), tick_angle.cos());
+        let inner = r as f64 - 20.0;
+        let outer = r as f64 - 5.0;
+        for t in 0..16 {
+            let tt = inner + t as f64;
+            let tx = cx + (tt * tick_sin) as i32;
+            let ty = cy - (tt * tick_cos) as i32;
+            if tx >= 0 && ty >= 0 && (tx as u32) < img.width() && (ty as u32) < img.height() {
+                img.put_pixel(tx as u32, ty as u32, OVERLAY0);
+            }
+        }
+    }
+
+    // ── Minute tick marks ─────────────────────────────────────────────────
+    for i in 0..60 {
+        if i % 5 == 0 { continue; } // skip hour marks
+        let tick_angle = i as f64 * PI / 30.0;
+        let (tick_sin, tick_cos) = (tick_angle.sin(), tick_angle.cos());
+        let inner = r as f64 - 10.0;
+        let outer = r as f64 - 3.0;
+        for t in 0..8 {
+            let tt = inner + t as f64;
+            let tx = cx + (tt * tick_sin) as i32;
+            let ty = cy - (tt * tick_cos) as i32;
+            if tx >= 0 && ty >= 0 && (tx as u32) < img.width() && (ty as u32) < img.height() {
+                img.put_pixel(tx as u32, ty as u32, SURFACE0);
+            }
+        }
+        let _ = outer; // suppress warning
+    }
+
+    // ── Helper: draw thick hand ────────────────────────────────────────────
+    let draw_hand = |img: &mut image::RgbImage, angle: f64, length: f64, thickness: i32, color: Rgb<u8>| {
+        let (sin_a, cos_a) = (angle.sin(), angle.cos());
+        for d in 0..(length as i32) {
+            let t = d as f64;
+            let hx = cx + (t * sin_a) as i32;
+            let hy = cy - (t * cos_a) as i32;
+            // Draw a cross of pixels for thickness
+            for tx in -(thickness / 2)..(thickness / 2 + 1) {
+                for ty in -(thickness / 2)..(thickness / 2 + 1) {
+                    let px = hx + tx;
+                    let py = hy + ty;
+                    if px >= 0 && py >= 0 && (px as u32) < img.width() && (py as u32) < img.height() {
+                        img.put_pixel(px as u32, py as u32, color);
+                    }
+                }
+            }
+        }
+    };
+
+    // ── Hour hand ─────────────────────────────────────────────────────────
+    let h_angle  = (h + m / 60.0) * PI / 6.0;
+    draw_hand(&mut img, h_angle, 100.0, 5, MAUVE);
+
+    // ── Minute hand ───────────────────────────────────────────────────────
+    let m_angle = (m + s / 60.0) * PI / 30.0;
+    draw_hand(&mut img, m_angle, 145.0, 3, BLUE);
+
+    // ── Second hand ───────────────────────────────────────────────────────
+    let s_angle = s * PI / 30.0;
+    draw_hand(&mut img, s_angle, 155.0, 1, RED);
+
+    // ── Centre dot ────────────────────────────────────────────────────────
+    for dx in -5i32..6 {
+        for dy in -5i32..6 {
+            if dx * dx + dy * dy <= 25 {
+                let px = cx + dx;
+                let py = cy + dy;
+                if px >= 0 && py >= 0 && (px as u32) < img.width() && (py as u32) < img.height() {
+                    img.put_pixel(px as u32, py as u32, TEXT);
+                }
+            }
+        }
+    }
+    // Tiny centre dot in red
+    for dx in -2i32..3 {
+        for dy in -2i32..3 {
+            let px = cx + dx;
+            let py = cy + dy;
+            if px >= 0 && py >= 0 && (px as u32) < img.width() && (py as u32) < img.height() {
+                img.put_pixel(px as u32, py as u32, RED);
+            }
+        }
+    }
+
+    // ── Hour labels (12, 3, 6, 9) ─────────────────────────────────────────
+    for (label, angle_deg) in &[("12", 0.0f64), ("3", 90.0), ("6", 180.0), ("9", 270.0)] {
+        let angle_rad = angle_deg * PI / 180.0;
+        let label_r   = r as f64 - 38.0;
+        let lx = cx + (label_r * angle_rad.sin()) as i32;
+        let ly = cy - (label_r * angle_rad.cos()) as i32;
+        let lw = text_width(&bold, PxScale::from(18.0), label);
+        draw_text_mut(&mut img, OVERLAY0,
+                      lx - lw / 2,
+                      ly - 9,
+                      PxScale::from(18.0), &bold, label);
+    }
+
+    // ── Digital time (small, below face) ─────────────────────────────────
+    let time_str  = now.format("%H:%M:%S").to_string();
+    let date_str  = now.format("%A, %B %-e").to_string();
+    let load      = System::load_average();
+    let load_str  = format!("load {:.2} / {:.2} / {:.2}", load.one, load.five, load.fifteen);
+
+    draw_centered(&mut img, &mono,  PxScale::from(26.0), 420, TEAL,    &time_str);
+    draw_centered(&mut img, &bold,  PxScale::from(18.0), 450, SUBTEXT, &date_str);
+    draw_centered(&mut img, &mono,  PxScale::from(14.0), 470, OVERLAY0, &load_str);
+
+    DynamicImage::ImageRgb8(img)
+}
+
+#[cfg(test)]
+mod analog_clock_tests {
+    use super::*;
+
+    #[test]
+    fn test_render_analog_clock_size() {
+        let img = render_analog_clock();
+        assert_eq!(img.width(), 480);
+        assert_eq!(img.height(), 480);
+    }
+}
