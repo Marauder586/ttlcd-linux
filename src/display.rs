@@ -6770,7 +6770,8 @@ pub fn render_analog_clock() -> DynamicImage {
         let (tick_sin, tick_cos) = (tick_angle.sin(), tick_angle.cos());
         let inner = r as f64 - 20.0;
         let outer = r as f64 - 5.0;
-        for t in 0..16 {
+        let steps = (outer - inner).ceil() as i32 + 1;
+        for t in 0..steps {
             let tt = inner + t as f64;
             let tx = cx + (tt * tick_sin) as i32;
             let ty = cy - (tt * tick_cos) as i32;
@@ -7651,6 +7652,355 @@ pub fn render_bounce_ball() -> DynamicImage {
 
     DynamicImage::ImageRgb8(img)
 }
+
+// ─── Speedometer Gauge ───────────────────────────────────────────────────────
+
+/// Render two large analog speedometer gauges: CPU% (top) and RAM% (bottom).
+/// Each gauge is a filled half-circle arc with a needle, labels, and min/max marks.
+pub fn render_speedometer_gauge() -> DynamicImage {
+    use std::f64::consts::PI;
+    use sysinfo::{System, MemoryRefreshKind, CpuRefreshKind};
+
+    let mut sys = System::new();
+    sys.refresh_cpu_specifics(CpuRefreshKind::everything());
+    std::thread::sleep(std::time::Duration::from_millis(200));
+    sys.refresh_cpu_specifics(CpuRefreshKind::everything());
+    sys.refresh_memory_specifics(MemoryRefreshKind::everything());
+
+    let cpu_pct  = sys.global_cpu_usage() as f64;
+    let ram_pct  = if sys.total_memory() > 0 {
+        sys.used_memory() as f64 / sys.total_memory() as f64 * 100.0
+    } else { 0.0 };
+
+    let font = font_bold();
+
+    let mut img = RgbImage::new(480, 480);
+    for p in img.pixels_mut() { *p = BG; }
+
+    // ── Draw a single gauge into a region of the image ──────────────────────
+    let draw_gauge = |img: &mut RgbImage, cx: i32, cy: i32, r: i32,
+                      value: f64, label: &str, unit: &str| {
+        // Gauge spans from 210° to 330° (total 240° arc, half-circle style)
+        let start_angle = 210.0_f64.to_radians();
+        let end_angle   = 330.0_f64.to_radians();
+        let arc_span    = 240.0_f64.to_radians(); // = end - start going clockwise
+
+        let angle_for_pct = |pct: f64| -> f64 {
+            // 0% → start_angle, 100% → end_angle, going clockwise
+            start_angle + (pct / 100.0) * arc_span
+        };
+
+        // ── Background arc (full track) ──────────────────────────────────
+        for deg in 0..3600_i32 {
+            let a = deg as f64 * 0.1_f64.to_radians();
+            // Clamp to our arc
+            let norm = (a - start_angle).rem_euclid(2.0 * PI);
+            let norm_end = (end_angle - start_angle).rem_euclid(2.0 * PI);
+            if norm > norm_end { continue; }
+
+            for rr in (r - 26)..r {
+                let px = cx + (rr as f64 * a.cos()) as i32;
+                let py = cy + (rr as f64 * a.sin()) as i32;
+                if px >= 0 && py >= 0 && (px as u32) < img.width() && (py as u32) < img.height() {
+                    img.put_pixel(px as u32, py as u32, SURFACE0);
+                }
+            }
+        }
+
+        // ── Coloured value arc ────────────────────────────────────────────
+        let value_angle = angle_for_pct(value.clamp(0.0, 100.0));
+        // Color: green < 50%, yellow < 75%, red >= 75%
+        let arc_color = if value < 50.0 { GREEN } else if value < 75.0 { YELLOW } else { RED };
+
+        for deg in 0..3600_i32 {
+            let a = deg as f64 * 0.1_f64.to_radians();
+            let norm = (a - start_angle).rem_euclid(2.0 * PI);
+            let norm_val = (value_angle - start_angle).rem_euclid(2.0 * PI);
+            if norm > norm_val { continue; }
+
+            for rr in (r - 26)..r {
+                let px = cx + (rr as f64 * a.cos()) as i32;
+                let py = cy + (rr as f64 * a.sin()) as i32;
+                if px >= 0 && py >= 0 && (px as u32) < img.width() && (py as u32) < img.height() {
+                    img.put_pixel(px as u32, py as u32, arc_color);
+                }
+            }
+        }
+
+        // ── Tick marks ────────────────────────────────────────────────────
+        for tick in 0..=10 {
+            let pct = tick as f64 * 10.0;
+            let ta = angle_for_pct(pct);
+            let inner_r = if tick % 5 == 0 { r - 42 } else { r - 36 };
+            for rr in inner_r..(r + 2) {
+                let px = cx + (rr as f64 * ta.cos()) as i32;
+                let py = cy + (rr as f64 * ta.sin()) as i32;
+                if px >= 0 && py >= 0 && (px as u32) < img.width() && (py as u32) < img.height() {
+                    img.put_pixel(px as u32, py as u32, OVERLAY0);
+                }
+            }
+        }
+
+        // ── Needle ────────────────────────────────────────────────────────
+        let na = angle_for_pct(value.clamp(0.0, 100.0));
+        let needle_len = (r - 30) as f64;
+        let nx = cx as f32 + (needle_len * na.cos()) as f32;
+        let ny = cy as f32 + (needle_len * na.sin()) as f32;
+        // Draw a 3px-wide needle
+        for offset in -1_i32..=1 {
+            let perp = na + PI / 2.0;
+            let sx = cx as f32 + (offset as f64 * perp.cos() * 2.0) as f32;
+            let sy = cy as f32 + (offset as f64 * perp.sin() * 2.0) as f32;
+            let lx = nx + (offset as f64 * perp.cos() * 2.0) as f32;
+            let ly = ny + (offset as f64 * perp.sin() * 2.0) as f32;
+            draw_antialiased_line_segment_mut(img, (sx as i32, sy as i32),
+                (lx as i32, ly as i32), WHITE, interpolate);
+        }
+
+        // ── Center pivot dot ──────────────────────────────────────────────
+        for dy in -6_i32..=6 {
+            for dx in -6_i32..=6 {
+                if dx*dx + dy*dy <= 36 {
+                    let px = (cx + dx) as u32;
+                    let py = (cy + dy) as u32;
+                    if px < img.width() && py < img.height() {
+                        img.put_pixel(px, py, TEXT);
+                    }
+                }
+            }
+        }
+
+        // ── Label text (e.g. "CPU") ───────────────────────────────────────
+        let lw = text_width(&font, PxScale::from(26.0), label);
+        draw_text_mut(img, TEXT, cx - lw / 2, cy - 46, PxScale::from(26.0), &font, label);
+
+        // ── Value text ───────────────────────────────────────────────────
+        let val_str = format!("{:.1}{}", value, unit);
+        let vw = text_width(&font, PxScale::from(34.0), &val_str);
+        draw_text_mut(img, arc_color, cx - vw / 2, cy + 18, PxScale::from(34.0), &font, &val_str);
+
+        // ── Min / max labels ─────────────────────────────────────────────
+        let zero_a = angle_for_pct(0.0);
+        let max_a  = angle_for_pct(100.0);
+        let lbl_r  = r + 16;
+        let zero_x = cx + (lbl_r as f64 * zero_a.cos()) as i32 - 4;
+        let zero_y = cy + (lbl_r as f64 * zero_a.sin()) as i32 - 6;
+        draw_text_mut(img, OVERLAY0, zero_x, zero_y, PxScale::from(16.0), &font, "0");
+        let max_x = cx + (lbl_r as f64 * max_a.cos()) as i32 - 10;
+        let max_y = cy + (lbl_r as f64 * max_a.sin()) as i32 - 6;
+        draw_text_mut(img, OVERLAY0, max_x, max_y, PxScale::from(16.0), &font, "100");
+    };
+
+    // Draw CPU gauge in top half
+    draw_gauge(&mut img, 240, 200, 170, cpu_pct, "CPU", "%");
+    // Draw RAM gauge in bottom half
+    draw_gauge(&mut img, 240, 400, 68, ram_pct, "RAM", "%");
+
+    // Divider line
+    for x in 20..460_u32 {
+        if x < img.width() { img.put_pixel(x, 285, SURFACE0); }
+    }
+
+    DynamicImage::ImageRgb8(img)
+}
+
+// ─── Disk Pie Chart ───────────────────────────────────────────────────────────
+
+/// Render disk partitions as a pie chart with used/free sectors and labels.
+pub fn render_disk_pie() -> DynamicImage {
+    use std::f64::consts::PI;
+    use sysinfo::{Disks, DiskRefreshKind};
+
+    let mut disks = Disks::new_with_refreshed_list();
+    disks.refresh_specifics(false, DiskRefreshKind::everything());
+
+    // Collect up to 5 mounted partitions with real data
+    let mut entries: Vec<(String, u64, u64)> = Vec::new(); // (mount, used, total)
+    for d in disks.iter() {
+        if d.total_space() == 0 { continue; }
+        let mount = d.mount_point().to_string_lossy().to_string();
+        let total = d.total_space();
+        let avail = d.available_space();
+        let used  = total.saturating_sub(avail);
+        entries.push((mount, used, total));
+        if entries.len() >= 5 { break; }
+    }
+
+    let font = font_bold();
+    let mut img = RgbImage::new(480, 480);
+    for p in img.pixels_mut() { *p = BG; }
+
+    // Title
+    let title = "Disk Usage";
+    let tw = text_width(&font, PxScale::from(28.0), title);
+    draw_text_mut(&mut img, TEXT, (480 - tw) / 2, 10, PxScale::from(28.0), &font, title);
+
+    if entries.is_empty() {
+        let msg = "No disk data";
+        let mw = text_width(&font, PxScale::from(22.0), msg);
+        draw_text_mut(&mut img, SUBTEXT, (480 - mw) / 2, 220, PxScale::from(22.0), &font, msg);
+        return DynamicImage::ImageRgb8(img);
+    }
+
+    // Color palette for different partitions
+    let slice_colors = [BLUE, MAUVE, TEAL, PEACH, YELLOW];
+    let free_color   = SURFACE0;
+
+    // Draw up to 5 pies in a grid (2 columns × 3 rows)
+    let pie_r  = 72_i32;
+    let positions = [(120i32, 160i32), (360, 160), (120, 320), (360, 320), (240, 460)];
+
+    for (idx, (mount, used, total)) in entries.iter().enumerate() {
+        if idx >= positions.len() { break; }
+        let (cx, cy) = positions[idx];
+        let used_pct = *used as f64 / *total as f64;
+        let slice_col = slice_colors[idx % slice_colors.len()];
+
+        // Draw pie background (free)
+        for dy in -pie_r..=pie_r {
+            for dx in -pie_r..=pie_r {
+                if dx*dx + dy*dy <= pie_r*pie_r {
+                    let px = (cx + dx) as u32;
+                    let py = (cy + dy) as u32;
+                    if px < 480 && py < 480 {
+                        img.put_pixel(px, py, free_color);
+                    }
+                }
+            }
+        }
+
+        // Draw used sector (start from top = -PI/2)
+        let used_angle = used_pct * 2.0 * PI;
+        for deg_10 in 0..3600_i32 {
+            let a = deg_10 as f64 * 0.1_f64.to_radians();
+            if a > used_angle { break; }
+            let draw_a = a - PI / 2.0; // Start from 12 o'clock
+            for rr in 0..pie_r {
+                let px = (cx as f64 + rr as f64 * draw_a.cos()) as i32;
+                let py = (cy as f64 + rr as f64 * draw_a.sin()) as i32;
+                if px >= 0 && py >= 0 && (px as u32) < 480 && (py as u32) < 480 {
+                    img.put_pixel(px as u32, py as u32, slice_col);
+                }
+            }
+        }
+
+        // Outline circle
+        for deg in 0..3600_i32 {
+            let a = deg as f64 * 0.1_f64.to_radians();
+            let px = (cx as f64 + pie_r as f64 * a.cos()) as i32;
+            let py = (cy as f64 + pie_r as f64 * a.sin()) as i32;
+            if px >= 0 && py >= 0 && (px as u32) < 480 && (py as u32) < 480 {
+                img.put_pixel(px as u32, py as u32, OVERLAY0);
+            }
+        }
+
+        // Labels
+        let pct_str = format!("{:.0}%", used_pct * 100.0);
+        let pw = text_width(&font, PxScale::from(20.0), &pct_str);
+        draw_text_mut(&mut img, WHITE, cx - pw / 2, cy - 10, PxScale::from(20.0), &font, &pct_str);
+
+        // Mount point label (truncate at 8 chars)
+        let short_mount = if mount.len() > 10 { &mount[mount.len()-10..] } else { mount.as_str() };
+        let mw2 = text_width(&font, PxScale::from(15.0), short_mount);
+        draw_text_mut(&mut img, SUBTEXT, cx - mw2 / 2, cy + pie_r + 4, PxScale::from(15.0), &font, short_mount);
+
+        // Size label
+        let sz_str = human_bytes(*total as f64);
+        let sw2 = text_width(&font, PxScale::from(14.0), &sz_str);
+        draw_text_mut(&mut img, OVERLAY0, cx - sw2 / 2, cy + pie_r + 20, PxScale::from(14.0), &font, &sz_str);
+    }
+
+    DynamicImage::ImageRgb8(img)
+}
+
+fn human_bytes(bytes: f64) -> String {
+    if bytes >= 1_073_741_824.0 {
+        format!("{:.1}G", bytes / 1_073_741_824.0)
+    } else if bytes >= 1_048_576.0 {
+        format!("{:.0}M", bytes / 1_048_576.0)
+    } else if bytes >= 1024.0 {
+        format!("{:.0}K", bytes / 1024.0)
+    } else {
+        format!("{:.0}B", bytes)
+    }
+}
+
+// ─── System Temperatures Dashboard ───────────────────────────────────────────
+
+/// Render a detailed temperature + fan sensor dashboard with bar gauges.
+pub fn render_thermal_dashboard() -> DynamicImage {
+    use sysinfo::Components;
+
+    let comps = Components::new_with_refreshed_list();
+
+    let font = font_bold();
+    let mut img = RgbImage::new(480, 480);
+    for p in img.pixels_mut() { *p = BG; }
+
+    // Title
+    let title = "Thermal Dashboard";
+    let tw = text_width(&font, PxScale::from(26.0), title);
+    draw_text_mut(&mut img, TEXT, (480 - tw) / 2, 8, PxScale::from(26.0), &font, title);
+
+    // Collect sensor readings
+    let mut sensors: Vec<(String, f32, f32)> = Vec::new(); // (label, current, max_observed)
+    for c in comps.iter() {
+        let label = c.label().to_string();
+        if let Some(t) = c.temperature() {
+            if t > 0.0 && t < 200.0 {
+                let max = c.max().unwrap_or(t);
+                sensors.push((label, t, max));
+            }
+        }
+        if sensors.len() >= 10 { break; }
+    }
+
+    if sensors.is_empty() {
+        let msg = "No thermal sensors found";
+        let mw = text_width(&font, PxScale::from(20.0), msg);
+        draw_text_mut(&mut img, SUBTEXT, (480 - mw) / 2, 220, PxScale::from(20.0), &font, msg);
+        return DynamicImage::ImageRgb8(img);
+    }
+
+    // ── Draw sensor rows ──────────────────────────────────────────────────
+    let row_h = (440 / sensors.len().max(1)) as i32;
+    let bar_x = 180_i32;
+    let bar_w = 260_i32;
+    let bar_h = (row_h - 10).max(14) as i32;
+
+    for (i, (label, temp, _max_obs)) in sensors.iter().enumerate() {
+        let y = 45 + i as i32 * row_h;
+
+        // Temperature color scale: <50°C=blue, <70°C=green, <85°C=yellow, >=85°C=red
+        let col = if *temp < 50.0 { BLUE } else if *temp < 70.0 { GREEN } else if *temp < 85.0 { YELLOW } else { RED };
+
+        // Sensor label (truncate at 20 chars)
+        let short = if label.len() > 20 { &label[..20] } else { label.as_str() };
+        draw_text_mut(&mut img, SUBTEXT, 8, y + 2, PxScale::from(15.0), &font, short);
+
+        // Background bar
+        let bg_rect = Rect::at(bar_x, y).of_size(bar_w as u32, bar_h as u32);
+        draw_filled_rect_mut(&mut img, bg_rect, SURFACE0);
+
+        // Value bar (scale: 0°C=0, 100°C=full bar)
+        let bar_fill = (((*temp as f64 / 100.0).clamp(0.0, 1.0)) * bar_w as f64) as i32;
+        if bar_fill > 0 {
+            let val_rect = Rect::at(bar_x, y).of_size(bar_fill as u32, bar_h as u32);
+            draw_filled_rect_mut(&mut img, val_rect, col);
+        }
+
+        // Temperature text overlay
+        let temp_str = format!("{:.0}°C", temp);
+        let tsw = text_width(&font, PxScale::from(15.0), &temp_str);
+        draw_text_mut(&mut img, if bar_fill > 30 { BG } else { TEXT },
+            bar_x + bar_fill.max(4) - 2, y + 2,
+            PxScale::from(15.0), &font, &temp_str);
+        let _ = tsw;
+    }
+
+    DynamicImage::ImageRgb8(img)
+}
+
 
 #[cfg(test)]
 mod bounce_ball_tests {

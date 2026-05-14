@@ -75,6 +75,9 @@ use ttlcd::{
         render_game_of_life,
         render_led_clock,
         render_bounce_ball,
+        render_speedometer_gauge,
+        render_disk_pie,
+        render_thermal_dashboard,
         read_docker_containers,
         read_user_sessions,
         HttpMonitorResult,
@@ -783,6 +786,9 @@ enum DisplayMode {
     BounceBall,
     NetSpeedGraph,
     CpuCoreBars,
+    SpeedometerGauge,
+    DiskPie,
+    ThermalDashboard,
     Idle,
     CustomImage,
     CustomText,
@@ -792,7 +798,7 @@ enum DisplayMode {
 impl DisplayMode {
     const ALL_NAMES: &'static [&'static str] = &[
         "clock", "big_clock", "clock_sysinfo", "sysinfo", "cpu_detail",
-        "network", "disk_usage", "process_top", "temperature", "memory_detail", "countdown", "cpu_graph", "net_graph", "recent_alerts", "process_memory", "disk_io", "calendar", "stopwatch", "metrics", "weather", "notes", "qr_code", "pomodoro", "battery", "world_clock", "ticker", "http_status", "shell_cmd", "ping_monitor", "dashboard", "log_tail", "cpu_freq", "hostname_ip", "rss_feed", "service_status", "net_connections", "uptime_fancy", "os_info", "docker_status", "logged_in_users", "load_graph", "mem_graph", "progress", "matrix_rain", "temp_graph", "disk_io_graph", "graphs_overview", "analog_clock", "ping_graph", "status_overview", "game_of_life", "led_clock", "bounce_ball", "net_speed_graph", "cpu_core_bars", "idle",
+        "network", "disk_usage", "process_top", "temperature", "memory_detail", "countdown", "cpu_graph", "net_graph", "recent_alerts", "process_memory", "disk_io", "calendar", "stopwatch", "metrics", "weather", "notes", "qr_code", "pomodoro", "battery", "world_clock", "ticker", "http_status", "shell_cmd", "ping_monitor", "dashboard", "log_tail", "cpu_freq", "hostname_ip", "rss_feed", "service_status", "net_connections", "uptime_fancy", "os_info", "docker_status", "logged_in_users", "load_graph", "mem_graph", "progress", "matrix_rain", "temp_graph", "disk_io_graph", "graphs_overview", "analog_clock", "ping_graph", "status_overview", "game_of_life", "led_clock", "bounce_ball", "net_speed_graph", "cpu_core_bars", "speedometer_gauge", "disk_pie", "thermal_dashboard", "idle",
     ];
 
     fn from_str_name(s: &str) -> Option<Self> {
@@ -848,7 +854,10 @@ impl DisplayMode {
             "led_clock"         => Some(DisplayMode::LedClock),
             "bounce_ball"       => Some(DisplayMode::BounceBall),
             "net_speed_graph"   => Some(DisplayMode::NetSpeedGraph),
-            "cpu_core_bars"     => Some(DisplayMode::CpuCoreBars),
+            "cpu_core_bars"        => Some(DisplayMode::CpuCoreBars),
+            "speedometer_gauge"   => Some(DisplayMode::SpeedometerGauge),
+            "disk_pie"            => Some(DisplayMode::DiskPie),
+            "thermal_dashboard"   => Some(DisplayMode::ThermalDashboard),
             "idle"             => Some(DisplayMode::Idle),
             "custom_text"   => Some(DisplayMode::CustomText),
             "slideshow"     => Some(DisplayMode::Slideshow),
@@ -912,7 +921,10 @@ impl DisplayMode {
     DisplayMode::LedClock        => "led_clock",
     DisplayMode::BounceBall      => "bounce_ball",
     DisplayMode::NetSpeedGraph  => "net_speed_graph",
-    DisplayMode::CpuCoreBars    => "cpu_core_bars",
+    DisplayMode::CpuCoreBars        => "cpu_core_bars",
+    DisplayMode::SpeedometerGauge => "speedometer_gauge",
+    DisplayMode::DiskPie          => "disk_pie",
+    DisplayMode::ThermalDashboard => "thermal_dashboard",
             DisplayMode::Idle           => "idle",
             DisplayMode::CustomImage  => "image",
             DisplayMode::CustomText   => "custom_text",
@@ -1159,6 +1171,8 @@ struct DaemonState {
     screensaver_mode_name: Arc<Mutex<String>>,
     /// True while the screensaver mode is currently active due to inactivity.
     screensaver_active: Arc<Mutex<bool>>,
+    /// True while the USB panel is believed to be connected (False after send errors).
+    panel_connected: Arc<Mutex<bool>>,
 }
 
 /// A single entry in the display-mode schedule.
@@ -1617,6 +1631,7 @@ async fn run_daemon(
         screensaver_timeout_secs: Arc::new(Mutex::new(0u64)),
         screensaver_mode_name:    Arc::new(Mutex::new("matrix_rain".to_string())),
         screensaver_active:       Arc::new(Mutex::new(false)),
+        panel_connected:          Arc::new(Mutex::new(!headless)),
     };
 
     let panel: Arc<Mutex<Option<Panel>>> = if headless {
@@ -2132,6 +2147,7 @@ fn update_fps(state: &DaemonState) {
 // ─── Display loop ─────────────────────────────────────────────────────────────
 
 fn display_loop(panel: Arc<Mutex<Option<Panel>>>, state: DaemonState) {
+    let mut consecutive_errors: u32 = 0;
     loop {
         let mode       = state.mode.lock().unwrap().clone();
         let quality    = *state.quality.lock().unwrap();
@@ -2446,7 +2462,10 @@ fn display_loop(panel: Arc<Mutex<Option<Panel>>>, state: DaemonState) {
                     (render_ping_graph(&results), 5)
                 },
                 DisplayMode::NetSpeedGraph  => (render_net_speed_graph(), 5),
-                DisplayMode::CpuCoreBars    => (render_cpu_core_bars(), 5),
+                DisplayMode::CpuCoreBars       => (render_cpu_core_bars(), 5),
+                DisplayMode::SpeedometerGauge => (render_speedometer_gauge(), 2),
+                DisplayMode::DiskPie          => (render_disk_pie(), 10),
+                DisplayMode::ThermalDashboard => (render_thermal_dashboard(), 5),
                 DisplayMode::MatrixRain => (render_matrix_rain(), 0),
                 DisplayMode::Idle
                 | DisplayMode::CustomImage
@@ -2505,20 +2524,53 @@ fn display_loop(panel: Arc<Mutex<Option<Panel>>>, state: DaemonState) {
             let jpeg = store_frame(&state, encode_for_panel(&img, quality)?);
             { let mut g = panel.lock().unwrap(); if let Some(p) = g.as_mut() { p.send_jpeg(&jpeg)?; } }
             update_fps(&state);
-            thread::sleep(Duration::from_secs(sleep_secs));
+            consecutive_errors = 0;
+            if !state.headless { *state.panel_connected.lock().unwrap() = true; }
+            if sleep_secs > 0 {
+                thread::sleep(Duration::from_secs(sleep_secs));
+            } else {
+                // Continuous modes (sleep_secs==0): yield briefly so other threads run.
+                thread::sleep(Duration::from_millis(16));
+            }
             Ok(())
         })();
 
         if let Err(e) = result {
-            log::error!("display loop error: {e:#}");
-            thread::sleep(Duration::from_secs(5));
+            consecutive_errors += 1;
+            *state.panel_connected.lock().unwrap() = false;
+            log::error!("display loop error #{}: {:#}", consecutive_errors, e);
+            push_history(&state, HistoryKind::System,
+                format!("USB error #{}: {}", consecutive_errors, e));
+
+            // Exponential backoff: 5 → 10 → 20 → 40 → 60s (capped)
+            let backoff_secs: u64 = (5u64 << (consecutive_errors.saturating_sub(1).min(3))) .min(60);
+            log::info!("reconnect backoff: {}s (error #{})", backoff_secs, consecutive_errors);
+            thread::sleep(Duration::from_secs(backoff_secs));
+
             if !state.headless {
-                match Panel::open(state.vid, state.pid) {
+                // After 3+ consecutive errors use open_with_reset to clear stale
+                // kernel driver state left by the previous abrupt disconnect.
+                let use_reset = consecutive_errors >= 3;
+                let open_result = if use_reset {
+                    log::info!("reconnect: using open_with_reset after {} consecutive errors", consecutive_errors);
+                    Panel::open_with_reset(state.vid, state.pid)
+                } else {
+                    Panel::open(state.vid, state.pid)
+                };
+                match open_result {
                     Ok(mut p) => match p.init() {
-                        Ok(()) => { log::info!("reconnected (serial={})", p.info.serial); *panel.lock().unwrap() = Some(p); }
-                        Err(e) => log::warn!("reconnect init failed: {e}"),
+                        Ok(()) => {
+                            log::info!("reconnected (serial={}, after {} errors)", p.info.serial, consecutive_errors);
+                            push_history(&state, HistoryKind::System,
+                                format!("USB reconnected (serial={})", p.info.serial));
+                            *state.panel_info.lock().unwrap() = Some(p.info.clone());
+                            *state.panel_connected.lock().unwrap() = true;
+                            *panel.lock().unwrap() = Some(p);
+                            consecutive_errors = 0;
+                        }
+                        Err(init_err) => log::warn!("reconnect init failed: {}", init_err),
                     },
-                    Err(e) => log::warn!("reconnect open failed: {e}"),
+                    Err(open_err) => log::warn!("reconnect open failed: {}", open_err),
                 }
             }
         }
@@ -3546,6 +3598,8 @@ struct StatusResponse {
     daemon_uptime_secs: u64,
     /// Whether the display is currently frozen (updates paused).
     frozen: bool,
+    /// Whether the USB panel is currently connected (always false in headless mode).
+    panel_connected: bool,
     /// Whether the stopwatch is currently running.
     stopwatch_running: bool,
     /// Current stopwatch elapsed milliseconds.
@@ -3616,6 +3670,7 @@ async fn api_status(state: web::Data<DaemonState>) -> impl Responder {
         render_fps,
         daemon_uptime_secs,
         frozen,
+        panel_connected: *state.panel_connected.lock().unwrap(),
         stopwatch_running:    sw_running,
         stopwatch_elapsed_ms: sw_elapsed_ms,
     })
@@ -3815,6 +3870,9 @@ async fn api_modes_list() -> impl Responder {
         ModeInfo { name: "progress",       description: "Full-screen progress bar — configure via POST /api/progress with value/total/label" },
         ModeInfo { name: "matrix_rain",    description: "Matrix digital rain screensaver — animated falling characters" },
         ModeInfo { name: "bounce_ball",      description: "Bouncing ball screensaver — Catppuccin colour cycling on wall bounces" },
+        ModeInfo { name: "speedometer_gauge", description: "Analog speedometer gauges for CPU % and RAM %" },
+        ModeInfo { name: "disk_pie",          description: "Disk usage as pie charts for each mounted filesystem" },
+        ModeInfo { name: "thermal_dashboard", description: "Temperature sensor bar chart dashboard — all CPU/GPU/SSD sensors" },
         ModeInfo { name: "led_clock",        description: "7-segment LED-style clock with date, load average, and hostname — flashing colons" },
         ModeInfo { name: "game_of_life",     description: "Conway's Game of Life — animated cellular automaton, re-seeds when population stagnates" },
         ModeInfo { name: "status_overview",  description: "4-quadrant live overview: clock, CPU/RAM, network Rx/Tx, and temperature/uptime" },
@@ -5815,6 +5873,9 @@ async fn api_status_badge(state: web::Data<DaemonState>) -> impl Responder {
         "game_of_life"                         => "#a6e3a1",  // green
         "led_clock"                            => "#fab387",  // peach
         "bounce_ball"                          => "#cba6f7",  // mauve
+        "speedometer_gauge"                    => "#89dceb",  // sky
+        "disk_pie"                             => "#a6e3a1",  // green
+        "thermal_dashboard"                    => "#fab387",  // peach
         "status_overview"                      => "#89dceb",  // sky
         "analog_clock"                         => "#cba6f7",  // mauve
         "net_speed_graph"                      => "#a6e3a1",  // green
@@ -8789,8 +8850,11 @@ async fn api_render_mode_preview(
                 render_ping_graph(&results)
             },
             DisplayMode::NetSpeedGraph  => render_net_speed_graph(),
-            DisplayMode::CpuCoreBars    => render_cpu_core_bars(),
-            DisplayMode::MatrixRain   => render_matrix_rain(),
+            DisplayMode::CpuCoreBars       => render_cpu_core_bars(),
+            DisplayMode::SpeedometerGauge => render_speedometer_gauge(),
+            DisplayMode::DiskPie          => render_disk_pie(),
+            DisplayMode::ThermalDashboard => render_thermal_dashboard(),
+            DisplayMode::MatrixRain       => render_matrix_rain(),
             DisplayMode::Progress     => {
                 let ps = state_clone.progress_state.lock().unwrap().clone();
                 render_progress(&ps)

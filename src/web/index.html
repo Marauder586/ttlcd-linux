@@ -15,6 +15,8 @@
     </h1>
     <div id="status-bar">
       <a href="/api/docs" target="_blank" class="btn-link" style="font-size:0.78rem;padding:0.2rem 0.55rem;text-decoration:none;display:inline-block" title="Open API reference">📋 API</a>
+      <span id="usb-status-dot" class="usb-dot usb-dot-unknown" title="USB panel connection status">⬤</span>
+      <span id="fps-badge" class="fps-badge" title="Frames per second rendered to panel" style="display:none"></span>
       <span class="label">mode:</span>
       <span id="current-mode" class="badge">—</span>
       <button id="return-btn" class="return-btn" style="display:none" title="Return to previous live mode">← Return</button>
@@ -100,6 +102,9 @@
         <button class="mode-btn" data-mode="graphs_overview" data-cat="overview"  title="4-panel mini-charts: CPU, Load average, Memory, and Temperature at a glance">📈<span>Graphs Overview</span></button>
         <button class="mode-btn" data-mode="net_speed_graph" data-cat="network"   title="Network speed history: overlaid Rx/Tx line chart with per-interface breakdown">📡<span>Net Speed</span></button>
         <button class="mode-btn" data-mode="cpu_core_bars" data-cat="system"     title="Per-core CPU utilisation as large horizontal bars — good for high core-count systems">📊<span>CPU Bars</span></button>
+        <button class="mode-btn" data-mode="speedometer_gauge" data-cat="system"  title="Analog speedometer gauges — CPU and RAM displayed as half-circle gauges with needle">🎛<span>Speedometer</span></button>
+        <button class="mode-btn" data-mode="disk_pie" data-cat="storage"           title="Disk usage pie charts — one pie per mounted filesystem, shows used/free with labels">🥧<span>Disk Pie</span></button>
+        <button class="mode-btn" data-mode="thermal_dashboard" data-cat="system"  title="Thermal sensor dashboard — all CPU/GPU/SSD temperature sensors as bar gauges">🌡<span>Thermal</span></button>
         <button class="mode-btn" data-mode="idle" data-cat="other"              title="Keepalive — no display update">💤<span>Idle</span></button>
       </div>
       <p id="mode-filter-count" style="font-size:0.78rem;color:var(--overlay0);margin:0.3rem 0 0"></p>

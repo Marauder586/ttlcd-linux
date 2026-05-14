@@ -1563,3 +1563,59 @@ button.btn-danger:hover   { opacity: 0.85; }
 .mode-btn.hidden-by-cat {
   display: none !important;
 }
+
+/* ── USB connection status dot ──────────────────────────────────────── */
+.usb-dot {
+  font-size: 0.65rem;
+  margin-right: 0.35rem;
+  transition: color 0.4s ease;
+  cursor: default;
+  user-select: none;
+}
+.usb-dot-unknown  { color: var(--overlay0); }
+.usb-dot-ok       { color: var(--green); animation: usb-pulse 2.5s ease-in-out infinite; }
+.usb-dot-headless { color: var(--yellow); }
+.usb-dot-error    { color: var(--red); animation: usb-flash 1s step-start infinite; }
+
+@keyframes usb-pulse {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0.55; }
+}
+
+@keyframes usb-flash {
+  0%, 49% { opacity: 1; }
+  50%, 100% { opacity: 0; }
+}
+
+/* ── FPS badge ────────────────────────────────────────────────────────── */
+.fps-badge {
+  font-size: 0.68rem;
+  background: var(--surface0);
+  border: 1px solid var(--surface2);
+  border-radius: 4px;
+  padding: 0.1rem 0.4rem;
+  color: var(--subtext0);
+  margin-right: 0.4rem;
+  font-variant-numeric: tabular-nums;
+  cursor: default;
+}
+
+/* ── Mode preview tooltip on hover ──────────────────────────────────── */
+.mode-btn[data-preview] {
+  position: relative;
+}
+
+/* ── Keyboard shortcut hint chips ────────────────────────────────────── */
+.shortcut-hint {
+  display: inline-block;
+  font-size: 0.62rem;
+  background: var(--surface1);
+  border: 1px solid var(--surface2);
+  border-radius: 3px;
+  padding: 0 3px;
+  color: var(--subtext0);
+  font-family: var(--font-mono, monospace);
+  margin-left: 3px;
+  vertical-align: middle;
+  line-height: 1.4;
+}

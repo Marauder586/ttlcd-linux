@@ -366,6 +366,29 @@ async function fetchStatus() {
     const d = await apiJson('GET', '/api/status');
     // Header
     if (hdrVersion) hdrVersion.textContent = `v${d.version}`;
+
+    // USB connection status dot
+    const usbDot = document.getElementById('usb-status-dot');
+    if (usbDot) {
+      usbDot.className = 'usb-dot';
+      if (d.headless) {
+        usbDot.classList.add('usb-dot-headless');
+        usbDot.title = 'Headless mode — USB panel not connected';
+      } else if (d.panel_connected === false) {
+        usbDot.classList.add('usb-dot-error');
+        usbDot.title = 'USB panel disconnected — reconnecting…';
+      } else {
+        usbDot.classList.add('usb-dot-ok');
+        usbDot.title = 'USB panel connected';
+      }
+    }
+
+    // FPS badge in header
+    const fpsBadge = document.getElementById('fps-badge');
+    if (fpsBadge && d.render_fps != null) {
+      fpsBadge.textContent = d.render_fps.toFixed(1) + ' fps';
+      fpsBadge.style.display = '';
+    }
     // Mode
     if (d.mode !== lastMode) {
       updateActiveModeButton(d.mode);
@@ -4109,6 +4132,15 @@ log('ttlcd web UI connected');
       case 'B':
         api('POST', '/api/mode', { mode: 'cpu_core_bars' }).then(() => fetchStatus()).catch(() => {});
         break;
+      case 'V':
+        api('POST', '/api/mode', { mode: 'speedometer_gauge' }).then(() => fetchStatus()).catch(() => {});
+        break;
+      case 'P':
+        api('POST', '/api/mode', { mode: 'disk_pie' }).then(() => fetchStatus()).catch(() => {});
+        break;
+      case 'H':
+        api('POST', '/api/mode', { mode: 'thermal_dashboard' }).then(() => fetchStatus()).catch(() => {});
+        break;
     }
   });
 })();
@@ -4270,3 +4302,112 @@ log('ttlcd web UI connected');
   renderFavBand();
 })();
 
+
+// ─── Mode button preview on hover ────────────────────────────────────────────
+(function initModeHoverPreview() {
+  const modeGrid = document.getElementById('mode-grid');
+  if (!modeGrid) return;
+
+  // Build a floating tooltip element
+  const tip = document.createElement('div');
+  tip.id = 'mode-hover-preview';
+  tip.style.cssText = [
+    'position:fixed','z-index:9999','display:none','pointer-events:none',
+    'background:var(--surface0)','border:1px solid var(--surface2)',
+    'border-radius:8px','padding:4px','box-shadow:0 4px 20px rgba(0,0,0,0.5)',
+  ].join(';');
+  const tipImg = document.createElement('img');
+  tipImg.width = 160; tipImg.height = 160;
+  tipImg.style.cssText = 'display:block;border-radius:4px;image-rendering:pixelated';
+  tip.appendChild(tipImg);
+  document.body.appendChild(tip);
+
+  // Cache to avoid re-fetching during the same hover
+  const cache = new Map();
+  let hideTimer = null;
+  let currentMode = null;
+
+  async function showPreview(mode, anchorEl) {
+    if (currentMode === mode) return;
+    currentMode = mode;
+    tip.style.display = 'block';
+    tipImg.src = '';
+
+    // Position the tooltip next to the button
+    const rect = anchorEl.getBoundingClientRect();
+    const tx = rect.right + 8;
+    const ty = Math.max(8, rect.top - 60);
+    tip.style.left = `${Math.min(tx, window.innerWidth - 180)}px`;
+    tip.style.top  = `${ty}px`;
+
+    // Fetch from cache or API
+    if (cache.has(mode)) {
+      tipImg.src = cache.get(mode);
+      return;
+    }
+    try {
+      const resp = await fetch(`/api/render/${encodeURIComponent(mode)}?quality=60`);
+      if (resp.ok) {
+        const blob = await resp.blob();
+        const url  = URL.createObjectURL(blob);
+        cache.set(mode, url);
+        // Only display if still the same mode being hovered
+        if (currentMode === mode) tipImg.src = url;
+      }
+    } catch (_) { /* silent */ }
+  }
+
+  function hidePreview() {
+    tip.style.display = 'none';
+    currentMode = null;
+  }
+
+  // Only load preview on hover-and-hold (100ms delay to avoid spamming)
+  modeGrid.addEventListener('mouseover', e => {
+    const btn = e.target.closest('.mode-btn[data-mode]');
+    if (!btn) return;
+    clearTimeout(hideTimer);
+    hideTimer = setTimeout(() => showPreview(btn.dataset.mode, btn), 120);
+  });
+
+  modeGrid.addEventListener('mouseout', e => {
+    const btn = e.target.closest('.mode-btn[data-mode]');
+    if (!btn) return;
+    clearTimeout(hideTimer);
+    hideTimer = setTimeout(hidePreview, 80);
+  });
+})();
+
+// ─── History export button ────────────────────────────────────────────────────
+(function initHistoryExport() {
+  // Add an Export button to the history section if it exists
+  const histSection = document.getElementById('history-list')?.closest('.card');
+  if (!histSection) return;
+  const existingBtn = histSection.querySelector('.hist-export-btn');
+  if (existingBtn) return; // Already added
+
+  const exportBtn = document.createElement('button');
+  exportBtn.className = 'btn-secondary hist-export-btn';
+  exportBtn.textContent = '⬇ Export';
+  exportBtn.title = 'Download history as JSON';
+  exportBtn.style.cssText = 'font-size:0.75rem;padding:0.2rem 0.5rem;margin-left:0.5rem';
+
+  exportBtn.addEventListener('click', async () => {
+    try {
+      const data = await apiJson('GET', '/api/history');
+      const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+      const url  = URL.createObjectURL(blob);
+      const a    = document.createElement('a');
+      a.href     = url;
+      a.download = `ttlcd-history-${new Date().toISOString().slice(0,10)}.json`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      alert('Export failed: ' + e.message);
+    }
+  });
+
+  // Find a good place to insert it
+  const h2 = histSection.querySelector('h2');
+  if (h2) h2.appendChild(exportBtn);
+})();
