@@ -52,6 +52,10 @@ use ttlcd::{
         render_net_connections,
         render_uptime,
         render_os_info,
+        render_docker_status,
+        render_logged_in_users,
+        read_docker_containers,
+        read_user_sessions,
         HttpMonitorResult,
         PingResult,
         Metric,
@@ -740,6 +744,8 @@ enum DisplayMode {
     NetConnections,
     UptimeFancy,
     OsInfo,
+    DockerStatus,
+    LoggedInUsers,
     Idle,
     CustomImage,
     CustomText,
@@ -749,7 +755,7 @@ enum DisplayMode {
 impl DisplayMode {
     const ALL_NAMES: &'static [&'static str] = &[
         "clock", "big_clock", "clock_sysinfo", "sysinfo", "cpu_detail",
-        "network", "disk_usage", "process_top", "temperature", "memory_detail", "countdown", "cpu_graph", "net_graph", "recent_alerts", "process_memory", "disk_io", "calendar", "stopwatch", "metrics", "weather", "notes", "qr_code", "pomodoro", "battery", "world_clock", "ticker", "http_status", "shell_cmd", "ping_monitor", "dashboard", "log_tail", "cpu_freq", "hostname_ip", "rss_feed", "service_status", "net_connections", "uptime_fancy", "os_info", "idle",
+        "network", "disk_usage", "process_top", "temperature", "memory_detail", "countdown", "cpu_graph", "net_graph", "recent_alerts", "process_memory", "disk_io", "calendar", "stopwatch", "metrics", "weather", "notes", "qr_code", "pomodoro", "battery", "world_clock", "ticker", "http_status", "shell_cmd", "ping_monitor", "dashboard", "log_tail", "cpu_freq", "hostname_ip", "rss_feed", "service_status", "net_connections", "uptime_fancy", "os_info", "docker_status", "logged_in_users", "idle",
     ];
 
     fn from_str_name(s: &str) -> Option<Self> {
@@ -792,6 +798,8 @@ impl DisplayMode {
             "net_connections"  => Some(DisplayMode::NetConnections),
             "uptime_fancy"     => Some(DisplayMode::UptimeFancy),
             "os_info"          => Some(DisplayMode::OsInfo),
+            "docker_status"    => Some(DisplayMode::DockerStatus),
+            "logged_in_users"  => Some(DisplayMode::LoggedInUsers),
             "idle"             => Some(DisplayMode::Idle),
             "custom_text"   => Some(DisplayMode::CustomText),
             "slideshow"     => Some(DisplayMode::Slideshow),
@@ -839,6 +847,8 @@ impl DisplayMode {
             DisplayMode::NetConnections => "net_connections",
             DisplayMode::UptimeFancy    => "uptime_fancy",
             DisplayMode::OsInfo         => "os_info",
+            DisplayMode::DockerStatus   => "docker_status",
+            DisplayMode::LoggedInUsers  => "logged_in_users",
             DisplayMode::Idle           => "idle",
             DisplayMode::CustomImage  => "image",
             DisplayMode::CustomText   => "custom_text",
@@ -1067,6 +1077,9 @@ struct DaemonState {
     service_statuses:  Arc<Mutex<Vec<ttlcd::display::ServiceStatus>>>,
     /// Seconds between service status polls (minimum 5).
     service_poll_interval: Arc<Mutex<u64>>,
+    /// Optional API key for authentication. When set, all requests must include
+    /// `Authorization: Bearer <key>` (except `/static/`, `/api/stream`, and health-check).
+    api_key: Arc<Mutex<Option<String>>>,
 }
 
 /// A single entry in the display-mode schedule.
@@ -1495,6 +1508,7 @@ async fn run_daemon(
         service_units:         Arc::new(Mutex::new(Vec::new())),
         service_statuses:      Arc::new(Mutex::new(Vec::new())),
         service_poll_interval: Arc::new(Mutex::new(10)),
+        api_key:               Arc::new(Mutex::new(None)),
     };
 
     let panel: Arc<Mutex<Option<Panel>>> = if headless {
@@ -1669,6 +1683,7 @@ async fn run_daemon(
 
     HttpServer::new(move || {
         App::new()
+            .wrap(actix_web::middleware::from_fn(auth_middleware))
             .wrap(actix_web::middleware::DefaultHeaders::new()
                 .add(("Access-Control-Allow-Origin",  "*"))
                 .add(("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS"))
@@ -1798,6 +1813,7 @@ async fn run_daemon(
             // Comprehensive system snapshot
             .route("/api/sys/snapshot",          web::get().to(api_sys_snapshot))
             .route("/api/sys/os",                web::get().to(api_sys_os))
+            .route("/api/sys/net",               web::get().to(api_sys_net))
             // Weather display
             .route("/api/weather",        web::get().to(api_get_weather))
             .route("/api/weather",        web::post().to(api_update_weather))
@@ -1878,6 +1894,14 @@ async fn run_daemon(
             .route("/api/services",                 web::get().to(api_get_services))
             .route("/api/services",                 web::post().to(api_set_services))
             .route("/api/services",                 web::delete().to(api_clear_services))
+            // Docker containers
+            .route("/api/docker",                   web::get().to(api_get_docker))
+            // Logged-in user sessions
+            .route("/api/sessions",                 web::get().to(api_get_sessions))
+            // API key authentication management
+            .route("/api/auth/key",                 web::post().to(api_set_auth_key))
+            .route("/api/auth/key",                 web::delete().to(api_clear_auth_key))
+            .route("/api/auth/status",              web::get().to(api_get_auth_status))
             // API docs
             .route("/api/docs",           web::get().to(api_docs))
             // Web UI
@@ -2213,6 +2237,14 @@ fn display_loop(panel: Arc<Mutex<Option<Panel>>>, state: DaemonState) {
                 DisplayMode::NetConnections => (render_net_connections(), 5),
                 DisplayMode::UptimeFancy    => (render_uptime(), 2),
                 DisplayMode::OsInfo         => (render_os_info(), 10),
+                DisplayMode::DockerStatus   => {
+                    let containers = tokio::task::block_in_place(read_docker_containers);
+                    (render_docker_status(&containers), 10)
+                },
+                DisplayMode::LoggedInUsers  => {
+                    let sessions = tokio::task::block_in_place(read_user_sessions);
+                    (render_logged_in_users(&sessions), 10)
+                },
                 DisplayMode::Idle
                 | DisplayMode::CustomImage
                 | DisplayMode::CustomText
@@ -3031,16 +3063,88 @@ fn query_service_statuses(units: &[String]) -> Vec<ttlcd::display::ServiceStatus
 
 /// Background loop: periodically polls systemd unit states.
 async fn service_status_loop(state: DaemonState) {
+    // prev_states: service name → last known ActiveState string
+    let mut prev_states: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+
     loop {
         let interval_secs = *state.service_poll_interval.lock().unwrap();
         tokio::time::sleep(tokio::time::Duration::from_secs(interval_secs.max(5))).await;
 
         let units: Vec<String> = state.service_units.lock().unwrap().clone();
-        if units.is_empty() { continue; }
+        if units.is_empty() { prev_states.clear(); continue; }
 
         let statuses = tokio::task::spawn_blocking(move || query_service_statuses(&units))
             .await
             .unwrap_or_default();
+
+        // ── State-change alerting ──────────────────────────────────────────
+        for svc in &statuses {
+            let prev = prev_states.get(&svc.name).map(|s| s.as_str()).unwrap_or("unknown");
+            let cur  = svc.state.as_str();
+            if prev != cur {
+                // Always log transitions
+                log::info!("service state change: {} {} → {}", svc.name, prev, cur);
+
+                // Alert on failure or unexpected stops
+                let is_bad   = cur == "failed" || (cur == "inactive" && prev == "active");
+                let is_recov = cur == "active"  && (prev == "failed" || prev == "inactive");
+                if is_bad || is_recov {
+                    let emoji   = if is_bad { "✗" } else { "✓" };
+                    let verdict = if is_bad { "FAILED" } else { "RECOVERED" };
+                    let summary = format!("{emoji} Service {}: {} ({} → {})",
+                        verdict, svc.name, prev, cur);
+
+                    // Show on display briefly
+                    let color = if is_bad {
+                        ttlcd::display::NamedColor::Red
+                    } else {
+                        ttlcd::display::NamedColor::Green
+                    };
+                    let now_secs = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.as_secs())
+                        .unwrap_or(0);
+                    push_threshold_alert(
+                        &state,
+                        format!("{emoji} {}", svc.name.chars().take(20).collect::<String>()),
+                        format!("{} ({} → {})", verdict, prev, cur),
+                        color,
+                        now_secs,
+                    );
+
+                    // Fire outbound webhook if configured
+                    let fwd_url_opt = state.webhook_forward_url.lock().unwrap().clone();
+                    if let Some(fwd_url) = fwd_url_opt {
+                        let payload = serde_json::json!({
+                            "event":   "service_state_change",
+                            "service": svc.name,
+                            "state":   cur,
+                            "prev":    prev,
+                            "verdict": verdict,
+                            "summary": summary,
+                        });
+                        tokio::spawn(async move {
+                            match reqwest::Client::builder()
+                                .timeout(std::time::Duration::from_secs(10))
+                                .build()
+                            {
+                                Ok(client) => match client.post(&fwd_url).json(&payload).send().await {
+                                    Ok(r)  => log::info!("service alert webhook → {} status {}", fwd_url, r.status()),
+                                    Err(e) => log::warn!("service alert webhook → {} failed: {}", fwd_url, e),
+                                },
+                                Err(e) => log::warn!("service alert: could not build client: {}", e),
+                            }
+                        });
+                    }
+                }
+            }
+        }
+
+        // Update prev_states map for next iteration
+        for svc in &statuses {
+            prev_states.insert(svc.name.clone(), svc.state.clone());
+        }
+
         *state.service_statuses.lock().unwrap() = statuses;
     }
 }
@@ -3086,6 +3190,58 @@ fn mode_schedule_loop(state: DaemonState) {
             }
         }
     }
+}
+
+// ─── Auth middleware ─────────────────────────────────────────────────────────
+
+/// Actix middleware that enforces Bearer-token authentication when an API key
+/// has been configured via POST /api/auth/key.
+///
+/// The following paths are always exempt (no key required):
+///   - `/`  (web UI)
+///   - `/static/*`
+///   - `/health`, `/ping`
+///   - `/api/events`, `/api/stream`  (SSE and MJPEG — often used by dashboards)
+///   - `/api/auth/*`  (so you can set/check the key without already having it)
+///
+/// All other paths require `Authorization: Bearer <key>`.
+async fn auth_middleware(
+    req: actix_web::dev::ServiceRequest,
+    next: actix_web::middleware::Next<impl actix_web::body::MessageBody>,
+) -> Result<actix_web::dev::ServiceResponse<impl actix_web::body::MessageBody>, actix_web::Error> {
+    let state_opt = req.app_data::<web::Data<DaemonState>>();
+    let key_opt: Option<String> = state_opt
+        .and_then(|s| s.api_key.lock().ok())
+        .and_then(|g| g.clone());
+
+    if let Some(expected) = key_opt {
+        let path = req.path();
+        let skip = path == "/"
+            || path.starts_with("/static/")
+            || path == "/health"
+            || path == "/ping"
+            || path.starts_with("/api/events")
+            || path.starts_with("/api/stream")
+            || path.starts_with("/api/auth/");
+
+        if !skip {
+            let auth_ok = req
+                .headers()
+                .get("authorization")
+                .and_then(|v| v.to_str().ok())
+                .and_then(|v| v.strip_prefix("Bearer "))
+                .map(|t| t.trim() == expected.as_str())
+                .unwrap_or(false);
+
+            if !auth_ok {
+                return Err(actix_web::error::ErrorUnauthorized(
+                    r#"{"error":"Unauthorized","message":"Bearer token required. Set via POST /api/auth/key"}"#,
+                ));
+            }
+        }
+    }
+
+    next.call(req).await
 }
 
 // ─── HTTP handlers ────────────────────────────────────────────────────────────
@@ -3384,6 +3540,9 @@ async fn api_modes_list() -> impl Responder {
         ModeInfo { name: "service_status", description: "Systemd unit state monitor — configure units via POST /api/services" },
         ModeInfo { name: "net_connections",description: "Active TCP/UDP socket viewer: listening ports and established connections" },
         ModeInfo { name: "uptime_fancy",   description: "Full-screen uptime display: big counter, boot time, load averages, memory" },
+        ModeInfo { name: "os_info",        description: "OS and hardware info: distro, kernel, CPU model, memory, uptime" },
+        ModeInfo { name: "docker_status",  description: "Docker containers panel: running/stopped containers with image and status" },
+        ModeInfo { name: "logged_in_users",description: "Active user sessions: who is logged in, from where, and idle time" },
         ModeInfo { name: "idle",           description: "Keepalive — no display update, prevents blank" },
     ];
     HttpResponse::Ok().json(modes)
@@ -4196,6 +4355,30 @@ async fn api_metrics(state: web::Data<DaemonState>) -> impl Responder {
                     push(&mut out, format!("ttlcd_service_failed{{name=\"{}\"}} 1", name_safe));
                 }
             }
+        }
+    }
+
+    // ── Docker container metrics ──────────────────────────────────────────────
+    {
+        let containers = tokio::task::block_in_place(read_docker_containers);
+        if !containers.is_empty() {
+            push(&mut out, "# HELP ttlcd_docker_running 1 if container is running, 0 if stopped".into());
+            push(&mut out, "# TYPE ttlcd_docker_running gauge".into());
+            for c in &containers {
+                let name_safe  = c.name.trim_start_matches('/').replace('"', "'");
+                let image_safe = c.image.replace('"', "'");
+                push(&mut out, format!(
+                    "ttlcd_docker_running{{name=\"{}\",image=\"{}\"}} {}",
+                    name_safe, image_safe, if c.running { 1 } else { 0 }
+                ));
+            }
+            let running_count = containers.iter().filter(|c| c.running).count();
+            push(&mut out, "# HELP ttlcd_docker_running_total Number of running containers".into());
+            push(&mut out, "# TYPE ttlcd_docker_running_total gauge".into());
+            push(&mut out, format!("ttlcd_docker_running_total {}", running_count));
+            push(&mut out, "# HELP ttlcd_docker_total_total Total number of containers".into());
+            push(&mut out, "# TYPE ttlcd_docker_total_total gauge".into());
+            push(&mut out, format!("ttlcd_docker_total_total {}", containers.len()));
         }
     }
 
@@ -7703,4 +7886,197 @@ async fn api_clear_services(state: web::Data<DaemonState>) -> impl Responder {
     }
     save_new_settings(&state);
     HttpResponse::Ok().body("services cleared")
+}
+
+// ─── Docker containers API ────────────────────────────────────────────────────
+
+/// GET /api/docker — return list of Docker containers (all, running first).
+async fn api_get_docker() -> impl Responder {
+    let containers = tokio::task::spawn_blocking(read_docker_containers)
+        .await
+        .unwrap_or_default();
+    let list: Vec<serde_json::Value> = containers.iter().map(|c| {
+        serde_json::json!({
+            "id":      c.id,
+            "name":    c.name,
+            "image":   c.image,
+            "status":  c.status,
+            "ports":   c.ports,
+            "running": c.running,
+        })
+    }).collect();
+    HttpResponse::Ok().json(serde_json::json!({
+        "containers": list,
+        "running": list.iter().filter(|c| c["running"].as_bool().unwrap_or(false)).count(),
+        "total":   list.len(),
+    }))
+}
+
+// ─── Logged-in user sessions API ─────────────────────────────────────────────
+
+/// GET /api/sessions — return active user sessions from `who -u`.
+async fn api_get_sessions() -> impl Responder {
+    let sessions = tokio::task::spawn_blocking(read_user_sessions)
+        .await
+        .unwrap_or_default();
+    let list: Vec<serde_json::Value> = sessions.iter().map(|s| {
+        serde_json::json!({
+            "username": s.username,
+            "tty":      s.tty,
+            "login_at": s.login_at,
+            "idle":     s.idle,
+            "pid":      s.pid,
+            "from":     s.from,
+        })
+    }).collect();
+    HttpResponse::Ok().json(serde_json::json!({
+        "sessions": list,
+        "count": list.len(),
+    }))
+}
+
+// ─── API key authentication management ───────────────────────────────────────
+
+#[derive(Deserialize)]
+struct SetAuthKeyPayload {
+    key: String,
+}
+
+/// POST /api/auth/key — set an API key. When set, all subsequent API requests
+/// must include `Authorization: Bearer <key>` header.
+///
+/// Body: `{ "key": "your-secret-key" }`
+async fn api_set_auth_key(
+    state:   web::Data<DaemonState>,
+    payload: web::Json<SetAuthKeyPayload>,
+) -> impl Responder {
+    let key = payload.key.trim().to_string();
+    if key.is_empty() {
+        return HttpResponse::BadRequest().body("key must not be empty");
+    }
+    *state.api_key.lock().unwrap() = Some(key.clone());
+    push_history(&state, HistoryKind::System,
+        format!("API key configured (length {})", key.len()));
+    HttpResponse::Ok().json(serde_json::json!({
+        "ok": true,
+        "message": "API key set. Include 'Authorization: Bearer <key>' in all requests.",
+        "key_length": key.len(),
+    }))
+}
+
+/// DELETE /api/auth/key — remove the API key (disable authentication).
+async fn api_clear_auth_key(state: web::Data<DaemonState>) -> impl Responder {
+    let was_set = state.api_key.lock().unwrap().take().is_some();
+    if was_set {
+        push_history(&state, HistoryKind::System, "API key cleared — authentication disabled".to_string());
+        HttpResponse::Ok().body("API key cleared")
+    } else {
+        HttpResponse::Ok().body("no API key was set")
+    }
+}
+
+/// GET /api/auth/status — returns whether an API key is currently configured.
+async fn api_get_auth_status(state: web::Data<DaemonState>) -> impl Responder {
+    let has_key = state.api_key.lock().unwrap().is_some();
+    HttpResponse::Ok().json(serde_json::json!({
+        "auth_required": has_key,
+        "method": if has_key { "Bearer token" } else { "none" },
+    }))
+}
+
+// ─── Detailed network interfaces API ─────────────────────────────────────────
+
+/// GET /api/sys/net — returns detailed info about all network interfaces:
+/// name, IPv4/IPv6 addresses, Rx/Tx bytes, packet counts, errors.
+///
+/// Data sources: /proc/net/dev (counters), ip addr (addresses).
+async fn api_sys_net() -> impl Responder {
+    let counters = parse_proc_net_dev();
+    let addresses = parse_if_addresses();
+
+    let ifaces: Vec<serde_json::Value> = counters.into_iter().map(|(name, stats)| {
+        let addrs = addresses.get(&name).cloned().unwrap_or_default();
+        serde_json::json!({
+            "name":       name,
+            "addresses":  addrs,
+            "rx_bytes":   stats.rx_bytes,
+            "tx_bytes":   stats.tx_bytes,
+            "rx_packets": stats.rx_packets,
+            "tx_packets": stats.tx_packets,
+            "rx_errors":  stats.rx_errors,
+            "tx_errors":  stats.tx_errors,
+            "rx_dropped": stats.rx_dropped,
+            "tx_dropped": stats.tx_dropped,
+        })
+    }).collect();
+
+    HttpResponse::Ok().json(serde_json::json!({
+        "interfaces": ifaces,
+        "count": ifaces.len(),
+    }))
+}
+
+struct IfStats {
+    rx_bytes: u64, tx_bytes: u64,
+    rx_packets: u64, tx_packets: u64,
+    rx_errors: u64, tx_errors: u64,
+    rx_dropped: u64, tx_dropped: u64,
+}
+
+fn parse_proc_net_dev() -> Vec<(String, IfStats)> {
+    let text = match std::fs::read_to_string("/proc/net/dev") {
+        Ok(t) => t,
+        Err(_) => return vec![],
+    };
+    // Skip first two header lines
+    text.lines().skip(2).filter_map(|line| {
+        let (name_raw, rest) = line.split_once(':')?;
+        let name = name_raw.trim().to_string();
+        let nums: Vec<u64> = rest.split_whitespace()
+            .filter_map(|v| v.parse().ok())
+            .collect();
+        if nums.len() < 16 { return None; }
+        Some((name, IfStats {
+            rx_bytes:   nums[0], rx_packets: nums[1],
+            rx_errors:  nums[2], rx_dropped: nums[3],
+            tx_bytes:   nums[8], tx_packets: nums[9],
+            tx_errors:  nums[10], tx_dropped: nums[11],
+        }))
+    }).collect()
+}
+
+fn parse_if_addresses() -> std::collections::HashMap<String, Vec<String>> {
+    let mut map: std::collections::HashMap<String, Vec<String>> = std::collections::HashMap::new();
+    // IPv4 addresses
+    if let Ok(out) = std::process::Command::new("ip")
+        .args(["-o", "-4", "addr"])
+        .output()
+    {
+        let text = String::from_utf8_lossy(&out.stdout);
+        for line in text.lines() {
+            let parts: Vec<&str> = line.split_whitespace().collect();
+            // Format: <idx>: <name> inet <addr/prefix> ...
+            if parts.len() >= 4 && parts[2] == "inet" {
+                let name = parts[1].trim_end_matches(':').to_string();
+                let addr = parts[3].to_string();
+                map.entry(name).or_default().push(addr);
+            }
+        }
+    }
+    // IPv6 addresses
+    if let Ok(out) = std::process::Command::new("ip")
+        .args(["-o", "-6", "addr"])
+        .output()
+    {
+        let text = String::from_utf8_lossy(&out.stdout);
+        for line in text.lines() {
+            let parts: Vec<&str> = line.split_whitespace().collect();
+            if parts.len() >= 4 && parts[2] == "inet6" {
+                let name = parts[1].trim_end_matches(':').to_string();
+                let addr = format!("ipv6:{}", parts[3]);
+                map.entry(name).or_default().push(addr);
+            }
+        }
+    }
+    map
 }

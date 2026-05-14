@@ -3260,6 +3260,12 @@ document.addEventListener('keydown', e => {
     case 'O':  // Shift+O = OS Info
       api('POST', '/api/mode', { mode: 'os_info' }).then(() => fetchStatus()).catch(() => {});
       break;
+    case 'K':  // Shift+K = Docker Status
+      api('POST', '/api/mode', { mode: 'docker_status' }).then(() => fetchStatus()).catch(() => {});
+      break;
+    case 'W':  // Shift+W = Logged-in Users
+      api('POST', '/api/mode', { mode: 'logged_in_users' }).then(() => fetchStatus()).catch(() => {});
+      break;
     case 'Escape':
       if (returnBtn.style.display !== 'none') returnBtn.click();
       break;
@@ -3381,7 +3387,144 @@ function startPolling() {
   setInterval(fetchServices, 15000);
 }
 
+// ─── Docker status section ────────────────────────────────────────────────────
+
+async function fetchDocker() {
+  try {
+    const data = await api('GET', '/api/docker');
+    const tbody = document.getElementById('docker-tbody');
+    const statusLine = document.getElementById('docker-status-line');
+    if (!tbody) return;
+    if (!data || typeof data !== 'object') {
+      tbody.innerHTML = '<tr><td colspan="3" style="color:var(--red)">Error fetching Docker info</td></tr>';
+      return;
+    }
+    const containers = data.containers || [];
+    statusLine.textContent = containers.length === 0
+      ? 'Docker not available or no containers'
+      : `${data.running}/${data.total} running`;
+    if (containers.length === 0) {
+      tbody.innerHTML = '<tr><td colspan="3" style="opacity:0.5">No containers found</td></tr>';
+      return;
+    }
+    tbody.innerHTML = containers.map(c => {
+      const color = c.running ? 'var(--green)' : 'var(--red)';
+      const dot   = c.running ? '🟢' : '🔴';
+      const name  = (c.name || '').replace(/^\//, '');
+      const image = (c.image || '').split('/').pop().split(':')[0];
+      const status = c.status || 'unknown';
+      return `<tr>
+        <td>${dot} <strong>${name}</strong></td>
+        <td style="opacity:0.75">${image}</td>
+        <td style="color:${color}">${status}</td>
+      </tr>`;
+    }).join('');
+  } catch (e) {
+    const tbody = document.getElementById('docker-tbody');
+    if (tbody) tbody.innerHTML = `<tr><td colspan="3" style="color:var(--red)">Error: ${e.message}</td></tr>`;
+  }
+}
+
+(function injectDockerSection() {
+  const refreshBtn = document.getElementById('docker-refresh-btn');
+  if (refreshBtn) refreshBtn.addEventListener('click', fetchDocker);
+  fetchDocker();
+})();
+
+// ─── Active sessions section ──────────────────────────────────────────────────
+
+async function fetchSessions() {
+  try {
+    const data = await api('GET', '/api/sessions');
+    const tbody = document.getElementById('sessions-tbody');
+    const statusLine = document.getElementById('sessions-status-line');
+    if (!tbody) return;
+    const sessions = data.sessions || [];
+    statusLine.textContent = sessions.length === 0 ? 'No active sessions' : `${sessions.length} session${sessions.length !== 1 ? 's' : ''}`;
+    if (sessions.length === 0) {
+      tbody.innerHTML = '<tr><td colspan="5" style="opacity:0.5">No users logged in</td></tr>';
+      return;
+    }
+    tbody.innerHTML = sessions.map(s => {
+      const idleColor = (s.idle === '.') ? 'var(--green)' : 'var(--yellow)';
+      const idleStr   = (s.idle === '.') ? 'active' : s.idle;
+      const fromStr   = s.from || 'local';
+      return `<tr>
+        <td><strong>${s.username}</strong></td>
+        <td style="font-family:monospace">${s.tty}</td>
+        <td>${s.login_at}</td>
+        <td style="color:${idleColor}">${idleStr}</td>
+        <td style="opacity:0.75">${fromStr}</td>
+      </tr>`;
+    }).join('');
+  } catch (e) {
+    const tbody = document.getElementById('sessions-tbody');
+    if (tbody) tbody.innerHTML = `<tr><td colspan="5" style="color:var(--red)">Error: ${e.message}</td></tr>`;
+  }
+}
+
+(function injectSessionsSection() {
+  const refreshBtn = document.getElementById('sessions-refresh-btn');
+  if (refreshBtn) refreshBtn.addEventListener('click', fetchSessions);
+  fetchSessions();
+})();
+
+// ─── API authentication section ───────────────────────────────────────────────
+
+async function fetchAuthStatus() {
+  try {
+    const data = await api('GET', '/api/auth/status');
+    const line = document.getElementById('auth-status-line');
+    if (!line) return;
+    if (data.auth_required) {
+      line.innerHTML = '🔒 <strong>Authentication is active</strong> — Bearer token required for all API calls.';
+      line.style.color = 'var(--green)';
+    } else {
+      line.innerHTML = '🔓 Authentication is <em>disabled</em> — API is open.';
+      line.style.color = 'var(--yellow)';
+    }
+  } catch (_) {}
+}
+
+(function injectAuthSection() {
+  const setBtn   = document.getElementById('auth-set-btn');
+  const clearBtn = document.getElementById('auth-clear-btn');
+  const keyInput = document.getElementById('auth-key-input');
+  const statusEl = document.getElementById('auth-action-status');
+
+  if (setBtn) {
+    setBtn.addEventListener('click', async () => {
+      const key = keyInput ? keyInput.value.trim() : '';
+      if (!key) { if (statusEl) statusEl.textContent = 'Enter a key first'; return; }
+      try {
+        const r = await api('POST', '/api/auth/key', { key });
+        if (statusEl) statusEl.textContent = r.message || 'Key set';
+        if (keyInput) keyInput.value = '';
+        await fetchAuthStatus();
+      } catch (e) {
+        if (statusEl) statusEl.textContent = `Error: ${e.message}`;
+      }
+    });
+  }
+
+  if (clearBtn) {
+    clearBtn.addEventListener('click', async () => {
+      try {
+        await api('DELETE', '/api/auth/key');
+        if (statusEl) statusEl.textContent = 'Key cleared — auth disabled';
+        await fetchAuthStatus();
+      } catch (e) {
+        if (statusEl) statusEl.textContent = `Error: ${e.message}`;
+      }
+    });
+  }
+
+  fetchAuthStatus();
+})();
+
 // ─── Boot ─────────────────────────────────────────────────────────────────────
 initSSE();
 startPolling();
+setInterval(fetchDocker,   60000);
+setInterval(fetchSessions, 30000);
 log('ttlcd web UI connected');

@@ -4939,3 +4939,371 @@ pub fn render_os_info() -> DynamicImage {
     DynamicImage::ImageRgb8(img)
 }
 
+// ─── Docker containers display ───────────────────────────────────────────────
+
+/// One Docker container as returned by `docker ps`.
+#[derive(Debug, Clone)]
+pub struct DockerContainer {
+    pub id:      String,
+    pub name:    String,
+    pub image:   String,
+    pub status:  String,
+    pub ports:   String,
+    pub running: bool,
+}
+
+/// Query `docker ps -a --format '{{json .}}'` and parse the output.
+/// Returns containers sorted running-first.
+pub fn read_docker_containers() -> Vec<DockerContainer> {
+    let out = std::process::Command::new("docker")
+        .args(["ps", "-a", "--format", "{{json .}}"])
+        .output();
+    let out = match out {
+        Ok(o) if o.status.success() => o.stdout,
+        _ => return vec![],
+    };
+    let text = String::from_utf8_lossy(&out);
+
+    let mut containers: Vec<DockerContainer> = text.lines()
+        .filter(|l| !l.trim().is_empty())
+        .filter_map(|line| {
+            // Parse JSON object fields without serde dependency
+            let field = |key: &str| -> Option<String> {
+                let needle = format!("\"{}\":\"", key);
+                let start  = line.find(&needle)?;
+                let rest   = &line[start + needle.len()..];
+                let end    = rest.find('"')?;
+                Some(rest[..end].to_string())
+            };
+            let id      = field("ID").unwrap_or_default();
+            let name    = field("Names").unwrap_or_default();
+            let image   = field("Image").unwrap_or_default();
+            let status  = field("Status").unwrap_or_default();
+            let ports   = field("Ports").unwrap_or_default();
+            let running = status.to_lowercase().starts_with("up");
+            if id.is_empty() && name.is_empty() { return None; }
+            Some(DockerContainer { id, name, image, status, ports, running })
+        })
+        .collect();
+
+    // Running first, then by name
+    containers.sort_by(|a, b| b.running.cmp(&a.running).then(a.name.cmp(&b.name)));
+    containers
+}
+
+/// Render a Docker containers overview (480×480).
+///
+/// Shows up to 10 containers with name, image, and Up/Exited status.
+pub fn render_docker_status(containers: &[DockerContainer]) -> DynamicImage {
+    let mut img = blank();
+    let bold = font_bold();
+    let mono = font_mono();
+
+    // ── Header ────────────────────────────────────────────────────────────────
+    draw_filled_rect_mut(&mut img, Rect::at(0, 0).of_size(480, 52), SURFACE0);
+    draw_centered(&mut img, &bold, PxScale::from(22.0), 6, TEAL, "DOCKER");
+    let up_count    = containers.iter().filter(|c| c.running).count();
+    let total_count = containers.len();
+    let sub = if total_count == 0 {
+        "docker not available".to_string()
+    } else {
+        format!("{}/{} running", up_count, total_count)
+    };
+    draw_centered(&mut img, &mono, PxScale::from(14.0), 32, OVERLAY0, &sub);
+
+    if containers.is_empty() {
+        draw_centered(&mut img, &bold, PxScale::from(18.0), 220, SUBTEXT, "No containers found");
+        draw_centered(&mut img, &mono, PxScale::from(13.0), 248, OVERLAY0, "Is Docker running?");
+        draw_divider(&mut img, 452);
+        draw_centered(&mut img, &mono, PxScale::from(13.0), 457, OVERLAY0,
+            &Local::now().format("%H:%M:%S").to_string());
+        return DynamicImage::ImageRgb8(img);
+    }
+
+    // ── Column headers ────────────────────────────────────────────────────────
+    let header_y = 56i32;
+    let col_name_x  = 8i32;
+    let col_img_x   = 200i32;
+    let col_stat_x  = 360i32;
+    let hscale = PxScale::from(12.0);
+    draw_text_mut(&mut img, OVERLAY0, col_name_x,  header_y, hscale, &mono, "NAME");
+    draw_text_mut(&mut img, OVERLAY0, col_img_x,   header_y, hscale, &mono, "IMAGE");
+    draw_text_mut(&mut img, OVERLAY0, col_stat_x,  header_y, hscale, &mono, "STATUS");
+    draw_filled_rect_mut(&mut img, Rect::at(0, header_y + 14).of_size(480, 1), SURFACE0);
+
+    // ── Rows ─────────────────────────────────────────────────────────────────
+    let row_h    = 40i32;
+    let max_rows = 10usize;
+    let mut y    = header_y + 18;
+    let rscale   = PxScale::from(14.0);
+    let sscale   = PxScale::from(12.0);
+
+    for c in containers.iter().take(max_rows) {
+        let status_color = if c.running { GREEN } else { RED };
+        let status_short = if c.running {
+            // "Up 3 hours" → "Up 3h"
+            let s = c.status.as_str();
+            if s.contains("hour") {
+                let n: String = s.chars().skip(3)
+                    .take_while(|ch| ch.is_numeric() || *ch == ' ')
+                    .collect();
+                format!("Up{}h", n.trim())
+            } else if s.contains("minute") {
+                let n: String = s.chars().skip(3)
+                    .take_while(|ch| ch.is_numeric() || *ch == ' ')
+                    .collect();
+                format!("Up{}m", n.trim())
+            } else if s.contains("second") {
+                "Up <1m".to_string()
+            } else if s.contains("day") {
+                let n: String = s.chars().skip(3)
+                    .take_while(|ch| ch.is_numeric() || *ch == ' ')
+                    .collect();
+                format!("Up{}d", n.trim())
+            } else {
+                s.chars().take(10).collect()
+            }
+        } else {
+            "Exited".to_string()
+        };
+
+        let name_short: String  = c.name.trim_start_matches('/').chars().take(22).collect();
+        let image_short: String = {
+            // strip registry prefix if present
+            let img_name = c.image.rsplit('/').next().unwrap_or(&c.image);
+            // strip tag after ':'
+            let base = img_name.split(':').next().unwrap_or(img_name);
+            base.chars().take(18).collect()
+        };
+
+        // Row background for running containers
+        if c.running {
+            draw_filled_rect_mut(&mut img,
+                Rect::at(0, y - 2).of_size(480, row_h as u32 - 2),
+                Rgb([40, 50, 44]));
+        }
+
+        draw_text_mut(&mut img, TEXT,          col_name_x, y, rscale, &bold, &name_short);
+        draw_text_mut(&mut img, SUBTEXT,       col_img_x,  y, sscale, &mono, &image_short);
+        draw_text_mut(&mut img, status_color,  col_stat_x, y, sscale, &mono, &status_short);
+
+        // Indicator dot
+        let dot_color = if c.running { GREEN } else { Rgb([80, 80, 80]) };
+        draw_filled_rect_mut(&mut img, Rect::at(470, y + 4).of_size(6, 6), dot_color);
+
+        draw_filled_rect_mut(&mut img, Rect::at(0, y + row_h - 4).of_size(480, 1), SURFACE0);
+        y += row_h;
+    }
+
+    if containers.len() > max_rows {
+        draw_centered(&mut img, &mono, PxScale::from(12.0), y + 2, OVERLAY0,
+            &format!("… {} more", containers.len() - max_rows));
+    }
+
+    // ── Footer ────────────────────────────────────────────────────────────────
+    draw_divider(&mut img, 452);
+    draw_centered(&mut img, &mono, PxScale::from(13.0), 457, OVERLAY0,
+        &Local::now().format("%H:%M:%S").to_string());
+
+    DynamicImage::ImageRgb8(img)
+}
+
+// ─── Logged-in users display ─────────────────────────────────────────────────
+
+/// A user session as parsed from `who -u`.
+#[derive(Debug, Clone)]
+pub struct UserSession {
+    pub username: String,
+    pub tty:      String,
+    pub login_at: String,
+    pub idle:     String,
+    pub pid:      String,
+    pub from:     String,
+}
+
+/// Read active user sessions from `who -u`.
+pub fn read_user_sessions() -> Vec<UserSession> {
+    let out = std::process::Command::new("who")
+        .arg("-u")
+        .output();
+    let out = match out {
+        Ok(o) if o.status.success() => o.stdout,
+        _ => return vec![],
+    };
+    let text = String::from_utf8_lossy(&out);
+
+    text.lines()
+        .filter(|l| !l.trim().is_empty())
+        .filter_map(|line| {
+            let mut parts = line.split_whitespace();
+            let username = parts.next()?.to_string();
+            let tty      = parts.next().unwrap_or("?").to_string();
+            // next two tokens are date and time
+            let date     = parts.next().unwrap_or("").to_string();
+            let time     = parts.next().unwrap_or("").to_string();
+            let login_at = format!("{} {}", date, time);
+            let idle     = parts.next().unwrap_or(".").to_string();
+            let pid      = parts.next().unwrap_or("?").to_string();
+            // rest is FROM (may be empty for local sessions)
+            let from: String = parts.collect::<Vec<_>>().join(" ");
+            Some(UserSession { username, tty, login_at, idle, pid, from })
+        })
+        .collect()
+}
+
+/// Render a logged-in users panel (480×480).
+pub fn render_logged_in_users(sessions: &[UserSession]) -> DynamicImage {
+    let mut img = blank();
+    let bold = font_bold();
+    let mono = font_mono();
+
+    // ── Header ────────────────────────────────────────────────────────────────
+    draw_filled_rect_mut(&mut img, Rect::at(0, 0).of_size(480, 52), SURFACE0);
+    draw_centered(&mut img, &bold, PxScale::from(22.0), 6, MAUVE, "ACTIVE SESSIONS");
+    let count_str = match sessions.len() {
+        0 => "no users logged in".to_string(),
+        1 => "1 user".to_string(),
+        n => format!("{} users", n),
+    };
+    draw_centered(&mut img, &mono, PxScale::from(14.0), 32, OVERLAY0, &count_str);
+
+    if sessions.is_empty() {
+        draw_centered(&mut img, &bold, PxScale::from(18.0), 230, SUBTEXT, "No active sessions");
+        draw_divider(&mut img, 452);
+        draw_centered(&mut img, &mono, PxScale::from(13.0), 457, OVERLAY0,
+            &Local::now().format("%H:%M:%S").to_string());
+        return DynamicImage::ImageRgb8(img);
+    }
+
+    // ── Column headers ────────────────────────────────────────────────────────
+    let header_y = 58i32;
+    let hscale = PxScale::from(12.0);
+    draw_text_mut(&mut img, OVERLAY0,  8, header_y, hscale, &mono, "USER");
+    draw_text_mut(&mut img, OVERLAY0, 160, header_y, hscale, &mono, "TTY");
+    draw_text_mut(&mut img, OVERLAY0, 230, header_y, hscale, &mono, "LOGGED IN");
+    draw_text_mut(&mut img, OVERLAY0, 380, header_y, hscale, &mono, "IDLE");
+    draw_filled_rect_mut(&mut img, Rect::at(0, header_y + 14).of_size(480, 1), SURFACE0);
+
+    // ── Rows ─────────────────────────────────────────────────────────────────
+    let row_h    = 38i32;
+    let max_rows = 10usize;
+    let mut y    = header_y + 18;
+    let rscale   = PxScale::from(15.0);
+    let sscale   = PxScale::from(13.0);
+
+    for sess in sessions.iter().take(max_rows) {
+        let user_short: String = sess.username.chars().take(14).collect();
+        let tty_short:  String = sess.tty.chars().take(8).collect();
+        // Login time: keep only HH:MM part
+        let login_short: String = sess.login_at.split_whitespace()
+            .last().unwrap_or(&sess.login_at).chars().take(10).collect();
+        // Idle: '.' means active
+        let idle_short: String  = if sess.idle == "." { "active".to_string() } else {
+            sess.idle.chars().take(7).collect()
+        };
+        let idle_color = if sess.idle == "." { GREEN } else { YELLOW };
+
+        // From annotation (SSH source IP / console)
+        let from_short: String = if sess.from.is_empty() {
+            "local".to_string()
+        } else {
+            sess.from.chars().take(18).collect()
+        };
+
+        draw_text_mut(&mut img, BLUE,       8,   y, rscale, &bold, &user_short);
+        draw_text_mut(&mut img, SUBTEXT,    160, y, sscale, &mono, &tty_short);
+        draw_text_mut(&mut img, TEXT,       230, y, sscale, &mono, &login_short);
+        draw_text_mut(&mut img, idle_color, 380, y, sscale, &mono, &idle_short);
+
+        // Source on second line if present
+        if !from_short.is_empty() && from_short != "local" {
+            draw_text_mut(&mut img, OVERLAY0, 160, y + 18, PxScale::from(11.0), &mono, &format!("← {}", from_short));
+        } else if from_short == "local" {
+            draw_text_mut(&mut img, OVERLAY0, 160, y + 18, PxScale::from(11.0), &mono, "local");
+        }
+
+        draw_filled_rect_mut(&mut img, Rect::at(0, y + row_h - 4).of_size(480, 1), SURFACE0);
+        y += row_h;
+    }
+
+    if sessions.len() > max_rows {
+        draw_centered(&mut img, &mono, PxScale::from(12.0), y + 2, OVERLAY0,
+            &format!("… {} more", sessions.len() - max_rows));
+    }
+
+    // ── Footer ────────────────────────────────────────────────────────────────
+    draw_divider(&mut img, 452);
+    draw_centered(&mut img, &mono, PxScale::from(13.0), 457, OVERLAY0,
+        &Local::now().format("%H:%M:%S").to_string());
+
+    DynamicImage::ImageRgb8(img)
+}
+
+#[cfg(test)]
+mod docker_session_tests {
+    use super::*;
+
+    #[test]
+    fn test_docker_status_empty_size() {
+        let img = render_docker_status(&[]);
+        assert_eq!(img.width(), 480);
+        assert_eq!(img.height(), 480);
+    }
+
+    #[test]
+    fn test_docker_status_with_containers() {
+        let containers = vec![
+            DockerContainer {
+                id:      "abc123".into(),
+                name:    "web-server".into(),
+                image:   "nginx:latest".into(),
+                status:  "Up 3 hours".into(),
+                ports:   "0.0.0.0:80->80/tcp".into(),
+                running: true,
+            },
+            DockerContainer {
+                id:      "def456".into(),
+                name:    "database".into(),
+                image:   "postgres:15".into(),
+                status:  "Exited (0) 2 days ago".into(),
+                ports:   "".into(),
+                running: false,
+            },
+        ];
+        let img = render_docker_status(&containers);
+        assert_eq!(img.width(), 480);
+        assert_eq!(img.height(), 480);
+    }
+
+    #[test]
+    fn test_logged_in_users_empty_size() {
+        let img = render_logged_in_users(&[]);
+        assert_eq!(img.width(), 480);
+        assert_eq!(img.height(), 480);
+    }
+
+    #[test]
+    fn test_logged_in_users_with_sessions() {
+        let sessions = vec![
+            UserSession {
+                username: "alice".into(),
+                tty:      "pts/0".into(),
+                login_at: "May12 09:30".into(),
+                idle:     ".".into(),
+                pid:      "12345".into(),
+                from:     "192.168.1.50".into(),
+            },
+            UserSession {
+                username: "bob".into(),
+                tty:      "tty1".into(),
+                login_at: "May13 07:00".into(),
+                idle:     "00:05".into(),
+                pid:      "11111".into(),
+                from:     "".into(),
+            },
+        ];
+        let img = render_logged_in_users(&sessions);
+        assert_eq!(img.width(), 480);
+        assert_eq!(img.height(), 480);
+    }
+}

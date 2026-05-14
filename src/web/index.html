@@ -64,8 +64,10 @@
         <button class="mode-btn" data-mode="service_status"   title="Systemd service status monitor — watch unit states">⚙<span>Services</span></button>
         <button class="mode-btn" data-mode="net_connections" title="TCP/UDP socket viewer — listening ports and established connections">🔌<span>Connections</span></button>
         <button class="mode-btn" data-mode="uptime_fancy"    title="Full-screen uptime display: boot time, load averages, memory">⏰<span>Uptime</span></button>
-        <button class="mode-btn" data-mode="os_info"       title="OS and system info: distro, kernel, CPU, hostname">💻<span>OS Info</span></button>
-        <button class="mode-btn" data-mode="idle"            title="Keepalive — no display update">💤<span>Idle</span></button>
+        <button class="mode-btn" data-mode="os_info"          title="OS and system info: distro, kernel, CPU, hostname">💻<span>OS Info</span></button>
+        <button class="mode-btn" data-mode="docker_status"    title="Docker containers: running/stopped with image names">🐳<span>Docker</span></button>
+        <button class="mode-btn" data-mode="logged_in_users"  title="Active user sessions: who is logged in, from where, idle time">👥<span>Sessions</span></button>
+        <button class="mode-btn" data-mode="idle"              title="Keepalive — no display update">💤<span>Idle</span></button>
       </div>
     </section>
 
@@ -501,6 +503,54 @@
       <ul id="history-list" class="history-list"></ul>
     </section>
 
+    <!-- ── Docker status ────────────────────────────────────────────── -->
+    <section class="card" id="docker-section">
+      <h2>🐳 Docker Containers</h2>
+      <p class="card-hint">Live Docker container status. Switch to Docker mode to show on panel.</p>
+      <div class="docker-actions">
+        <button id="docker-refresh-btn" class="small-btn">↺ Refresh</button>
+        <button class="mode-btn small-btn" data-mode="docker_status" style="display:inline-block;padding:0.25rem 0.7rem">Show on Panel</button>
+        <span id="docker-status-line" class="hint-inline"></span>
+      </div>
+      <table id="docker-table" class="data-table" style="margin-top:0.5rem">
+        <thead><tr><th>Name</th><th>Image</th><th>Status</th></tr></thead>
+        <tbody id="docker-tbody"></tbody>
+      </table>
+    </section>
+
+    <!-- ── Active user sessions ──────────────────────────────────────── -->
+    <section class="card" id="sessions-section">
+      <h2>👥 Active Sessions</h2>
+      <p class="card-hint">Currently logged-in users. Switch to Sessions mode to show on panel.</p>
+      <div class="sessions-actions">
+        <button id="sessions-refresh-btn" class="small-btn">↺ Refresh</button>
+        <button class="mode-btn small-btn" data-mode="logged_in_users" style="display:inline-block;padding:0.25rem 0.7rem">Show on Panel</button>
+        <span id="sessions-status-line" class="hint-inline"></span>
+      </div>
+      <table id="sessions-table" class="data-table" style="margin-top:0.5rem">
+        <thead><tr><th>User</th><th>TTY</th><th>Logged In</th><th>Idle</th><th>From</th></tr></thead>
+        <tbody id="sessions-tbody"></tbody>
+      </table>
+    </section>
+
+    <!-- ── API Authentication ─────────────────────────────────────────── -->
+    <details class="card" id="auth-section">
+      <summary>🔐 API Authentication</summary>
+      <p class="card-hint">Set a Bearer token to restrict API access. Once set, all API requests must include <code>Authorization: Bearer &lt;key&gt;</code>. The key is not persisted — it clears on daemon restart.</p>
+      <div id="auth-status-line" class="hint-inline" style="display:block;margin-bottom:0.5rem"></div>
+      <div class="form-row two-col">
+        <div class="form-group">
+          <label for="auth-key-input">API Key</label>
+          <input type="password" id="auth-key-input" placeholder="Enter a secret key..." maxlength="200" autocomplete="new-password">
+        </div>
+      </div>
+      <div class="form-actions">
+        <button id="auth-set-btn" class="primary">🔒 Set Key</button>
+        <button id="auth-clear-btn" class="danger-btn">🔓 Clear Key</button>
+        <span id="auth-action-status"></span>
+      </div>
+    </details>
+
     <!-- ── Keyboard shortcuts ───────────────────────────────────────── -->
     <details class="card shortcuts-card">
       <summary>Keyboard Shortcuts</summary>
@@ -525,6 +575,8 @@
         <tr><td><kbd>Shift</kbd>+<kbd>U</kbd></td><td>Switch to Uptime Fancy mode</td></tr>
         <tr><td><kbd>Shift</kbd>+<kbd>C</kbd></td><td>Switch to Net Connections mode</td></tr>
         <tr><td><kbd>Shift</kbd>+<kbd>O</kbd></td><td>Switch to OS Info mode</td></tr>
+        <tr><td><kbd>Shift</kbd>+<kbd>K</kbd></td><td>Switch to Docker Status mode</td></tr>
+        <tr><td><kbd>Shift</kbd>+<kbd>W</kbd></td><td>Switch to Logged-in Users mode</td></tr>
       </table>
       <p class="card-hint" style="margin-top:0.5rem">Shortcuts are disabled while a text input is focused.</p>
     </details>
