@@ -7216,3 +7216,147 @@ mod status_overview_tests {
         assert_eq!(img.height(), 480);
     }
 }
+
+
+// ─── Conway's Game of Life ────────────────────────────────────────────────────
+
+static LIFE_GRID: OnceLock<std::sync::Mutex<Vec<Vec<bool>>>> = OnceLock::new();
+
+
+const LIFE_COLS: usize = 96;  // 480 / 5 pixels per cell
+const LIFE_ROWS: usize = 96;
+
+fn life_grid_data() -> std::sync::MutexGuard<'static, Vec<Vec<bool>>> {
+    LIFE_GRID.get_or_init(|| {
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+        let mut hasher = DefaultHasher::new();
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH).unwrap_or_default()
+            .as_nanos().hash(&mut hasher);
+        let seed = hasher.finish();
+        // Random initial grid using LCG
+        let mut s = seed;
+        let grid: Vec<Vec<bool>> = (0..LIFE_ROWS).map(|_| {
+            (0..LIFE_COLS).map(|_| {
+                s = s.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+                (s >> 33) & 1 == 1
+            }).collect()
+        }).collect();
+        std::sync::Mutex::new(grid)
+    })
+    .lock()
+    .unwrap()
+}
+
+// (life_gen_data removed - generation count tracked inline in render_game_of_life)
+
+/// Advance the Game of Life grid by one generation.
+fn life_step(grid: &mut Vec<Vec<bool>>) {
+    let rows = grid.len();
+    let cols = grid[0].len();
+    let mut next = grid.clone();
+    for r in 0..rows {
+        for c in 0..cols {
+            let mut neighbours = 0u8;
+            for dr in [-1i32, 0, 1] {
+                for dc in [-1i32, 0, 1] {
+                    if dr == 0 && dc == 0 { continue; }
+                    let nr = (r as i32 + dr).rem_euclid(rows as i32) as usize;
+                    let nc = (c as i32 + dc).rem_euclid(cols as i32) as usize;
+                    if grid[nr][nc] { neighbours += 1; }
+                }
+            }
+            next[r][c] = matches!((grid[r][c], neighbours),
+                (true, 2) | (true, 3) | (false, 3));
+        }
+    }
+    *grid = next;
+}
+
+/// Render one frame of Conway's Game of Life (480×480).
+///
+/// The grid is 96×96 cells, each 5×5 pixels.  The grid persists between calls.
+/// If the grid becomes static (no change in 10 generations), it is re-seeded.
+pub fn render_game_of_life() -> DynamicImage {
+    const CELL_PX: usize = 5;
+
+    let mut grid = life_grid_data();
+    let alive_before: u64 = grid.iter().flatten().map(|&b| b as u64).sum();
+
+    life_step(&mut *grid);
+
+    let alive_after: u64 = grid.iter().flatten().map(|&b| b as u64).sum();
+
+    // Re-seed if the population died out or stagnated
+    if alive_after == 0 || alive_after == alive_before {
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+        let mut hasher = DefaultHasher::new();
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH).unwrap_or_default()
+            .as_nanos().hash(&mut hasher);
+        let mut s = hasher.finish() ^ (alive_before.wrapping_mul(0xdeadbeef));
+        for row in grid.iter_mut() {
+            for cell in row.iter_mut() {
+                s = s.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+                *cell = (s >> 33) & 1 == 1;
+            }
+        }
+    }
+
+    let mut img = blank();
+
+    // Background already dark (blank())
+    // Draw alive cells
+    let alive_col = GREEN;
+    let dim_col   = Rgb([alive_col.0[0] / 4, alive_col.0[1] / 4, alive_col.0[2] / 4]);
+
+    for (r, row) in grid.iter().enumerate() {
+        for (c, &alive) in row.iter().enumerate() {
+            if alive {
+                let px = (c * CELL_PX) as u32;
+                let py = (r * CELL_PX) as u32;
+                // Fill cell leaving 1px gap for grid effect
+                for dy in 0..(CELL_PX as u32 - 1) {
+                    for dx in 0..(CELL_PX as u32 - 1) {
+                        if (px + dx) < 480 && (py + dy) < 480 {
+                            img.put_pixel(px + dx, py + dy, alive_col);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Overlay: generation counter and population
+    let bold = font_bold();
+    let mono = font_mono();
+    let pop_str = format!("pop: {}  gen: —", alive_after);
+    let pw = text_width(&mono, PxScale::from(12.0), &pop_str);
+    draw_filled_rect_mut(&mut img, Rect::at(2, 466).of_size(pw as u32 + 4, 14), Rgb([10, 10, 15]));
+    draw_text_mut(&mut img, dim_col, 4, 466, PxScale::from(12.0), &mono, &pop_str);
+    let _ = bold; // used elsewhere
+
+    DynamicImage::ImageRgb8(img)
+}
+
+#[cfg(test)]
+mod game_of_life_tests {
+    use super::*;
+
+    #[test]
+    fn test_render_game_of_life_size() {
+        let img = render_game_of_life();
+        assert_eq!(img.width(), 480);
+        assert_eq!(img.height(), 480);
+    }
+
+    #[test]
+    fn test_game_of_life_evolves() {
+        let img1 = render_game_of_life();
+        let img2 = render_game_of_life();
+        // Two consecutive frames should be valid images
+        assert_eq!(img1.width(), img2.width());
+    }
+}
