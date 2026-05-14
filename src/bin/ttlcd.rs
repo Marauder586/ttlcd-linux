@@ -1651,7 +1651,21 @@ async fn run_daemon(
         log::info!("daemon: headless mode — USB device not opened");
         Arc::new(Mutex::new(None))
     } else {
-        let mut p = Panel::open(vid, pid)?;
+        match Panel::open(vid, pid) {
+        Err(e) => {
+            // Auto-fallback: if device not found at startup, continue in headless mode
+            // so the web UI is still accessible. The display loop will retry.
+            log::warn!(
+                "daemon: USB device {:04x}:{:04x} not available at startup: {:#}",
+                vid, pid, e
+            );
+            log::warn!("daemon: starting in automatic headless mode — display loop will retry USB");
+            *state.panel_connected.lock().unwrap() = false;
+            push_history(&state, HistoryKind::System,
+                format!("USB device not found at startup — auto headless: {}", e));
+            Arc::new(Mutex::new(None))
+        }
+        Ok(mut p) => {
         p.init()?;
         log::info!(
             "daemon: panel ready (serial={}); mode={}; rotate={}°; port={}",
@@ -1665,6 +1679,8 @@ async fn run_daemon(
             let _ = p.send_jpeg(&jpeg);
         }
         Arc::new(Mutex::new(Some(p)))
+        }
+        }
     };
 
     if headless {
@@ -2163,6 +2179,42 @@ fn update_fps(state: &DaemonState) {
 fn display_loop(panel: Arc<Mutex<Option<Panel>>>, state: DaemonState) {
     let mut consecutive_errors: u32 = 0;
     loop {
+        // If panel is None and we're not headless, attempt to open it now.
+        // This handles the auto-headless startup fallback case.
+        if !state.headless && panel.lock().unwrap().is_none() {
+            log::debug!("display_loop: panel is None in non-headless mode, attempting open");
+            let open_result = if consecutive_errors >= 3 {
+                Panel::open_with_reset(state.vid, state.pid)
+            } else {
+                Panel::open(state.vid, state.pid)
+            };
+            match open_result {
+                Ok(mut p) => match p.init() {
+                    Ok(()) => {
+                        log::info!("display_loop: initial panel open succeeded (serial={})", p.info.serial);
+                        push_history(&state, HistoryKind::System,
+                            format!("USB panel connected (serial={})", p.info.serial));
+                        *state.panel_info.lock().unwrap() = Some(p.info.clone());
+                        *state.panel_connected.lock().unwrap() = true;
+                        *panel.lock().unwrap() = Some(p);
+                        consecutive_errors = 0;
+                    }
+                    Err(e) => {
+                        log::warn!("display_loop: panel init failed: {}", e);
+                        consecutive_errors += 1;
+                        thread::sleep(Duration::from_secs(5));
+                    }
+                },
+                Err(e) => {
+                    log::debug!("display_loop: panel not yet available: {}", e);
+                    consecutive_errors += 1;
+                    let backoff = (5u64 << consecutive_errors.saturating_sub(1).min(3)).min(60);
+                    thread::sleep(Duration::from_secs(backoff));
+                    continue;
+                }
+            }
+        }
+
         let mode       = state.mode.lock().unwrap().clone();
         let quality    = *state.quality.lock().unwrap();
         let rotate_deg = *state.rotate_deg.lock().unwrap();
