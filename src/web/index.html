@@ -25,8 +25,13 @@
   <main>
     <!-- ── Display modes ──────────────────────────────────────────── -->
     <section class="card">
-      <h2>Display Mode</h2>
-      <div class="mode-grid">
+      <div class="section-header-row">
+        <h2 style="margin:0">Display Mode</h2>
+        <input type="search" id="mode-search" placeholder="🔍 Filter modes…" autocomplete="off"
+               style="padding:0.3rem 0.6rem;border-radius:6px;border:1px solid var(--surface2);
+                      background:var(--surface0);color:var(--text);font-size:0.85rem;width:180px">
+      </div>
+      <div class="mode-grid" id="mode-grid">
         <button class="mode-btn" data-mode="clock"         title="Large digital clock">🕐<span>Clock</span></button>
         <button class="mode-btn" data-mode="big_clock"     title="Full-screen giant clock with large seconds">🕰<span>Big Clock</span></button>
         <button class="mode-btn" data-mode="clock_sysinfo" title="Clock + quick stats">🕐📊<span>Clock+Stats</span></button>
@@ -74,6 +79,7 @@
         <button class="mode-btn" data-mode="temp_graph"        title="Temperature history graph — CPU/component temperature over time with thermal thresholds">🌡<span>Temp Graph</span></button>
         <button class="mode-btn" data-mode="idle"              title="Keepalive — no display update">💤<span>Idle</span></button>
       </div>
+      <p id="mode-filter-count" style="font-size:0.78rem;color:var(--overlay0);margin:0.3rem 0 0"></p>
     </section>
 
     <!-- ── Auto-rotation ─────────────────────────────────────────── -->
@@ -672,6 +678,7 @@
         <tr><td><kbd>Shift</kbd>+<kbd>K</kbd></td><td>Switch to Docker Status mode</td></tr>
         <tr><td><kbd>Shift</kbd>+<kbd>W</kbd></td><td>Switch to Logged-in Users mode</td></tr>
         <tr><td><kbd>Shift</kbd>+<kbd>T</kbd></td><td>Switch to Temp Graph mode</td></tr>
+        <tr><td><kbd>/</kbd></td><td>Focus mode search filter (Esc to clear)</td></tr>
       </table>
       <p class="card-hint" style="margin-top:0.5rem">Shortcuts are disabled while a text input is focused.</p>
     </details>

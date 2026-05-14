@@ -3631,6 +3631,55 @@ async function fetchAuthStatus() {
 })();
 
 
+
+// ─── Mode search / filter ─────────────────────────────────────────────────────
+(function () {
+  const searchInput = document.getElementById('mode-search');
+  const countEl     = document.getElementById('mode-filter-count');
+  if (!searchInput) return;
+
+  function applyFilter() {
+    const q = searchInput.value.trim().toLowerCase();
+    const btns = document.querySelectorAll('#mode-grid .mode-btn');
+    let visible = 0;
+    btns.forEach(btn => {
+      const mode  = (btn.dataset.mode  || '').toLowerCase();
+      const label = (btn.querySelector('span')?.textContent || '').toLowerCase();
+      const title = (btn.title || '').toLowerCase();
+      const match = !q || mode.includes(q) || label.includes(q) || title.includes(q);
+      btn.classList.toggle('hidden-by-filter', !match);
+      if (match) visible++;
+    });
+    if (q && countEl) {
+      countEl.textContent = `${visible} of ${btns.length} modes shown`;
+    } else if (countEl) {
+      countEl.textContent = '';
+    }
+  }
+
+  searchInput.addEventListener('input', applyFilter);
+
+  // Clear filter on Escape when search is focused
+  searchInput.addEventListener('keydown', e => {
+    if (e.key === 'Escape') {
+      searchInput.value = '';
+      applyFilter();
+      searchInput.blur();
+    }
+  });
+
+  // Focus search on '/' key (when not in an input)
+  document.addEventListener('keydown', e => {
+    if (e.key === '/' && document.activeElement.tagName !== 'INPUT' &&
+        document.activeElement.tagName !== 'TEXTAREA' &&
+        document.activeElement.tagName !== 'SELECT') {
+      e.preventDefault();
+      searchInput.focus();
+      searchInput.select();
+    }
+  });
+})();
+
 // ─── Screensaver / idle timeout section ──────────────────────────────────────
 
 async function fetchScreensaverStatus() {

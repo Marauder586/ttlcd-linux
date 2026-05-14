@@ -1344,3 +1344,18 @@ button.btn-danger:hover   { opacity: 0.85; }
   flex-wrap: wrap;
   margin-bottom: 0.25rem;
 }
+
+/* ─── Section header row (heading + search/filter inline) ────────────────── */
+.section-header-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  margin-bottom: 0.75rem;
+  flex-wrap: wrap;
+}
+
+/* ─── Mode button hidden by filter ──────────────────────────────────────── */
+.mode-btn.hidden-by-filter {
+  display: none !important;
+}
