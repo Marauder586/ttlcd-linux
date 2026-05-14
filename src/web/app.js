@@ -3632,6 +3632,38 @@ async function fetchAuthStatus() {
 
 
 
+
+// ─── MJPEG live stream toggle ─────────────────────────────────────────────────
+(function () {
+  const toggleBtn = document.getElementById('mjpeg-toggle-btn');
+  if (!toggleBtn) return;
+
+  let mjpegActive = false;
+
+  toggleBtn.addEventListener('click', () => {
+    mjpegActive = !mjpegActive;
+    if (mjpegActive) {
+      // Switch to embedded MJPEG stream
+      panelImg.src = `/api/stream?t=${Date.now()}`;
+      panelImg.style.display = 'block';
+      panelEmpty.style.display = 'none';
+      toggleBtn.textContent = '📷 Poll';
+      toggleBtn.title = 'Switch back to JPEG polling mode';
+      toggleBtn.style.color = 'var(--green)';
+      log('Switched to embedded MJPEG stream');
+    } else {
+      // Switch back to JPEG polling
+      panelImg.src = '';
+      toggleBtn.textContent = '📺 MJPEG';
+      toggleBtn.title = 'Toggle between JPEG polling and embedded MJPEG stream';
+      toggleBtn.style.color = '';
+      log('Switched back to JPEG polling');
+      // Refresh immediately
+      refreshPreview();
+    }
+  });
+})();
+
 // ─── Mode search / filter ─────────────────────────────────────────────────────
 (function () {
   const searchInput = document.getElementById('mode-search');
@@ -3677,6 +3709,31 @@ async function fetchAuthStatus() {
       searchInput.focus();
       searchInput.select();
     }
+  });
+})();
+
+
+// ─── Settings export / import ─────────────────────────────────────────────────
+(function () {
+  const importInput = document.getElementById('settings-import-input');
+  if (!importInput) return;
+
+  importInput.addEventListener('change', async () => {
+    const file = importInput.files && importInput.files[0];
+    if (!file) return;
+    const statusEl = document.getElementById('set-status');
+    try {
+      const text = await file.text();
+      const data = JSON.parse(text);
+      const r = await api('POST', '/api/settings/import', data);
+      if (statusEl) statusEl.textContent = `Imported: ${r.applied || 0} settings applied`;
+      log(`Settings imported from ${file.name}`);
+      // Reload status to reflect new settings
+      await fetchStatus();
+    } catch (e) {
+      if (statusEl) statusEl.textContent = `Import failed: ${e.message}`;
+    }
+    importInput.value = '';
   });
 })();
 

@@ -285,14 +285,13 @@
       </div>
       <div class="preview-actions">
         <a id="screenshot-btn" href="/api/screenshot" download="panel.jpg" class="btn-link">
-          📷 Screenshot (JPEG)
+          📷 JPEG
         </a>
         <a href="/api/screenshot.png" download="panel.png" class="btn-link" title="Download lossless PNG screenshot">
-          📷 Screenshot (PNG)
+          📷 PNG
         </a>
-        <a href="/api/stream" target="_blank" class="btn-link" title="Open live MJPEG stream in new tab">
-          📺 Live stream
-        </a>
+        <button id="mjpeg-toggle-btn" class="btn-link" title="Toggle between JPEG polling and embedded MJPEG stream">📺 MJPEG</button>
+        <a href="/api/stream" target="_blank" class="btn-link" title="Open MJPEG stream in new tab">↗</a>
         <button id="freeze-btn" class="btn-link" title="Freeze / unfreeze display updates">❄ Freeze</button>
       </div>
     </section>
@@ -404,6 +403,11 @@
         </div>
         <div class="form-actions">
           <button id="set-apply-btn" class="primary">⚙ Apply Settings</button>
+          <a href="/api/settings/export" download="ttlcd-settings.json" class="btn-link" title="Export all settings to JSON">⬇ Export All</a>
+          <label class="btn-link" title="Import settings from JSON file" style="cursor:pointer">
+            ⬆ Import
+            <input type="file" id="settings-import-input" accept=".json" hidden>
+          </label>
           <span id="set-status"></span>
         </div>
       </div>
