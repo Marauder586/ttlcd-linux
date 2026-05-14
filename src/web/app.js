@@ -3469,6 +3469,73 @@ async function fetchSessions() {
   fetchSessions();
 })();
 
+// ─── ntfy.sh push notifications section ──────────────────────────────────────
+
+async function fetchNtfyStatus() {
+  try {
+    const data = await api('GET', '/api/ntfy/config');
+    const line = document.getElementById('ntfy-status-line');
+    const urlInput = document.getElementById('ntfy-url-input');
+    if (!line) return;
+    if (data.configured) {
+      line.innerHTML = `🔔 <strong>Active</strong> — sending to <code>${data.url}</code>`;
+      line.style.color = 'var(--green)';
+      if (urlInput && !urlInput.value) urlInput.value = data.url;
+    } else {
+      line.innerHTML = '🔕 Not configured — no push notifications will be sent.';
+      line.style.color = 'var(--overlay0)';
+    }
+  } catch (_) {}
+}
+
+(function injectNtfySection() {
+  const setBtn   = document.getElementById('ntfy-set-btn');
+  const testBtn  = document.getElementById('ntfy-test-btn');
+  const clearBtn = document.getElementById('ntfy-clear-btn');
+  const urlInput = document.getElementById('ntfy-url-input');
+  const statusEl = document.getElementById('ntfy-action-status');
+
+  if (setBtn) {
+    setBtn.addEventListener('click', async () => {
+      const url = urlInput ? urlInput.value.trim() : '';
+      if (!url) { if (statusEl) statusEl.textContent = 'Enter a URL first'; return; }
+      try {
+        const r = await api('POST', '/api/ntfy/config', { url });
+        if (statusEl) statusEl.textContent = r.message || 'Saved';
+        await fetchNtfyStatus();
+      } catch (e) {
+        if (statusEl) statusEl.textContent = `Error: ${e.message}`;
+      }
+    });
+  }
+
+  if (testBtn) {
+    testBtn.addEventListener('click', async () => {
+      try {
+        const r = await api('POST', '/api/ntfy/test');
+        if (statusEl) statusEl.textContent = r.message || 'Test sent';
+      } catch (e) {
+        if (statusEl) statusEl.textContent = `Error: ${e.message}`;
+      }
+    });
+  }
+
+  if (clearBtn) {
+    clearBtn.addEventListener('click', async () => {
+      try {
+        await api('DELETE', '/api/ntfy/config');
+        if (statusEl) statusEl.textContent = 'Cleared';
+        if (urlInput) urlInput.value = '';
+        await fetchNtfyStatus();
+      } catch (e) {
+        if (statusEl) statusEl.textContent = `Error: ${e.message}`;
+      }
+    });
+  }
+
+  fetchNtfyStatus();
+})();
+
 // ─── API authentication section ───────────────────────────────────────────────
 
 async function fetchAuthStatus() {

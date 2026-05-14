@@ -54,6 +54,10 @@ use ttlcd::{
         render_os_info,
         render_docker_status,
         render_logged_in_users,
+        render_load_graph,
+        render_mem_graph,
+        push_load_history,
+        push_mem_history,
         read_docker_containers,
         read_user_sessions,
         HttpMonitorResult,
@@ -746,6 +750,8 @@ enum DisplayMode {
     OsInfo,
     DockerStatus,
     LoggedInUsers,
+    LoadGraph,
+    MemGraph,
     Idle,
     CustomImage,
     CustomText,
@@ -755,7 +761,7 @@ enum DisplayMode {
 impl DisplayMode {
     const ALL_NAMES: &'static [&'static str] = &[
         "clock", "big_clock", "clock_sysinfo", "sysinfo", "cpu_detail",
-        "network", "disk_usage", "process_top", "temperature", "memory_detail", "countdown", "cpu_graph", "net_graph", "recent_alerts", "process_memory", "disk_io", "calendar", "stopwatch", "metrics", "weather", "notes", "qr_code", "pomodoro", "battery", "world_clock", "ticker", "http_status", "shell_cmd", "ping_monitor", "dashboard", "log_tail", "cpu_freq", "hostname_ip", "rss_feed", "service_status", "net_connections", "uptime_fancy", "os_info", "docker_status", "logged_in_users", "idle",
+        "network", "disk_usage", "process_top", "temperature", "memory_detail", "countdown", "cpu_graph", "net_graph", "recent_alerts", "process_memory", "disk_io", "calendar", "stopwatch", "metrics", "weather", "notes", "qr_code", "pomodoro", "battery", "world_clock", "ticker", "http_status", "shell_cmd", "ping_monitor", "dashboard", "log_tail", "cpu_freq", "hostname_ip", "rss_feed", "service_status", "net_connections", "uptime_fancy", "os_info", "docker_status", "logged_in_users", "load_graph", "mem_graph", "idle",
     ];
 
     fn from_str_name(s: &str) -> Option<Self> {
@@ -800,6 +806,8 @@ impl DisplayMode {
             "os_info"          => Some(DisplayMode::OsInfo),
             "docker_status"    => Some(DisplayMode::DockerStatus),
             "logged_in_users"  => Some(DisplayMode::LoggedInUsers),
+            "load_graph"       => Some(DisplayMode::LoadGraph),
+            "mem_graph"        => Some(DisplayMode::MemGraph),
             "idle"             => Some(DisplayMode::Idle),
             "custom_text"   => Some(DisplayMode::CustomText),
             "slideshow"     => Some(DisplayMode::Slideshow),
@@ -849,6 +857,8 @@ impl DisplayMode {
             DisplayMode::OsInfo         => "os_info",
             DisplayMode::DockerStatus   => "docker_status",
             DisplayMode::LoggedInUsers  => "logged_in_users",
+            DisplayMode::LoadGraph      => "load_graph",
+            DisplayMode::MemGraph       => "mem_graph",
             DisplayMode::Idle           => "idle",
             DisplayMode::CustomImage  => "image",
             DisplayMode::CustomText   => "custom_text",
@@ -1080,6 +1090,10 @@ struct DaemonState {
     /// Optional API key for authentication. When set, all requests must include
     /// `Authorization: Bearer <key>` (except `/static/`, `/api/stream`, and health-check).
     api_key: Arc<Mutex<Option<String>>>,
+    /// ntfy.sh topic URL for push notifications. When set, every Alert-kind history entry
+    /// will be POSTed to this URL as a plain-text notification.
+    /// Example: "https://ntfy.sh/my-ttlcd-topic"
+    ntfy_url: Arc<Mutex<Option<String>>>,
 }
 
 /// A single entry in the display-mode schedule.
@@ -1221,6 +1235,8 @@ struct PersistedNewSettings {
     http_monitors:      Vec<HttpMonitorEntry>,
     #[serde(default)]
     ping_hosts:         Vec<PingHostEntry>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    ntfy_url:           Option<String>,
 }
 
 fn new_settings_path() -> Option<PathBuf> {
@@ -1255,6 +1271,7 @@ fn save_new_settings(state: &DaemonState) {
         shell_cmd_interval: *state.shell_cmd_interval_secs.lock().unwrap(),
         http_monitors:      state.http_monitors.lock().unwrap().clone(),
         ping_hosts:         state.ping_hosts.lock().unwrap().clone(),
+        ntfy_url:           state.ntfy_url.lock().unwrap().clone(),
     };
     if let Ok(text) = serde_json::to_string_pretty(&s) {
         let _ = std::fs::write(&path, text);
@@ -1509,6 +1526,7 @@ async fn run_daemon(
         service_statuses:      Arc::new(Mutex::new(Vec::new())),
         service_poll_interval: Arc::new(Mutex::new(10)),
         api_key:               Arc::new(Mutex::new(None)),
+        ntfy_url:              Arc::new(Mutex::new(None)),
     };
 
     let panel: Arc<Mutex<Option<Panel>>> = if headless {
@@ -1627,6 +1645,9 @@ async fn run_daemon(
         }
         if !ns.ping_hosts.is_empty() {
             *state.ping_hosts.lock().unwrap() = ns.ping_hosts;
+        }
+        if let Some(ntfy) = ns.ntfy_url {
+            *state.ntfy_url.lock().unwrap() = Some(ntfy);
         }
     }
 
@@ -1902,6 +1923,11 @@ async fn run_daemon(
             .route("/api/auth/key",                 web::post().to(api_set_auth_key))
             .route("/api/auth/key",                 web::delete().to(api_clear_auth_key))
             .route("/api/auth/status",              web::get().to(api_get_auth_status))
+            // ntfy.sh push notification config
+            .route("/api/ntfy/config",              web::get().to(api_get_ntfy_config))
+            .route("/api/ntfy/config",              web::post().to(api_set_ntfy_config))
+            .route("/api/ntfy/config",              web::delete().to(api_clear_ntfy_config))
+            .route("/api/ntfy/test",                web::post().to(api_ntfy_test))
             // API docs
             .route("/api/docs",           web::get().to(api_docs))
             // Web UI
@@ -2245,21 +2271,30 @@ fn display_loop(panel: Arc<Mutex<Option<Panel>>>, state: DaemonState) {
                     let sessions = tokio::task::block_in_place(read_user_sessions);
                     (render_logged_in_users(&sessions), 10)
                 },
+                DisplayMode::LoadGraph      => (render_load_graph(), 5),
+                DisplayMode::MemGraph       => (render_mem_graph(), 5),
                 DisplayMode::Idle
                 | DisplayMode::CustomImage
                 | DisplayMode::CustomText
                 | DisplayMode::Slideshow => unreachable!("handled above"),
             };
 
-            // Update CPU history for the graph mode (on any live frame)
+            // Update CPU / load / mem history on every live frame
             if matches!(mode, DisplayMode::Clock | DisplayMode::BigClock | DisplayMode::ClockSysinfo | DisplayMode::Sysinfo
                 | DisplayMode::CpuDetail | DisplayMode::Network | DisplayMode::DiskUsage
                 | DisplayMode::ProcessTop | DisplayMode::Temperature | DisplayMode::MemoryDetail
-                | DisplayMode::NetGraph) {
+                | DisplayMode::NetGraph | DisplayMode::LoadGraph | DisplayMode::MemGraph) {
                 use sysinfo::System;
-                let mut s = System::new();
+                let mut s = System::new_all();
                 s.refresh_cpu_usage();
+                s.refresh_memory();
                 push_cpu_history(s.global_cpu_usage());
+                let load = System::load_average();
+                push_load_history(load.one as f32);
+                let total = s.total_memory();
+                if total > 0 {
+                    push_mem_history(s.used_memory() as f32 / total as f32 * 100.0);
+                }
             }
             let img  = apply_rotation(img, rotate_deg);
             let img  = apply_brightness(img, *state.dim_factor.lock().unwrap());
@@ -3543,6 +3578,8 @@ async fn api_modes_list() -> impl Responder {
         ModeInfo { name: "os_info",        description: "OS and hardware info: distro, kernel, CPU model, memory, uptime" },
         ModeInfo { name: "docker_status",  description: "Docker containers panel: running/stopped containers with image and status" },
         ModeInfo { name: "logged_in_users",description: "Active user sessions: who is logged in, from where, and idle time" },
+        ModeInfo { name: "load_graph",     description: "Load average history graph: 1m/5m/15m load avg as a filled line chart" },
+        ModeInfo { name: "mem_graph",      description: "Memory usage history graph: RAM % over time as a filled line chart" },
         ModeInfo { name: "idle",           description: "Keepalive — no display update, prevents blank" },
     ];
     HttpResponse::Ok().json(modes)
@@ -3928,7 +3965,34 @@ fn push_history(state: &DaemonState, kind: HistoryKind, summary: String) {
         *seq += 1;
         let new_seq = *seq;
         drop(seq);
-        *state.last_alert_event.lock().unwrap() = Some((new_seq, summary));
+        *state.last_alert_event.lock().unwrap() = Some((new_seq, summary.clone()));
+
+        // Fire ntfy.sh notification (fire-and-forget)
+        let ntfy_opt = state.ntfy_url.lock().unwrap().clone();
+        if let Some(ntfy_url) = ntfy_opt {
+            let body = summary.clone();
+            tokio::spawn(async move {
+                match reqwest::Client::builder()
+                    .timeout(std::time::Duration::from_secs(10))
+                    .build()
+                {
+                    Ok(client) => {
+                        match client.post(&ntfy_url)
+                            .header("Title", "ttlcd Alert")
+                            .header("Priority", "high")
+                            .header("Tags", "warning")
+                            .body(body)
+                            .send()
+                            .await
+                        {
+                            Ok(r)  => log::info!("ntfy notification sent → {} ({})", ntfy_url, r.status()),
+                            Err(e) => log::warn!("ntfy notification failed: {}", e),
+                        }
+                    }
+                    Err(e) => log::warn!("ntfy: could not build HTTP client: {}", e),
+                }
+            });
+        }
     }
 }
 
@@ -8079,4 +8143,97 @@ fn parse_if_addresses() -> std::collections::HashMap<String, Vec<String>> {
         }
     }
     map
+}
+
+// ─── ntfy.sh push notification config ────────────────────────────────────────
+
+#[derive(Deserialize)]
+struct SetNtfyPayload {
+    url: String,
+}
+
+/// GET /api/ntfy/config — check current ntfy configuration.
+async fn api_get_ntfy_config(state: web::Data<DaemonState>) -> impl Responder {
+    let url = state.ntfy_url.lock().unwrap().clone();
+    HttpResponse::Ok().json(serde_json::json!({
+        "configured": url.is_some(),
+        "url": url.unwrap_or_default(),
+    }))
+}
+
+/// POST /api/ntfy/config — set the ntfy.sh topic URL.
+///
+/// Body: `{ "url": "https://ntfy.sh/my-topic" }`
+///
+/// When set, every Alert-kind event (threshold breach, service failure, etc.)
+/// is POSTed to this URL as a plain-text ntfy notification.
+async fn api_set_ntfy_config(
+    state:   web::Data<DaemonState>,
+    payload: web::Json<SetNtfyPayload>,
+) -> impl Responder {
+    let url = payload.url.trim().to_string();
+    if url.is_empty() {
+        return HttpResponse::BadRequest().body("url must not be empty");
+    }
+    if !url.starts_with("http://") && !url.starts_with("https://") {
+        return HttpResponse::BadRequest().body("url must start with http:// or https://");
+    }
+    *state.ntfy_url.lock().unwrap() = Some(url.clone());
+    push_history(&state, HistoryKind::System, format!("ntfy notifications configured: {}", url));
+    save_new_settings(&state);
+    HttpResponse::Ok().json(serde_json::json!({
+        "ok": true,
+        "url": url,
+        "message": "Alert notifications will be sent to this URL",
+    }))
+}
+
+/// DELETE /api/ntfy/config — disable ntfy notifications.
+async fn api_clear_ntfy_config(state: web::Data<DaemonState>) -> impl Responder {
+    let was_set = state.ntfy_url.lock().unwrap().take().is_some();
+    if was_set {
+        push_history(&state, HistoryKind::System, "ntfy notifications disabled".to_string());
+        save_new_settings(&state);
+        HttpResponse::Ok().body("ntfy config cleared")
+    } else {
+        HttpResponse::Ok().body("ntfy was not configured")
+    }
+}
+
+/// POST /api/ntfy/test — send a test notification to the configured ntfy URL.
+async fn api_ntfy_test(state: web::Data<DaemonState>) -> impl Responder {
+    let ntfy_opt = state.ntfy_url.lock().unwrap().clone();
+    let Some(ntfy_url) = ntfy_opt else {
+        return HttpResponse::BadRequest().body("ntfy not configured — POST /api/ntfy/config first");
+    };
+    let result = async {
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(10))
+            .build()?;
+        let resp = client.post(&ntfy_url)
+            .header("Title", "ttlcd test notification")
+            .header("Priority", "default")
+            .header("Tags", "white_check_mark")
+            .body("This is a test notification from ttlcd.")
+            .send()
+            .await?;
+        Ok::<_, reqwest::Error>(resp.status())
+    }.await;
+
+    match result {
+        Ok(status) => {
+            push_history(&state, HistoryKind::System, format!("ntfy test notification sent ({})", status));
+            HttpResponse::Ok().json(serde_json::json!({
+                "ok": status.is_success(),
+                "http_status": status.as_u16(),
+                "message": format!("Test notification sent to {} — HTTP {}", ntfy_url, status),
+            }))
+        }
+        Err(e) => {
+            HttpResponse::BadGateway().json(serde_json::json!({
+                "ok": false,
+                "error": format!("{}", e),
+            }))
+        }
+    }
 }

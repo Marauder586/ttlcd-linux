@@ -5307,3 +5307,268 @@ mod docker_session_tests {
         assert_eq!(img.height(), 480);
     }
 }
+
+// ─── Load average history graph ──────────────────────────────────────────────
+
+static LOAD_HISTORY: OnceLock<std::sync::Mutex<std::collections::VecDeque<f32>>> = OnceLock::new();
+
+fn load_graph_data() -> std::sync::MutexGuard<'static, std::collections::VecDeque<f32>> {
+    LOAD_HISTORY.get_or_init(|| {
+        std::sync::Mutex::new(std::collections::VecDeque::with_capacity(120))
+    })
+    .lock()
+    .unwrap()
+}
+
+/// Append one 1-minute load average sample to the load history ring-buffer.
+pub fn push_load_history(load1: f32) {
+    let mut buf = load_graph_data();
+    if buf.len() >= 120 { buf.pop_front(); }
+    buf.push_back(load1);
+}
+
+// ─── Memory history graph ─────────────────────────────────────────────────────
+
+static MEM_HISTORY: OnceLock<std::sync::Mutex<std::collections::VecDeque<f32>>> = OnceLock::new();
+
+fn mem_graph_data() -> std::sync::MutexGuard<'static, std::collections::VecDeque<f32>> {
+    MEM_HISTORY.get_or_init(|| {
+        std::sync::Mutex::new(std::collections::VecDeque::with_capacity(120))
+    })
+    .lock()
+    .unwrap()
+}
+
+/// Append one memory usage percentage sample to the memory history ring-buffer.
+pub fn push_mem_history(mem_pct: f32) {
+    let mut buf = mem_graph_data();
+    if buf.len() >= 120 { buf.pop_front(); }
+    buf.push_back(mem_pct);
+}
+
+/// Draw a line-chart from a history buffer inside the given chart bounds.
+///
+/// `values` are in [0, max_val]. Returns the last drawn point for value annotation.
+fn draw_line_chart(
+    img: &mut RgbImage,
+    values: &[f32],
+    max_val: f32,
+    chart_x: i32,
+    chart_y: i32,
+    chart_w: i32,
+    chart_h: i32,
+    line_color: Rgb<u8>,
+    fill_color: Rgb<u8>,
+) {
+    if values.len() < 2 || max_val <= 0.0 { return; }
+    let n = values.len();
+    let x_step = chart_w as f32 / (n - 1).max(1) as f32;
+
+    let pixel_y = |v: f32| -> i32 {
+        let frac = (v / max_val).clamp(0.0, 1.0);
+        chart_y + chart_h - (chart_h as f32 * frac) as i32
+    };
+
+    // Fill area under curve
+    for (i, &val) in values.iter().enumerate() {
+        let px  = (chart_x as f32 + i as f32 * x_step) as i32;
+        let py  = pixel_y(val);
+        let bot = chart_y + chart_h;
+        if px >= 0 && (px as u32) < img.width() {
+            for row in py..=bot {
+                if row >= 0 && (row as u32) < img.height() {
+                    img.put_pixel(px as u32, row as u32, fill_color);
+                }
+            }
+        }
+    }
+
+    // Draw line on top
+    for i in 0..n - 1 {
+        let px1 = (chart_x as f32 + i as f32 * x_step) as i32;
+        let py1 = pixel_y(values[i]);
+        let px2 = (chart_x as f32 + (i + 1) as f32 * x_step) as i32;
+        let py2 = pixel_y(values[i + 1]);
+        // Bresenham-ish line
+        let dx = (px2 - px1).abs();
+        let dy = (py2 - py1).abs();
+        let steps = dx.max(dy).max(1);
+        for s in 0..=steps {
+            let t   = s as f32 / steps as f32;
+            let lx  = (px1 as f32 + t * (px2 - px1) as f32) as i32;
+            let ly  = (py1 as f32 + t * (py2 - py1) as f32) as i32;
+            let ly2 = (ly - 1).max(0);
+            for &row in &[ly, ly2] {
+                if lx >= 0 && (lx as u32) < img.width() && row >= 0 && (row as u32) < img.height() {
+                    img.put_pixel(lx as u32, row as u32, line_color);
+                }
+            }
+        }
+    }
+}
+
+/// Render a load-average history graph (480×480).
+///
+/// Shows the 1-minute load average as a line chart over the last ~2 minutes,
+/// with current 1m/5m/15m values and per-core context.
+pub fn render_load_graph() -> DynamicImage {
+    use sysinfo::{CpuRefreshKind, RefreshKind, System};
+
+    let load = System::load_average();
+    push_load_history(load.one as f32);
+
+    let history: Vec<f32> = load_graph_data().iter().cloned().collect();
+
+    let cpu_count = {
+        let s = System::new_with_specifics(RefreshKind::nothing().with_cpu(CpuRefreshKind::nothing()));
+        s.cpus().len().max(1)
+    };
+
+    let max_load = (cpu_count as f32).max(load.fifteen as f32 * 2.0).max(4.0);
+
+    let mut img  = blank();
+    let bold = font_bold();
+    let mono = font_mono();
+
+    // ── Header ────────────────────────────────────────────────────────────
+    let now = Local::now();
+    draw_text_mut(&mut img, OVERLAY0, 20, 18, PxScale::from(19.0), &bold, "LOAD AVG");
+    let tw = text_width(&mono, PxScale::from(22.0), &now.format("%H:%M:%S").to_string());
+    draw_text_mut(&mut img, OVERLAY0, 480 - 20 - tw, 18, PxScale::from(22.0), &mono, &now.format("%H:%M:%S").to_string());
+
+    // ── Current load 1m — large ───────────────────────────────────────────
+    let accent = {
+        let pct = load.one as f32 / cpu_count as f32;
+        if pct > 1.0 { RED } else if pct > 0.7 { YELLOW } else { GREEN }
+    };
+    let load1_str = format!("{:.2}", load.one);
+    draw_centered(&mut img, &bold, PxScale::from(80.0), 42, accent, &load1_str);
+
+    // ── Sub-stats row ─────────────────────────────────────────────────────
+    let stats_str = format!(
+        "1m {:.2}  5m {:.2}  15m {:.2}  ({} cores)",
+        load.one, load.five, load.fifteen, cpu_count
+    );
+    let sw = text_width(&mono, PxScale::from(16.0), &stats_str);
+    draw_text_mut(&mut img, SUBTEXT, ((480 - sw) / 2).max(0), 148, PxScale::from(16.0), &mono, &stats_str);
+
+    // ── Chart area ────────────────────────────────────────────────────────
+    let chart_x = 0i32;
+    let chart_y = 170i32;
+    let chart_w = 480i32;
+    let chart_h = 280i32;
+
+    // Grid lines at core-count multiples
+    for multiple in 1..=4u32 {
+        let grid_val = multiple as f32;
+        if grid_val > max_load { break; }
+        let ly = chart_y + chart_h - (chart_h as f32 * grid_val / max_load) as i32;
+        if ly < chart_y { break; }
+        for x in (chart_x..(chart_x + chart_w)).step_by(6) {
+            if x >= 0 && (x as u32) < img.width() && ly >= 0 && (ly as u32) < img.height() {
+                img.put_pixel(x as u32, ly as u32, SURFACE0);
+            }
+        }
+        let label = format!("{:.0}", grid_val);
+        draw_text_mut(&mut img, OVERLAY0, 2, (ly - 8).max(0), PxScale::from(12.0), &mono, &label);
+    }
+
+    // Fill + line
+    let fill_color = Rgb([accent.0[0] / 6, accent.0[1] / 6, accent.0[2] / 6]);
+    draw_line_chart(&mut img, &history, max_load, chart_x, chart_y, chart_w, chart_h, accent, fill_color);
+
+    // Chart bottom border
+    draw_filled_rect_mut(&mut img, Rect::at(chart_x, chart_y + chart_h).of_size(chart_w as u32, 2), SURFACE0);
+    draw_centered(&mut img, &mono, PxScale::from(14.0), chart_y + chart_h + 6, OVERLAY0, "← 2 min ago                      now →");
+
+    DynamicImage::ImageRgb8(img)
+}
+
+/// Render a memory usage history graph (480×480).
+///
+/// Shows RAM usage % as a filled line chart over the last ~2 minutes,
+/// with current used/total values and a usage indicator.
+pub fn render_mem_graph() -> DynamicImage {
+    use sysinfo::System;
+
+    let mut sys = System::new();
+    sys.refresh_memory();
+    let used  = sys.used_memory();
+    let total = sys.total_memory();
+    let mem_pct = if total > 0 { used as f32 / total as f32 * 100.0 } else { 0.0 };
+    push_mem_history(mem_pct);
+
+    let history: Vec<f32> = mem_graph_data().iter().cloned().collect();
+
+    let mut img  = blank();
+    let bold = font_bold();
+    let mono = font_mono();
+
+    // ── Header ────────────────────────────────────────────────────────────
+    let now = Local::now();
+    draw_text_mut(&mut img, OVERLAY0, 20, 18, PxScale::from(19.0), &bold, "MEM GRAPH");
+    let tw = text_width(&mono, PxScale::from(22.0), &now.format("%H:%M:%S").to_string());
+    draw_text_mut(&mut img, OVERLAY0, 480 - 20 - tw, 18, PxScale::from(22.0), &mono, &now.format("%H:%M:%S").to_string());
+
+    // ── Current % — large ─────────────────────────────────────────────────
+    let accent = if mem_pct > 85.0 { RED } else if mem_pct > 65.0 { YELLOW } else { BLUE };
+    draw_centered(&mut img, &bold, PxScale::from(80.0), 42, accent, &format!("{:.1}%", mem_pct));
+
+    // ── Sub-stats row ─────────────────────────────────────────────────────
+    let used_gb  = used  as f64 / 1_073_741_824.0;
+    let total_gb = total as f64 / 1_073_741_824.0;
+    let swap_used  = sys.used_swap();
+    let swap_total = sys.total_swap();
+    let sub = if swap_total > 0 {
+        format!("{:.1}/{:.1} GB  swap {:.0}%", used_gb, total_gb,
+            swap_used as f64 / swap_total as f64 * 100.0)
+    } else {
+        format!("{:.1} GB used of {:.1} GB  (no swap)", used_gb, total_gb)
+    };
+    let sw = text_width(&mono, PxScale::from(16.0), &sub);
+    draw_text_mut(&mut img, SUBTEXT, ((480 - sw) / 2).max(0), 148, PxScale::from(16.0), &mono, &sub);
+
+    // ── Chart area ────────────────────────────────────────────────────────
+    let chart_x = 0i32;
+    let chart_y = 170i32;
+    let chart_w = 480i32;
+    let chart_h = 280i32;
+
+    // Grid lines at 25%, 50%, 75%
+    for pct_line in [25u32, 50, 75] {
+        let ly = chart_y + chart_h - (chart_h as f32 * pct_line as f32 / 100.0) as i32;
+        for x in (chart_x..(chart_x + chart_w)).step_by(6) {
+            if x >= 0 && (x as u32) < img.width() && ly >= 0 && (ly as u32) < img.height() {
+                img.put_pixel(x as u32, ly as u32, SURFACE0);
+            }
+        }
+        draw_text_mut(&mut img, OVERLAY0, 2, (ly - 8).max(0), PxScale::from(12.0), &mono, &format!("{}%", pct_line));
+    }
+
+    let fill_color = Rgb([accent.0[0] / 6, accent.0[1] / 6, accent.0[2] / 6]);
+    draw_line_chart(&mut img, &history, 100.0, chart_x, chart_y, chart_w, chart_h, accent, fill_color);
+
+    draw_filled_rect_mut(&mut img, Rect::at(chart_x, chart_y + chart_h).of_size(chart_w as u32, 2), SURFACE0);
+    draw_centered(&mut img, &mono, PxScale::from(14.0), chart_y + chart_h + 6, OVERLAY0, "← 2 min ago                      now →");
+
+    DynamicImage::ImageRgb8(img)
+}
+
+#[cfg(test)]
+mod graph_history_tests {
+    use super::*;
+
+    #[test]
+    fn test_load_graph_size() {
+        let img = render_load_graph();
+        assert_eq!(img.width(), 480);
+        assert_eq!(img.height(), 480);
+    }
+
+    #[test]
+    fn test_mem_graph_size() {
+        let img = render_mem_graph();
+        assert_eq!(img.width(), 480);
+        assert_eq!(img.height(), 480);
+    }
+}

@@ -67,6 +67,8 @@
         <button class="mode-btn" data-mode="os_info"          title="OS and system info: distro, kernel, CPU, hostname">💻<span>OS Info</span></button>
         <button class="mode-btn" data-mode="docker_status"    title="Docker containers: running/stopped with image names">🐳<span>Docker</span></button>
         <button class="mode-btn" data-mode="logged_in_users"  title="Active user sessions: who is logged in, from where, idle time">👥<span>Sessions</span></button>
+        <button class="mode-btn" data-mode="load_graph"        title="Load average history: 1m/5m/15m load avg as a filled line chart">📈<span>Load Graph</span></button>
+        <button class="mode-btn" data-mode="mem_graph"         title="Memory usage history: RAM % over time as a filled line chart">📊<span>Mem Graph</span></button>
         <button class="mode-btn" data-mode="idle"              title="Keepalive — no display update">💤<span>Idle</span></button>
       </div>
     </section>
@@ -532,6 +534,25 @@
         <tbody id="sessions-tbody"></tbody>
       </table>
     </section>
+
+    <!-- ── ntfy.sh Push Notifications ───────────────────────────────────── -->
+    <details class="card" id="ntfy-section">
+      <summary>🔔 ntfy.sh Push Notifications</summary>
+      <p class="card-hint">Receive alert notifications on your phone or desktop. When configured, any threshold breach, service failure, or alert will be POSTed to your ntfy.sh topic.</p>
+      <div id="ntfy-status-line" class="hint-inline" style="display:block;margin-bottom:0.5rem"></div>
+      <div class="form-row two-col">
+        <div class="form-group" style="flex:2">
+          <label for="ntfy-url-input">ntfy.sh Topic URL</label>
+          <input type="url" id="ntfy-url-input" placeholder="https://ntfy.sh/my-secret-topic" maxlength="300">
+        </div>
+      </div>
+      <div class="form-actions">
+        <button id="ntfy-set-btn" class="primary">💾 Save</button>
+        <button id="ntfy-test-btn">📨 Test</button>
+        <button id="ntfy-clear-btn" class="danger-btn">🗑 Clear</button>
+        <span id="ntfy-action-status"></span>
+      </div>
+    </details>
 
     <!-- ── API Authentication ─────────────────────────────────────────── -->
     <details class="card" id="auth-section">
