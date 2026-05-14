@@ -1268,6 +1268,21 @@ struct PersistedNewSettings {
     ping_hosts:         Vec<PingHostEntry>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     ntfy_url:           Option<String>,
+    /// Screensaver timeout in seconds (0 = disabled).
+    #[serde(default)]
+    screensaver_timeout_secs: u64,
+    /// Screensaver mode name (e.g. "matrix_rain").
+    #[serde(default)]
+    screensaver_mode_name: String,
+    /// CPU alert threshold percent (0 = disabled).
+    #[serde(default)]
+    alert_cpu_pct: f32,
+    /// Temperature alert threshold Celsius (0 = disabled).
+    #[serde(default)]
+    alert_temp_c: f32,
+    /// Cooldown between threshold alerts (seconds).
+    #[serde(default)]
+    alert_cooldown_secs: u64,
 }
 
 fn new_settings_path() -> Option<PathBuf> {
@@ -1303,6 +1318,11 @@ fn save_new_settings(state: &DaemonState) {
         http_monitors:      state.http_monitors.lock().unwrap().clone(),
         ping_hosts:         state.ping_hosts.lock().unwrap().clone(),
         ntfy_url:           state.ntfy_url.lock().unwrap().clone(),
+        screensaver_timeout_secs: *state.screensaver_timeout_secs.lock().unwrap(),
+        screensaver_mode_name:    state.screensaver_mode_name.lock().unwrap().clone(),
+        alert_cpu_pct:    state.alert_thresholds.lock().unwrap().cpu_pct,
+        alert_temp_c:     state.alert_thresholds.lock().unwrap().temp_c,
+        alert_cooldown_secs: state.alert_thresholds.lock().unwrap().cooldown_secs,
     };
     if let Ok(text) = serde_json::to_string_pretty(&s) {
         let _ = std::fs::write(&path, text);
@@ -1684,6 +1704,18 @@ async fn run_daemon(
         }
         if let Some(ntfy) = ns.ntfy_url {
             *state.ntfy_url.lock().unwrap() = Some(ntfy);
+        }
+        if ns.screensaver_timeout_secs > 0 {
+            *state.screensaver_timeout_secs.lock().unwrap() = ns.screensaver_timeout_secs;
+        }
+        if !ns.screensaver_mode_name.is_empty() {
+            *state.screensaver_mode_name.lock().unwrap() = ns.screensaver_mode_name;
+        }
+        if ns.alert_cpu_pct > 0.0 || ns.alert_temp_c > 0.0 {
+            let mut t = state.alert_thresholds.lock().unwrap();
+            if ns.alert_cpu_pct  >= 0.0 { t.cpu_pct  = ns.alert_cpu_pct; }
+            if ns.alert_temp_c   >= 0.0 { t.temp_c   = ns.alert_temp_c; }
+            if ns.alert_cooldown_secs > 0 { t.cooldown_secs = ns.alert_cooldown_secs; }
         }
     }
 
