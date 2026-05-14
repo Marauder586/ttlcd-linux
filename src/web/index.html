@@ -123,6 +123,7 @@
         <button class="mode-btn" data-mode="net_heatmap" data-cat="network"    title="Network heatmap — 60-sample Rx/Tx bar history coloured by throughput">📶<span>Net Heatmap</span></button>
         <button class="mode-btn" data-mode="lissajous" data-cat="fun"         title="Lissajous curves screensaver — parametric curves cycling through frequency ratios">🌀<span>Lissajous</span></button>
         <button class="mode-btn" data-mode="pong" data-cat="fun"               title="Self-playing Pong — AI paddles, score tracked, Catppuccin colours">🏓<span>Pong</span></button>
+        <button class="mode-btn" data-mode="breakout" data-cat="fun"           title="Self-playing Breakout — AI paddle, colour-coded bricks, score and lives">🧱<span>Breakout</span></button>
         <button class="mode-btn" data-mode="neon_clock" data-cat="clock"        title="Neon-glow clock — colour-cycling phosphor glow on H:MM:SS with seconds arc">🌈<span>Neon Clock</span></button>
         <button class="mode-btn" data-mode="word_clock" data-cat="clock"         title="Word clock — time displayed as English words in large type">💬<span>Word Clock</span></button>
         <button class="mode-btn" data-mode="idle" data-cat="other"              title="Keepalive — no display update">💤<span>Idle</span></button>
@@ -751,6 +752,7 @@
             <option value="oscilloscope">〰 Oscilloscope</option>
             <option value="lissajous">🌀 Lissajous</option>
             <option value="pong">🏓 Pong</option>
+            <option value="breakout">🧱 Breakout</option>
             <option value="neon_clock">🌈 Neon Clock</option>
             <option value="word_clock">💬 Word Clock</option>
             <option value="game_of_life">🧫 Game of Life</option>
@@ -788,6 +790,33 @@
       </div>
     </details>
 
+    <!-- ── Night Mode ─────────────────────────────────────────────────────────── -->
+    <details class="card" id="night-mode-section">
+      <summary><h2 style="display:inline;margin:0">🌙 Night Mode</h2></summary>
+      <p class="card-hint">Automatically switch to a quieter mode between set hours. Useful for dimming or switching to a minimal clock overnight.</p>
+      <div id="night-mode-status-line" class="hint-inline" style="display:block;margin-bottom:0.5rem"></div>
+      <div class="form-grid">
+        <label><input type="checkbox" id="night-enabled-cb"> Enable Night Mode</label>
+        <span></span>
+        <label for="night-start-hour">Start Hour (24h)</label>
+        <input type="number" id="night-start-hour" value="22" min="0" max="23" style="width:70px">
+        <label for="night-end-hour">End Hour (24h)</label>
+        <input type="number" id="night-end-hour" value="7" min="0" max="23" style="width:70px">
+        <label for="night-mode-select">Night Mode</label>
+        <select id="night-mode-select">
+          <option value="minimal_clock">🕐 Minimal Clock</option>
+          <option value="word_clock">💬 Word Clock</option>
+          <option value="neon_clock">🌈 Neon Clock</option>
+          <option value="analog_clock">⏱ Analog Clock</option>
+          <option value="idle">💤 Idle (blank)</option>
+          <option value="clock">🕐 Clock</option>
+        </select>
+      </div>
+      <div style="margin-top:0.6rem">
+        <button id="night-save-btn" class="primary">🌙 Save Night Mode</button>
+        <span id="night-status" style="margin-left:0.5rem;font-size:0.85rem"></span>
+      </div>
+    </details>
     <!-- ── Keyboard shortcuts ───────────────────────────────────────── -->
     <details class="card shortcuts-card">
       <summary>Keyboard Shortcuts</summary>

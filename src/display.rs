@@ -10332,3 +10332,198 @@ pub fn render_word_clock() -> DynamicImage {
     DynamicImage::ImageRgb8(img)
 }
 
+
+
+// ─── Breakout / Brick Breaker ─────────────────────────────────────────────────
+
+const BRKOUT_COLS: usize = 10;
+const BRKOUT_ROWS: usize = 5;
+
+struct BreakoutState {
+    ball_x:  f32,
+    ball_y:  f32,
+    ball_vx: f32,
+    ball_vy: f32,
+    paddle_x: f32,
+    bricks:   [[bool; BRKOUT_COLS]; BRKOUT_ROWS],  // true = alive
+    score: u32,
+    lives: u32,
+    tick:  u64,
+}
+
+fn new_breakout_state(seed: u64) -> BreakoutState {
+    let mut bricks = [[true; BRKOUT_COLS]; BRKOUT_ROWS];
+    // A few gaps for variety
+    let mut s = seed;
+    let lcg = |v: u64| v.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+    for r in 0..BRKOUT_ROWS {
+        for c in 0..BRKOUT_COLS {
+            s = lcg(s);
+            if (s % 10) == 0 { bricks[r][c] = false; }
+        }
+    }
+    BreakoutState {
+        ball_x: 240.0, ball_y: 350.0,
+        ball_vx: 3.0, ball_vy: -3.5,
+        paddle_x: 200.0,
+        bricks,
+        score: 0, lives: 3, tick: 0,
+    }
+}
+
+static BREAKOUT_STATE: std::sync::OnceLock<std::sync::Mutex<BreakoutState>> = std::sync::OnceLock::new();
+
+pub fn render_breakout() -> DynamicImage {
+    const W: f32 = 480.0;
+    const H: f32 = 460.0;
+    const PADDLE_W: f32 = 64.0;
+    const PADDLE_H: f32 = 10.0;
+    const BALL_R:   f32 = 7.0;
+    const PADDLE_Y: f32 = 430.0;
+    const BRICK_W:  f32 = 44.0;
+    const BRICK_H:  f32 = 16.0;
+    const BRICK_MARGIN: f32 = 4.0;
+    const BRICKS_X0: f32 = 10.0;
+    const BRICKS_Y0: f32 = 50.0;
+    const AI_SPEED:  f32 = 5.0;
+
+    let row_colors: [Rgb<u8>; BRKOUT_ROWS] = [RED, PEACH, YELLOW, GREEN, BLUE];
+
+    let state_lock = BREAKOUT_STATE.get_or_init(|| std::sync::Mutex::new(new_breakout_state(12345)));
+    let mut state = state_lock.lock().unwrap();
+    state.tick += 1;
+
+    // ── AI: move paddle toward ball X ──────────────────────────────────────────
+    let paddle_center = state.paddle_x + PADDLE_W / 2.0;
+    let diff = state.ball_x - paddle_center;
+    state.paddle_x += diff.clamp(-AI_SPEED, AI_SPEED);
+    state.paddle_x = state.paddle_x.clamp(0.0, W - PADDLE_W);
+
+    // ── Physics ────────────────────────────────────────────────────────────────
+    state.ball_x += state.ball_vx;
+    state.ball_y += state.ball_vy;
+
+    // Wall bounces
+    if state.ball_x - BALL_R < 0.0 { state.ball_vx =  state.ball_vx.abs(); state.ball_x = BALL_R; }
+    if state.ball_x + BALL_R > W   { state.ball_vx = -state.ball_vx.abs(); state.ball_x = W - BALL_R; }
+    if state.ball_y - BALL_R < 30.0 { state.ball_vy =  state.ball_vy.abs(); state.ball_y = 30.0 + BALL_R; }
+
+    // Paddle bounce
+    if state.ball_y + BALL_R >= PADDLE_Y
+        && state.ball_x >= state.paddle_x
+        && state.ball_x <= state.paddle_x + PADDLE_W
+        && state.ball_vy > 0.0
+    {
+        let hit_pos = (state.ball_x - state.paddle_x - PADDLE_W / 2.0) / (PADDLE_W / 2.0);
+        state.ball_vy = -(state.ball_vy.abs().max(3.0));
+        state.ball_vx = hit_pos * 5.0;
+        state.ball_y = PADDLE_Y - BALL_R;
+    }
+
+    // Ball missed paddle → lose life and reset
+    if state.ball_y > H + 10.0 {
+        if state.lives > 0 { state.lives -= 1; }
+        if state.lives == 0 {
+            // Game over → restart
+            let old_score = state.score;
+            *state = new_breakout_state(state.tick);
+            state.score = old_score;
+        } else {
+            state.ball_x = 240.0;
+            state.ball_y = 380.0;
+            state.ball_vy = -3.5;
+        }
+    }
+
+    // Brick collisions
+    'outer: for row in 0..BRKOUT_ROWS {
+        for col in 0..BRKOUT_COLS {
+            if !state.bricks[row][col] { continue; }
+            let bx = BRICKS_X0 + col as f32 * (BRICK_W + BRICK_MARGIN);
+            let by = BRICKS_Y0 + row as f32 * (BRICK_H + BRICK_MARGIN);
+            if state.ball_x + BALL_R > bx
+                && state.ball_x - BALL_R < bx + BRICK_W
+                && state.ball_y + BALL_R > by
+                && state.ball_y - BALL_R < by + BRICK_H
+            {
+                state.bricks[row][col] = false;
+                state.score += 1 + (BRKOUT_ROWS - row) as u32;
+                state.ball_vy = -state.ball_vy;
+                break 'outer;
+            }
+        }
+    }
+
+    // All bricks cleared → new level
+    let any_alive = state.bricks.iter().any(|row| row.iter().any(|&b| b));
+    if !any_alive {
+        let seed = state.tick.wrapping_add(state.score as u64 * 31);
+        let old_score = state.score;
+        *state = new_breakout_state(seed);
+        state.score = old_score;
+        state.ball_vy = -(state.ball_vy.abs() + 0.3);  // slightly faster each level
+    }
+
+    let (bx, by) = (state.ball_x, state.ball_y);
+    let (px, score, lives) = (state.paddle_x, state.score, state.lives);
+    let bricks_snapshot = state.bricks.clone();
+
+    // ── Render ─────────────────────────────────────────────────────────────────
+    let mut img = RgbImage::new(480, 480);
+    for p in img.pixels_mut() { *p = BG; }
+    let font = font_bold();
+
+    // Score + lives header
+    let score_str = format!("Score: {}   ❤ {}", score, lives);
+    draw_text_mut(&mut img, TEXT, 8, 6, PxScale::from(18.0), &font, &score_str);
+
+    // Bricks
+    for row in 0..BRKOUT_ROWS {
+        let col_color = row_colors[row];
+        for col in 0..BRKOUT_COLS {
+            if !bricks_snapshot[row][col] { continue; }
+            let bxr = (BRICKS_X0 + col as f32 * (BRICK_W + BRICK_MARGIN)) as i32;
+            let byr = (BRICKS_Y0 + row as f32 * (BRICK_H + BRICK_MARGIN)) as i32;
+            let brect = imageproc::rect::Rect::at(bxr, byr)
+                .of_size(BRICK_W as u32, BRICK_H as u32);
+            imageproc::drawing::draw_filled_rect_mut(&mut img, brect, col_color);
+            // Highlight line at top of brick
+            let bright = Rgb([
+                (col_color.0[0] as u32 + 50).min(255) as u8,
+                (col_color.0[1] as u32 + 50).min(255) as u8,
+                (col_color.0[2] as u32 + 50).min(255) as u8,
+            ]);
+            imageproc::drawing::draw_hollow_rect_mut(&mut img,
+                imageproc::rect::Rect::at(bxr, byr).of_size(BRICK_W as u32, 2),
+                bright);
+        }
+    }
+
+    // Paddle
+    let paddle_rect = imageproc::rect::Rect::at(px as i32, PADDLE_Y as i32)
+        .of_size(PADDLE_W as u32, PADDLE_H as u32);
+    imageproc::drawing::draw_filled_rect_mut(&mut img, paddle_rect, BLUE);
+
+    // Ball with glow
+    for dx in -3i32..=3 {
+        for dy in -3i32..=3 {
+            if dx*dx+dy*dy <= 9 {
+                let px2 = (bx as i32 + dx).clamp(0, 479) as u32;
+                let py2 = (by as i32 + dy).clamp(0, 479) as u32;
+                img.put_pixel(px2, py2, Rgb([YELLOW.0[0]/3, YELLOW.0[1]/3, YELLOW.0[2]/3]));
+            }
+        }
+    }
+    for dx in -2i32..=2 {
+        for dy in -2i32..=2 {
+            if dx*dx+dy*dy <= 4 {
+                let px2 = (bx as i32 + dx).clamp(0, 479) as u32;
+                let py2 = (by as i32 + dy).clamp(0, 479) as u32;
+                img.put_pixel(px2, py2, YELLOW);
+            }
+        }
+    }
+
+    DynamicImage::ImageRgb8(img)
+}
+

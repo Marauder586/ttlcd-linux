@@ -4750,3 +4750,63 @@ log('ttlcd web UI connected');
   });
 })();
 
+
+// ─── Night Mode Settings ─────────────────────────────────────────────────────
+(function () {
+  const section  = document.getElementById('night-mode-section');
+  if (!section) return;
+  const enabledCb = document.getElementById('night-enabled-cb');
+  const startHour = document.getElementById('night-start-hour');
+  const endHour   = document.getElementById('night-end-hour');
+  const modeSelect= document.getElementById('night-mode-select');
+  const saveBtn   = document.getElementById('night-save-btn');
+  const statusEl  = document.getElementById('night-status');
+  const statusLine= document.getElementById('night-mode-status-line');
+
+  async function loadNightMode() {
+    try {
+      const d = await apiJson('GET', '/api/night');
+      if (enabledCb)  enabledCb.checked = d.enabled;
+      if (startHour)  startHour.value   = d.start_hour;
+      if (endHour)    endHour.value      = d.end_hour;
+      if (modeSelect) modeSelect.value  = d.mode;
+      if (statusLine) {
+        if (d.enabled && d.currently_active) {
+          statusLine.textContent = `🌙 Night mode active — showing "${d.mode}"`;
+          statusLine.style.color = 'var(--blue)';
+        } else if (d.enabled) {
+          statusLine.textContent = `Night mode enabled (${d.start_hour}:00–${d.end_hour}:00)`;
+          statusLine.style.color = 'var(--subtext0)';
+        } else {
+          statusLine.textContent = 'Night mode disabled';
+          statusLine.style.color = 'var(--overlay0)';
+        }
+      }
+    } catch { }
+  }
+
+  if (saveBtn) {
+    saveBtn.addEventListener('click', async () => {
+      saveBtn.disabled = true;
+      try {
+        await apiJson('POST', '/api/night', {
+          enabled:    enabledCb?.checked ?? false,
+          start_hour: parseInt(startHour?.value || '22', 10),
+          end_hour:   parseInt(endHour?.value   || '7',  10),
+          mode:       modeSelect?.value || 'minimal_clock',
+        });
+        if (statusEl) { statusEl.textContent = '✓ Saved'; statusEl.style.color = 'var(--green)'; }
+        await loadNightMode();
+      } catch (e) {
+        if (statusEl) { statusEl.textContent = 'Error: ' + e.message; statusEl.style.color = 'var(--red)'; }
+      } finally {
+        saveBtn.disabled = false;
+        setTimeout(() => { if (statusEl) statusEl.textContent = ''; }, 3000);
+      }
+    });
+  }
+
+  // Load on open
+  section.addEventListener('toggle', () => { if (section.open) loadNightMode(); });
+  loadNightMode();
+})();

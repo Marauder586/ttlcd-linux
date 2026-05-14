@@ -97,6 +97,7 @@ use ttlcd::{
         render_neon_clock,
         render_net_heatmap,
         render_word_clock,
+        render_breakout,
         read_docker_containers,
         read_user_sessions,
         HttpMonitorResult,
@@ -826,6 +827,7 @@ enum DisplayMode {
     NeonClock,
     NetHeatmap,
     WordClock,
+    Breakout,
     Idle,
     CustomImage,
     CustomText,
@@ -835,7 +837,7 @@ enum DisplayMode {
 impl DisplayMode {
     const ALL_NAMES: &'static [&'static str] = &[
         "clock", "big_clock", "clock_sysinfo", "sysinfo", "cpu_detail",
-        "network", "disk_usage", "process_top", "temperature", "memory_detail", "countdown", "cpu_graph", "net_graph", "recent_alerts", "process_memory", "disk_io", "calendar", "stopwatch", "metrics", "weather", "notes", "qr_code", "pomodoro", "battery", "world_clock", "ticker", "http_status", "shell_cmd", "ping_monitor", "dashboard", "log_tail", "cpu_freq", "hostname_ip", "rss_feed", "service_status", "net_connections", "uptime_fancy", "os_info", "docker_status", "logged_in_users", "load_graph", "mem_graph", "progress", "matrix_rain", "temp_graph", "disk_io_graph", "graphs_overview", "analog_clock", "ping_graph", "status_overview", "game_of_life", "led_clock", "bounce_ball", "net_speed_graph", "cpu_core_bars", "speedometer_gauge", "disk_pie", "thermal_dashboard", "plasma", "fireworks", "cpu_heatmap", "starfield", "pulse", "minimal_clock", "particle_clock", "snake", "cube_3d", "dvd_bounce", "binary_clock", "radar", "oscilloscope", "lissajous", "pong", "neon_clock", "net_heatmap", "word_clock", "idle",
+        "network", "disk_usage", "process_top", "temperature", "memory_detail", "countdown", "cpu_graph", "net_graph", "recent_alerts", "process_memory", "disk_io", "calendar", "stopwatch", "metrics", "weather", "notes", "qr_code", "pomodoro", "battery", "world_clock", "ticker", "http_status", "shell_cmd", "ping_monitor", "dashboard", "log_tail", "cpu_freq", "hostname_ip", "rss_feed", "service_status", "net_connections", "uptime_fancy", "os_info", "docker_status", "logged_in_users", "load_graph", "mem_graph", "progress", "matrix_rain", "temp_graph", "disk_io_graph", "graphs_overview", "analog_clock", "ping_graph", "status_overview", "game_of_life", "led_clock", "bounce_ball", "net_speed_graph", "cpu_core_bars", "speedometer_gauge", "disk_pie", "thermal_dashboard", "plasma", "fireworks", "cpu_heatmap", "starfield", "pulse", "minimal_clock", "particle_clock", "snake", "cube_3d", "dvd_bounce", "binary_clock", "radar", "oscilloscope", "lissajous", "pong", "neon_clock", "net_heatmap", "word_clock", "breakout", "idle",
     ];
 
     fn from_str_name(s: &str) -> Option<Self> {
@@ -913,6 +915,7 @@ impl DisplayMode {
             "neon_clock"          => Some(DisplayMode::NeonClock),
             "net_heatmap"         => Some(DisplayMode::NetHeatmap),
             "word_clock"          => Some(DisplayMode::WordClock),
+            "breakout"            => Some(DisplayMode::Breakout),
             "idle"             => Some(DisplayMode::Idle),
             "custom_text"   => Some(DisplayMode::CustomText),
             "slideshow"     => Some(DisplayMode::Slideshow),
@@ -998,6 +1001,7 @@ impl DisplayMode {
     DisplayMode::NeonClock     => "neon_clock",
     DisplayMode::NetHeatmap    => "net_heatmap",
     DisplayMode::WordClock     => "word_clock",
+    DisplayMode::Breakout      => "breakout",
             DisplayMode::Idle           => "idle",
             DisplayMode::CustomImage  => "image",
             DisplayMode::CustomText   => "custom_text",
@@ -1248,6 +1252,11 @@ struct DaemonState {
     panel_connected: Arc<Mutex<bool>>,
     /// Flash message (temporary override) set by /api/flash.
     flash_message: Arc<Mutex<Option<FlashMessageState>>>,
+    /// Night mode: switch to a dim mode between certain hours automatically.
+    night_mode_enabled:    Arc<Mutex<bool>>,
+    night_mode_start_hour: Arc<Mutex<u8>>,
+    night_mode_end_hour:   Arc<Mutex<u8>>,
+    night_mode_name:       Arc<Mutex<String>>,
 }
 
 
@@ -1717,6 +1726,10 @@ async fn run_daemon(
         screensaver_active:       Arc::new(Mutex::new(false)),
         panel_connected:          Arc::new(Mutex::new(!headless)),
         flash_message:            Arc::new(Mutex::new(None)),
+        night_mode_enabled:       Arc::new(Mutex::new(false)),
+        night_mode_start_hour:    Arc::new(Mutex::new(22)),   // 10 PM
+        night_mode_end_hour:      Arc::new(Mutex::new(7)),    // 7 AM
+        night_mode_name:          Arc::new(Mutex::new("minimal_clock".into())),
     };
 
     let panel: Arc<Mutex<Option<Panel>>> = if headless {
@@ -2174,6 +2187,9 @@ async fn run_daemon(
             .route("/api/screensaver",       web::post().to(api_set_screensaver))
             .route("/api/screensaver",       web::delete().to(api_clear_screensaver))
             .route("/api/screensaver/wake",  web::post().to(api_screensaver_wake))
+            .route("/api/night",             web::get().to(api_get_night_mode))
+            .route("/api/night",             web::post().to(api_set_night_mode))
+            .route("/api/modes/catalog",     web::get().to(api_modes_catalog))
             // API docs
             .route("/api/docs",           web::get().to(api_docs))
             // Web UI
@@ -2291,7 +2307,7 @@ fn display_loop(panel: Arc<Mutex<Option<Panel>>>, state: DaemonState) {
             }
         }
 
-        let mode       = state.mode.lock().unwrap().clone();
+        let mut mode = state.mode.lock().unwrap().clone();
         let quality    = *state.quality.lock().unwrap();
         let rotate_deg = *state.rotate_deg.lock().unwrap();
 
@@ -2321,6 +2337,24 @@ fn display_loop(panel: Arc<Mutex<Option<Panel>>>, state: DaemonState) {
                     } else {
                         // Expired — clear it
                         *state.flash_message.lock().unwrap() = None;
+                    }
+                }
+            }
+
+            // ── Night mode override ─────────────────────────────────────────────────
+            if *state.night_mode_enabled.lock().unwrap() {
+                let start_h = *state.night_mode_start_hour.lock().unwrap() as u32;
+                let end_h   = *state.night_mode_end_hour.lock().unwrap()   as u32;
+                let current_h = chrono::Local::now().hour();
+                let in_night = if start_h > end_h {
+                    current_h >= start_h || current_h < end_h
+                } else {
+                    current_h >= start_h && current_h < end_h
+                };
+                if in_night {
+                    let nm = state.night_mode_name.lock().unwrap().clone();
+                    if let Some(nm_mode) = DisplayMode::from_str_name(&nm) {
+                        mode = nm_mode;
                     }
                 }
             }
@@ -2646,6 +2680,7 @@ fn display_loop(panel: Arc<Mutex<Option<Panel>>>, state: DaemonState) {
                 DisplayMode::NeonClock     => (render_neon_clock(), 1),
                 DisplayMode::NetHeatmap    => (render_net_heatmap(), 2),
                 DisplayMode::WordClock     => (render_word_clock(), 1),
+                DisplayMode::Breakout      => (render_breakout(), 0),
                 DisplayMode::MatrixRain => (render_matrix_rain(), 0),
                 DisplayMode::Idle
                 | DisplayMode::CustomImage
@@ -4081,6 +4116,7 @@ async fn api_modes_list() -> impl Responder {
         ModeInfo { name: "neon_clock",      description: "Neon-glow clock — colour-cycling phosphor glow on H:MM:SS with seconds arc" },
         ModeInfo { name: "net_heatmap",     description: "Network heatmap — 60-sample Rx/Tx bar history coloured by throughput" },
         ModeInfo { name: "word_clock",      description: "Word clock — displays time as English words in large type" },
+        ModeInfo { name: "breakout",        description: "Self-playing Breakout/Arkanoid — AI paddle, colour-coded bricks, score and lives" },
         ModeInfo { name: "idle",           description: "Keepalive — no display update, prevents blank" },
     ];
     HttpResponse::Ok().json(modes)
@@ -6122,6 +6158,7 @@ async fn api_status_badge(state: web::Data<DaemonState>) -> impl Responder {
         "neon_clock"                           => "#cba6f7",  // mauve
         "net_heatmap"                          => "#89b4fa",  // blue
         "word_clock"                           => "#cdd6f4",  // text
+        "breakout"                             => "#f38ba8",  // red
         "status_overview"                      => "#89dceb",  // sky
         "analog_clock"                         => "#cba6f7",  // mauve
         "net_speed_graph"                      => "#a6e3a1",  // green
@@ -6345,6 +6382,102 @@ async fn api_flash_message(
         "text": body.text,
         "duration": body.duration,
         "color": body.color,
+    }))
+}
+
+
+// ─── GET/POST /api/night ─────────────────────────────────────────────────────
+
+#[derive(serde::Serialize)]
+struct NightModeStatus {
+    enabled:    bool,
+    start_hour: u8,
+    end_hour:   u8,
+    mode:       String,
+    currently_active: bool,
+}
+
+async fn api_get_night_mode(state: web::Data<DaemonState>) -> impl Responder {
+    let enabled    = *state.night_mode_enabled.lock().unwrap();
+    let start_hour = *state.night_mode_start_hour.lock().unwrap();
+    let end_hour   = *state.night_mode_end_hour.lock().unwrap();
+    let mode       = state.night_mode_name.lock().unwrap().clone();
+    let current_h  = chrono::Local::now().hour() as u8;
+    let in_night = if start_hour > end_hour {
+        current_h >= start_hour || current_h < end_hour
+    } else {
+        current_h >= start_hour && current_h < end_hour
+    };
+    HttpResponse::Ok().json(NightModeStatus {
+        enabled,
+        start_hour,
+        end_hour,
+        mode,
+        currently_active: enabled && in_night,
+    })
+}
+
+#[derive(serde::Deserialize)]
+struct SetNightModeRequest {
+    enabled:    Option<bool>,
+    start_hour: Option<u8>,
+    end_hour:   Option<u8>,
+    mode:       Option<String>,
+}
+
+async fn api_set_night_mode(
+    state: web::Data<DaemonState>,
+    body:  web::Json<SetNightModeRequest>,
+) -> impl Responder {
+    if let Some(v) = body.enabled    { *state.night_mode_enabled.lock().unwrap()    = v; }
+    if let Some(v) = body.start_hour { *state.night_mode_start_hour.lock().unwrap() = v.min(23); }
+    if let Some(v) = body.end_hour   { *state.night_mode_end_hour.lock().unwrap()   = v.min(23); }
+    if let Some(ref m) = body.mode   { *state.night_mode_name.lock().unwrap()       = m.clone(); }
+    push_history(&state, HistoryKind::System, format!("Night mode updated"));
+    HttpResponse::Ok().json(serde_json::json!({ "ok": true }))
+}
+
+
+// ─── GET /api/modes ──────────────────────────────────────────────────────────
+
+async fn api_modes_catalog(_state: web::Data<DaemonState>) -> impl Responder {
+    // Return all modes with their descriptions and categories.
+    // Data is derived from the same ModeInfo list used by /api/modes/list.
+    use DisplayMode::*;
+    let _ = Clock;  // ensure DisplayMode is in scope
+
+    fn cat(name: &str) -> &'static str {
+        match name {
+            "clock"|"big_clock"|"clock_sysinfo"|"led_clock"|"analog_clock"|"minimal_clock"|
+            "particle_clock"|"binary_clock"|"neon_clock"|"word_clock" => "clock",
+            "countdown"|"stopwatch"|"pomodoro"|"calendar" => "timer",
+            "sysinfo"|"cpu_detail"|"temperature"|"process_top"|"memory_detail"|
+            "cpu_graph"|"cpu_core_bars"|"cpu_heatmap"|"speedometer_gauge"|"thermal_dashboard"|
+            "pulse"|"radar"|"oscilloscope"|"temp_graph"|"cpu_freq"|"load_graph"|"mem_graph"|
+            "graphs_overview"|"status_overview"|"logged_in_users"|"os_info"|"hostname_ip"|
+            "uptime_fancy"|"docker_status" => "system",
+            "network"|"net_graph"|"net_speed_graph"|"net_connections"|"ping_monitor"|
+            "ping_graph"|"net_heatmap" => "network",
+            "disk_usage"|"disk_pie"|"disk_io"|"disk_io_graph" => "storage",
+            "dashboard"|"process_memory"|"recent_alerts"|"metrics" => "overview",
+            "weather"|"rss_feed"|"http_status"|"service_status"|"shell_cmd"|"log_tail"|
+            "notes"|"battery"|"world_clock" => "info",
+            "matrix_rain"|"game_of_life"|"bounce_ball"|"plasma"|"fireworks"|"starfield"|
+            "snake"|"cube_3d"|"dvd_bounce"|"lissajous"|"pong"|"breakout" => "fun",
+            _ => "other",
+        }
+    }
+
+    let modes: Vec<serde_json::Value> = DisplayMode::ALL_NAMES.iter().map(|&name| {
+        serde_json::json!({
+            "name": name,
+            "category": cat(name),
+        })
+    }).collect();
+
+    HttpResponse::Ok().json(serde_json::json!({
+        "count": modes.len(),
+        "modes": modes,
     }))
 }
 
@@ -9227,10 +9360,10 @@ async fn api_render_mode_preview(
             DisplayMode::Plasma        => render_plasma(),
             DisplayMode::Fireworks     => render_fireworks(),
             DisplayMode::CpuHeatmap    => render_cpu_heatmap(),
-            DisplayMode::Starfield     => render_starfield(),
+            DisplayMode::WordClock     => render_word_clock(),
+            DisplayMode::Breakout      => render_breakout(),
             DisplayMode::Pulse         => render_pulse(),
             DisplayMode::NetHeatmap    => render_net_heatmap(),
-            DisplayMode::WordClock     => render_word_clock(),
             DisplayMode::Pong          => render_pong(),
             DisplayMode::NeonClock     => render_neon_clock(),
             DisplayMode::Snake         => render_snake(),
