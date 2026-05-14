@@ -57,6 +57,7 @@ use ttlcd::{
         render_load_graph,
         render_mem_graph,
         render_progress,
+        render_matrix_rain,
         ProgressState,
         push_load_history,
         push_mem_history,
@@ -755,6 +756,7 @@ enum DisplayMode {
     LoadGraph,
     MemGraph,
     Progress,
+    MatrixRain,
     Idle,
     CustomImage,
     CustomText,
@@ -764,7 +766,7 @@ enum DisplayMode {
 impl DisplayMode {
     const ALL_NAMES: &'static [&'static str] = &[
         "clock", "big_clock", "clock_sysinfo", "sysinfo", "cpu_detail",
-        "network", "disk_usage", "process_top", "temperature", "memory_detail", "countdown", "cpu_graph", "net_graph", "recent_alerts", "process_memory", "disk_io", "calendar", "stopwatch", "metrics", "weather", "notes", "qr_code", "pomodoro", "battery", "world_clock", "ticker", "http_status", "shell_cmd", "ping_monitor", "dashboard", "log_tail", "cpu_freq", "hostname_ip", "rss_feed", "service_status", "net_connections", "uptime_fancy", "os_info", "docker_status", "logged_in_users", "load_graph", "mem_graph", "progress", "idle",
+        "network", "disk_usage", "process_top", "temperature", "memory_detail", "countdown", "cpu_graph", "net_graph", "recent_alerts", "process_memory", "disk_io", "calendar", "stopwatch", "metrics", "weather", "notes", "qr_code", "pomodoro", "battery", "world_clock", "ticker", "http_status", "shell_cmd", "ping_monitor", "dashboard", "log_tail", "cpu_freq", "hostname_ip", "rss_feed", "service_status", "net_connections", "uptime_fancy", "os_info", "docker_status", "logged_in_users", "load_graph", "mem_graph", "progress", "matrix_rain", "idle",
     ];
 
     fn from_str_name(s: &str) -> Option<Self> {
@@ -812,6 +814,7 @@ impl DisplayMode {
             "load_graph"       => Some(DisplayMode::LoadGraph),
             "mem_graph"        => Some(DisplayMode::MemGraph),
             "progress"         => Some(DisplayMode::Progress),
+            "matrix_rain"      => Some(DisplayMode::MatrixRain),
             "idle"             => Some(DisplayMode::Idle),
             "custom_text"   => Some(DisplayMode::CustomText),
             "slideshow"     => Some(DisplayMode::Slideshow),
@@ -864,6 +867,7 @@ impl DisplayMode {
             DisplayMode::LoadGraph      => "load_graph",
             DisplayMode::MemGraph       => "mem_graph",
             DisplayMode::Progress       => "progress",
+            DisplayMode::MatrixRain     => "matrix_rain",
             DisplayMode::Idle           => "idle",
             DisplayMode::CustomImage  => "image",
             DisplayMode::CustomText   => "custom_text",
@@ -2289,6 +2293,7 @@ fn display_loop(panel: Arc<Mutex<Option<Panel>>>, state: DaemonState) {
                     let ps = state.progress_state.lock().unwrap().clone();
                     (render_progress(&ps), 2)
                 },
+                DisplayMode::MatrixRain => (render_matrix_rain(), 0),
                 DisplayMode::Idle
                 | DisplayMode::CustomImage
                 | DisplayMode::CustomText
@@ -3597,6 +3602,7 @@ async fn api_modes_list() -> impl Responder {
         ModeInfo { name: "load_graph",     description: "Load average history graph: 1m/5m/15m load avg as a filled line chart" },
         ModeInfo { name: "mem_graph",      description: "Memory usage history graph: RAM % over time as a filled line chart" },
         ModeInfo { name: "progress",       description: "Full-screen progress bar — configure via POST /api/progress with value/total/label" },
+        ModeInfo { name: "matrix_rain",    description: "Matrix digital rain screensaver — animated falling characters" },
         ModeInfo { name: "idle",           description: "Keepalive — no display update, prevents blank" },
     ];
     HttpResponse::Ok().json(modes)
