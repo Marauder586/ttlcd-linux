@@ -31,62 +31,76 @@
                style="padding:0.3rem 0.6rem;border-radius:6px;border:1px solid var(--surface2);
                       background:var(--surface0);color:var(--text);font-size:0.85rem;width:180px">
       </div>
+      <div class="mode-categories" id="mode-categories">
+        <button class="cat-btn active" data-cat="all">All</button>
+        <button class="cat-btn" data-cat="clock">🕐 Clocks</button>
+        <button class="cat-btn" data-cat="timer">⏱ Timers</button>
+        <button class="cat-btn" data-cat="system">💻 System</button>
+        <button class="cat-btn" data-cat="network">🌐 Network</button>
+        <button class="cat-btn" data-cat="storage">💽 Storage</button>
+        <button class="cat-btn" data-cat="overview">📊 Overview</button>
+        <button class="cat-btn" data-cat="monitoring">🔍 Monitoring</button>
+        <button class="cat-btn" data-cat="info">📝 Info</button>
+        <button class="cat-btn" data-cat="notifications">🔔 Alerts</button>
+        <button class="cat-btn" data-cat="fun">🎮 Fun</button>
+        <button class="cat-btn" data-cat="other">⚙ Other</button>
+      </div>
       <div class="mode-grid" id="mode-grid">
-        <button class="mode-btn" data-mode="clock"         title="Large digital clock">🕐<span>Clock</span></button>
-        <button class="mode-btn" data-mode="big_clock"     title="Full-screen giant clock with large seconds">🕰<span>Big Clock</span></button>
-        <button class="mode-btn" data-mode="analog_clock"  title="Analog clock face with hour/minute/second hands, date and load average">⏱<span>Analog Clock</span></button>
-        <button class="mode-btn" data-mode="led_clock"     title="7-segment LED-style clock — amber digits, flashing colons, date and load avg">🔢<span>LED Clock</span></button>
-        <button class="mode-btn" data-mode="clock_sysinfo" title="Clock + quick stats">🕐📊<span>Clock+Stats</span></button>
-        <button class="mode-btn" data-mode="sysinfo"       title="CPU · RAM · temp · uptime">📊<span>Sysinfo</span></button>
-        <button class="mode-btn" data-mode="cpu_detail"    title="Per-core CPU usage">🔢<span>CPU Cores</span></button>
-        <button class="mode-btn" data-mode="network"       title="Network Rx/Tx rates">🌐<span>Network</span></button>
-        <button class="mode-btn" data-mode="disk_usage"    title="Disk partition usage">💽<span>Disks</span></button>
-        <button class="mode-btn" data-mode="process_top"   title="Top processes by CPU">📋<span>Processes</span></button>
-        <button class="mode-btn" data-mode="temperature"   title="Thermal sensor readings">🌡<span>Temps</span></button>
-        <button class="mode-btn" data-mode="memory_detail" title="Detailed RAM / swap breakdown">🧠<span>Memory</span></button>
-        <button class="mode-btn" data-mode="cpu_graph"      title="CPU usage history bar chart">📈<span>CPU Graph</span></button>
-        <button class="mode-btn" data-mode="net_graph"      title="Network Rx/Tx I/O history">📉<span>Net Graph</span></button>
-        <button class="mode-btn" data-mode="countdown"       title="Live countdown timer">⏳<span>Countdown</span></button>
-        <button class="mode-btn" data-mode="recent_alerts"  title="Last 5 notifications as panel log">📋<span>Alerts Log</span></button>
-        <button class="mode-btn" data-mode="process_memory" title="Top processes by RAM usage">🧠<span>Mem Top</span></button>
-        <button class="mode-btn" data-mode="disk_io"        title="Disk read/write throughput">💽<span>Disk I/O</span></button>
-        <button class="mode-btn" data-mode="calendar"       title="Full-month calendar with today highlighted">📅<span>Calendar</span></button>
-        <button class="mode-btn" data-mode="stopwatch"     title="Running stopwatch with lap times">⏱<span>Stopwatch</span></button>
-        <button class="mode-btn" data-mode="metrics"       title="Custom key/value dashboard">📊<span>Metrics</span></button>
-        <button class="mode-btn" data-mode="weather"       title="Weather snapshot (push via API or web UI)">🌤<span>Weather</span></button>
-        <button class="mode-btn" data-mode="notes"         title="Bulletin board — push a list of text notes">📝<span>Notes</span></button>
-        <button class="mode-btn" data-mode="qr_code"       title="Display a QR code — set via web UI or POST /api/qr">🔲<span>QR Code</span></button>
-        <button class="mode-btn" data-mode="pomodoro"      title="🍅 Pomodoro focus timer — 25m work / 5m break cycles">🍅<span>Pomodoro</span></button>
-        <button class="mode-btn" data-mode="battery"       title="Battery level and charging status (Linux laptops)">🔋<span>Battery</span></button>
-        <button class="mode-btn" data-mode="world_clock"   title="World clock — up to 4 cities with configurable UTC offsets">🌍<span>World Clock</span></button>
-        <button class="mode-btn" data-mode="ticker"        title="Scrolling text ticker — push text via POST /api/ticker or web UI">📡<span>Ticker</span></button>
-        <button class="mode-btn" data-mode="http_status"   title="HTTP health monitor — track URL status and latency">🌐<span>HTTP Monitor</span></button>
-        <button class="mode-btn" data-mode="shell_cmd"     title="Shell command output viewer — run any shell command on panel">💻<span>Shell Cmd</span></button>
-        <button class="mode-btn" data-mode="ping_monitor"  title="ICMP ping latency monitor — track host reachability and round-trip time">📶<span>Ping</span></button>
-        <button class="mode-btn" data-mode="ping_graph"    title="Ping latency history graph — overlaid line charts for up to 4 monitored hosts">📈<span>Ping Graph</span></button>
-        <button class="mode-btn" data-mode="dashboard"    title="Four-quadrant overview: clock, CPU/RAM, network, temperature">📊<span>Dashboard</span></button>
-        <button class="mode-btn" data-mode="status_overview" title="4-quadrant live status: clock, CPU/RAM, network Rx/Tx, temp/uptime">🔭<span>Status Overview</span></button>
-        <button class="mode-btn" data-mode="log_tail"       title="Live log file tail viewer — tail any file on the system">📄<span>Log Tail</span></button>
-        <button class="mode-btn" data-mode="cpu_freq"      title="Per-core CPU frequency grid — shows current clock speed for each core">⚡<span>CPU Freq</span></button>
-        <button class="mode-btn" data-mode="hostname_ip"   title="Machine identification — hostname and all network IP addresses">🖧<span>Host/IP</span></button>
-        <button class="mode-btn" data-mode="rss_feed"      title="RSS/Atom feed reader — display latest news headlines">📰<span>RSS Feed</span></button>
-        <button class="mode-btn" data-mode="service_status"   title="Systemd service status monitor — watch unit states">⚙<span>Services</span></button>
-        <button class="mode-btn" data-mode="net_connections" title="TCP/UDP socket viewer — listening ports and established connections">🔌<span>Connections</span></button>
-        <button class="mode-btn" data-mode="uptime_fancy"    title="Full-screen uptime display: boot time, load averages, memory">⏰<span>Uptime</span></button>
-        <button class="mode-btn" data-mode="os_info"          title="OS and system info: distro, kernel, CPU, hostname">💻<span>OS Info</span></button>
-        <button class="mode-btn" data-mode="docker_status"    title="Docker containers: running/stopped with image names">🐳<span>Docker</span></button>
-        <button class="mode-btn" data-mode="logged_in_users"  title="Active user sessions: who is logged in, from where, idle time">👥<span>Sessions</span></button>
-        <button class="mode-btn" data-mode="progress"           title="Full-screen progress bar — update via POST /api/progress">🔄<span>Progress</span></button>
-        <button class="mode-btn" data-mode="load_graph"        title="Load average history: 1m/5m/15m load avg as a filled line chart">📈<span>Load Graph</span></button>
-        <button class="mode-btn" data-mode="mem_graph"         title="Memory usage history: RAM % over time as a filled line chart">📊<span>Mem Graph</span></button>
-        <button class="mode-btn" data-mode="matrix_rain"      title="Matrix digital rain screensaver — animated falling green characters">🟩<span>Matrix</span></button>
-        <button class="mode-btn" data-mode="game_of_life"    title="Conway's Game of Life — animated cellular automaton, auto re-seeds when stagnant">🧫<span>Game of Life</span></button>
-        <button class="mode-btn" data-mode="temp_graph"        title="Temperature history graph — CPU/component temperature over time with thermal thresholds">🌡<span>Temp Graph</span></button>
-        <button class="mode-btn" data-mode="disk_io_graph"     title="Disk I/O history graph: total read and write throughput over time">💾<span>Disk I/O Graph</span></button>
-        <button class="mode-btn" data-mode="graphs_overview"  title="4-panel mini-charts: CPU, Load average, Memory, and Temperature at a glance">📈<span>Graphs Overview</span></button>
-        <button class="mode-btn" data-mode="net_speed_graph"   title="Network speed history: overlaid Rx/Tx line chart with per-interface breakdown">📡<span>Net Speed</span></button>
-        <button class="mode-btn" data-mode="cpu_core_bars"     title="Per-core CPU utilisation as large horizontal bars — good for high core-count systems">📊<span>CPU Bars</span></button>
-        <button class="mode-btn" data-mode="idle"              title="Keepalive — no display update">💤<span>Idle</span></button>
+        <button class="mode-btn" data-mode="clock" data-cat="clock"         title="Large digital clock">🕐<span>Clock</span></button>
+        <button class="mode-btn" data-mode="big_clock" data-cat="clock"     title="Full-screen giant clock with large seconds">🕰<span>Big Clock</span></button>
+        <button class="mode-btn" data-mode="analog_clock" data-cat="clock"  title="Analog clock face with hour/minute/second hands, date and load average">⏱<span>Analog Clock</span></button>
+        <button class="mode-btn" data-mode="led_clock" data-cat="clock"     title="7-segment LED-style clock — amber digits, flashing colons, date and load avg">🔢<span>LED Clock</span></button>
+        <button class="mode-btn" data-mode="clock_sysinfo" data-cat="clock" title="Clock + quick stats">🕐📊<span>Clock+Stats</span></button>
+        <button class="mode-btn" data-mode="sysinfo" data-cat="system"       title="CPU · RAM · temp · uptime">📊<span>Sysinfo</span></button>
+        <button class="mode-btn" data-mode="cpu_detail" data-cat="system"    title="Per-core CPU usage">🔢<span>CPU Cores</span></button>
+        <button class="mode-btn" data-mode="network" data-cat="network"       title="Network Rx/Tx rates">🌐<span>Network</span></button>
+        <button class="mode-btn" data-mode="disk_usage" data-cat="storage"    title="Disk partition usage">💽<span>Disks</span></button>
+        <button class="mode-btn" data-mode="process_top" data-cat="system"   title="Top processes by CPU">📋<span>Processes</span></button>
+        <button class="mode-btn" data-mode="temperature" data-cat="system"   title="Thermal sensor readings">🌡<span>Temps</span></button>
+        <button class="mode-btn" data-mode="memory_detail" data-cat="system" title="Detailed RAM / swap breakdown">🧠<span>Memory</span></button>
+        <button class="mode-btn" data-mode="cpu_graph" data-cat="system"      title="CPU usage history bar chart">📈<span>CPU Graph</span></button>
+        <button class="mode-btn" data-mode="net_graph" data-cat="network"      title="Network Rx/Tx I/O history">📉<span>Net Graph</span></button>
+        <button class="mode-btn" data-mode="countdown" data-cat="timer"       title="Live countdown timer">⏳<span>Countdown</span></button>
+        <button class="mode-btn" data-mode="recent_alerts" data-cat="notifications"  title="Last 5 notifications as panel log">📋<span>Alerts Log</span></button>
+        <button class="mode-btn" data-mode="process_memory" data-cat="system" title="Top processes by RAM usage">🧠<span>Mem Top</span></button>
+        <button class="mode-btn" data-mode="disk_io" data-cat="storage"        title="Disk read/write throughput">💽<span>Disk I/O</span></button>
+        <button class="mode-btn" data-mode="calendar" data-cat="clock"       title="Full-month calendar with today highlighted">📅<span>Calendar</span></button>
+        <button class="mode-btn" data-mode="stopwatch" data-cat="timer"     title="Running stopwatch with lap times">⏱<span>Stopwatch</span></button>
+        <button class="mode-btn" data-mode="metrics" data-cat="info"       title="Custom key/value dashboard">📊<span>Metrics</span></button>
+        <button class="mode-btn" data-mode="weather" data-cat="info"       title="Weather snapshot (push via API or web UI)">🌤<span>Weather</span></button>
+        <button class="mode-btn" data-mode="notes" data-cat="info"         title="Bulletin board — push a list of text notes">📝<span>Notes</span></button>
+        <button class="mode-btn" data-mode="qr_code" data-cat="info"       title="Display a QR code — set via web UI or POST /api/qr">🔲<span>QR Code</span></button>
+        <button class="mode-btn" data-mode="pomodoro" data-cat="timer"      title="🍅 Pomodoro focus timer — 25m work / 5m break cycles">🍅<span>Pomodoro</span></button>
+        <button class="mode-btn" data-mode="battery" data-cat="system"       title="Battery level and charging status (Linux laptops)">🔋<span>Battery</span></button>
+        <button class="mode-btn" data-mode="world_clock" data-cat="clock"   title="World clock — up to 4 cities with configurable UTC offsets">🌍<span>World Clock</span></button>
+        <button class="mode-btn" data-mode="ticker" data-cat="info"        title="Scrolling text ticker — push text via POST /api/ticker or web UI">📡<span>Ticker</span></button>
+        <button class="mode-btn" data-mode="http_status" data-cat="monitoring"   title="HTTP health monitor — track URL status and latency">🌐<span>HTTP Monitor</span></button>
+        <button class="mode-btn" data-mode="shell_cmd" data-cat="monitoring"     title="Shell command output viewer — run any shell command on panel">💻<span>Shell Cmd</span></button>
+        <button class="mode-btn" data-mode="ping_monitor" data-cat="network"  title="ICMP ping latency monitor — track host reachability and round-trip time">📶<span>Ping</span></button>
+        <button class="mode-btn" data-mode="ping_graph" data-cat="network"    title="Ping latency history graph — overlaid line charts for up to 4 monitored hosts">📈<span>Ping Graph</span></button>
+        <button class="mode-btn" data-mode="dashboard" data-cat="overview"    title="Four-quadrant overview: clock, CPU/RAM, network, temperature">📊<span>Dashboard</span></button>
+        <button class="mode-btn" data-mode="status_overview" data-cat="overview" title="4-quadrant live status: clock, CPU/RAM, network Rx/Tx, temp/uptime">🔭<span>Status Overview</span></button>
+        <button class="mode-btn" data-mode="log_tail" data-cat="monitoring"       title="Live log file tail viewer — tail any file on the system">📄<span>Log Tail</span></button>
+        <button class="mode-btn" data-mode="cpu_freq" data-cat="system"      title="Per-core CPU frequency grid — shows current clock speed for each core">⚡<span>CPU Freq</span></button>
+        <button class="mode-btn" data-mode="hostname_ip" data-cat="system"   title="Machine identification — hostname and all network IP addresses">🖧<span>Host/IP</span></button>
+        <button class="mode-btn" data-mode="rss_feed" data-cat="info"      title="RSS/Atom feed reader — display latest news headlines">📰<span>RSS Feed</span></button>
+        <button class="mode-btn" data-mode="service_status" data-cat="monitoring"   title="Systemd service status monitor — watch unit states">⚙<span>Services</span></button>
+        <button class="mode-btn" data-mode="net_connections" data-cat="network" title="TCP/UDP socket viewer — listening ports and established connections">🔌<span>Connections</span></button>
+        <button class="mode-btn" data-mode="uptime_fancy" data-cat="system"    title="Full-screen uptime display: boot time, load averages, memory">⏰<span>Uptime</span></button>
+        <button class="mode-btn" data-mode="os_info" data-cat="system"          title="OS and system info: distro, kernel, CPU, hostname">💻<span>OS Info</span></button>
+        <button class="mode-btn" data-mode="docker_status" data-cat="monitoring"    title="Docker containers: running/stopped with image names">🐳<span>Docker</span></button>
+        <button class="mode-btn" data-mode="logged_in_users" data-cat="monitoring"  title="Active user sessions: who is logged in, from where, idle time">👥<span>Sessions</span></button>
+        <button class="mode-btn" data-mode="progress" data-cat="notifications"           title="Full-screen progress bar — update via POST /api/progress">🔄<span>Progress</span></button>
+        <button class="mode-btn" data-mode="load_graph" data-cat="system"        title="Load average history: 1m/5m/15m load avg as a filled line chart">📈<span>Load Graph</span></button>
+        <button class="mode-btn" data-mode="mem_graph" data-cat="system"         title="Memory usage history: RAM % over time as a filled line chart">📊<span>Mem Graph</span></button>
+        <button class="mode-btn" data-mode="matrix_rain" data-cat="fun"      title="Matrix digital rain screensaver — animated falling green characters">🟩<span>Matrix</span></button>
+        <button class="mode-btn" data-mode="game_of_life" data-cat="fun"    title="Conway's Game of Life — animated cellular automaton, auto re-seeds when stagnant">🧫<span>Game of Life</span></button>
+        <button class="mode-btn" data-mode="temp_graph" data-cat="system"        title="Temperature history graph — CPU/component temperature over time with thermal thresholds">🌡<span>Temp Graph</span></button>
+        <button class="mode-btn" data-mode="disk_io_graph" data-cat="storage"     title="Disk I/O history graph: total read and write throughput over time">💾<span>Disk I/O Graph</span></button>
+        <button class="mode-btn" data-mode="graphs_overview" data-cat="overview"  title="4-panel mini-charts: CPU, Load average, Memory, and Temperature at a glance">📈<span>Graphs Overview</span></button>
+        <button class="mode-btn" data-mode="net_speed_graph" data-cat="network"   title="Network speed history: overlaid Rx/Tx line chart with per-interface breakdown">📡<span>Net Speed</span></button>
+        <button class="mode-btn" data-mode="cpu_core_bars" data-cat="system"     title="Per-core CPU utilisation as large horizontal bars — good for high core-count systems">📊<span>CPU Bars</span></button>
+        <button class="mode-btn" data-mode="idle" data-cat="other"              title="Keepalive — no display update">💤<span>Idle</span></button>
       </div>
       <p id="mode-filter-count" style="font-size:0.78rem;color:var(--overlay0);margin:0.3rem 0 0"></p>
     </section>

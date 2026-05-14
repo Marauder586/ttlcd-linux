@@ -1519,3 +1519,47 @@ button.btn-danger:hover   { opacity: 0.85; }
   color: var(--red);
   background: color-mix(in srgb, var(--red) 10%, transparent);
 }
+
+/* ─── Mode category filter bar ─────────────────────────────────────────────── */
+.mode-categories {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  margin-bottom: 0.6rem;
+  padding-bottom: 0.5rem;
+  border-bottom: 1px solid var(--surface2);
+}
+
+.cat-btn {
+  padding: 0.2rem 0.55rem;
+  border-radius: 12px;
+  border: 1px solid var(--surface2);
+  background: var(--surface0);
+  color: var(--subtext0);
+  cursor: pointer;
+  font-size: 0.75rem;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+
+.cat-btn:hover {
+  background: var(--surface1);
+  color: var(--text);
+}
+
+.cat-btn.active {
+  background: color-mix(in srgb, var(--blue) 20%, var(--surface0));
+  border-color: var(--blue);
+  color: var(--blue);
+  font-weight: 600;
+}
+
+.cat-btn[data-cat="all"].active {
+  background: color-mix(in srgb, var(--overlay0) 20%, var(--surface0));
+  border-color: var(--overlay0);
+  color: var(--text);
+}
+
+/* Add data-category attribute to mode buttons */
+.mode-btn.hidden-by-cat {
+  display: none !important;
+}

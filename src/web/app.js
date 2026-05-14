@@ -3974,6 +3974,57 @@ async function fetchScreensaverStatus() {
   renderRecentBand();
 })();
 
+
+
+// ─── Mode category filter ─────────────────────────────────────────────────────
+(function initCategoryFilter() {
+  const catBtns  = document.querySelectorAll('.cat-btn[data-cat]');
+  const modeBtns = document.querySelectorAll('.mode-btn[data-mode]');
+  if (!catBtns.length) return;
+
+  let activeCat = localStorage.getItem('ttlcd-active-cat') || 'all';
+
+  function applyFilter() {
+    modeBtns.forEach(btn => {
+      const cat = btn.dataset.cat || '';
+      if (activeCat === 'all' || cat === activeCat) {
+        btn.classList.remove('hidden-by-cat');
+      } else {
+        btn.classList.add('hidden-by-cat');
+      }
+    });
+
+    catBtns.forEach(b => {
+      b.classList.toggle('active', b.dataset.cat === activeCat);
+    });
+
+    // Update count (combined with search filter count if applicable)
+    const filterCount = document.getElementById('mode-filter-count');
+    const visible = [...modeBtns].filter(b =>
+      !b.classList.contains('hidden-by-cat') &&
+      !b.classList.contains('hidden-by-filter')
+    ).length;
+    if (filterCount) {
+      if (activeCat !== 'all') {
+        filterCount.textContent = `Showing ${visible} mode${visible !== 1 ? 's' : ''} in ${activeCat}`;
+      } else if (filterCount.textContent.startsWith('Showing')) {
+        filterCount.textContent = '';
+      }
+    }
+
+    try { localStorage.setItem('ttlcd-active-cat', activeCat); } catch (_) {}
+  }
+
+  catBtns.forEach(btn => {
+    btn.addEventListener('click', () => {
+      activeCat = btn.dataset.cat;
+      applyFilter();
+    });
+  });
+
+  applyFilter();
+})();
+
 // ─── Boot ─────────────────────────────────────────────────────────────────────
 initSSE();
 startPolling();
