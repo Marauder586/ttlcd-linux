@@ -51,6 +51,7 @@ use ttlcd::{
         render_service_status,
         render_net_connections,
         render_uptime,
+        render_os_info,
         HttpMonitorResult,
         PingResult,
         Metric,
@@ -738,6 +739,7 @@ enum DisplayMode {
     ServiceStatus,
     NetConnections,
     UptimeFancy,
+    OsInfo,
     Idle,
     CustomImage,
     CustomText,
@@ -747,7 +749,7 @@ enum DisplayMode {
 impl DisplayMode {
     const ALL_NAMES: &'static [&'static str] = &[
         "clock", "big_clock", "clock_sysinfo", "sysinfo", "cpu_detail",
-        "network", "disk_usage", "process_top", "temperature", "memory_detail", "countdown", "cpu_graph", "net_graph", "recent_alerts", "process_memory", "disk_io", "calendar", "stopwatch", "metrics", "weather", "notes", "qr_code", "pomodoro", "battery", "world_clock", "ticker", "http_status", "shell_cmd", "ping_monitor", "dashboard", "log_tail", "cpu_freq", "hostname_ip", "rss_feed", "service_status", "net_connections", "uptime_fancy", "idle",
+        "network", "disk_usage", "process_top", "temperature", "memory_detail", "countdown", "cpu_graph", "net_graph", "recent_alerts", "process_memory", "disk_io", "calendar", "stopwatch", "metrics", "weather", "notes", "qr_code", "pomodoro", "battery", "world_clock", "ticker", "http_status", "shell_cmd", "ping_monitor", "dashboard", "log_tail", "cpu_freq", "hostname_ip", "rss_feed", "service_status", "net_connections", "uptime_fancy", "os_info", "idle",
     ];
 
     fn from_str_name(s: &str) -> Option<Self> {
@@ -789,6 +791,7 @@ impl DisplayMode {
             "service_status"   => Some(DisplayMode::ServiceStatus),
             "net_connections"  => Some(DisplayMode::NetConnections),
             "uptime_fancy"     => Some(DisplayMode::UptimeFancy),
+            "os_info"          => Some(DisplayMode::OsInfo),
             "idle"             => Some(DisplayMode::Idle),
             "custom_text"   => Some(DisplayMode::CustomText),
             "slideshow"     => Some(DisplayMode::Slideshow),
@@ -835,6 +838,7 @@ impl DisplayMode {
             DisplayMode::ServiceStatus  => "service_status",
             DisplayMode::NetConnections => "net_connections",
             DisplayMode::UptimeFancy    => "uptime_fancy",
+            DisplayMode::OsInfo         => "os_info",
             DisplayMode::Idle           => "idle",
             DisplayMode::CustomImage  => "image",
             DisplayMode::CustomText   => "custom_text",
@@ -1793,6 +1797,7 @@ async fn run_daemon(
             .route("/api/profiles/{name}",       web::delete().to(api_profiles_delete))
             // Comprehensive system snapshot
             .route("/api/sys/snapshot",          web::get().to(api_sys_snapshot))
+            .route("/api/sys/os",                web::get().to(api_sys_os))
             // Weather display
             .route("/api/weather",        web::get().to(api_get_weather))
             .route("/api/weather",        web::post().to(api_update_weather))
@@ -2207,6 +2212,7 @@ fn display_loop(panel: Arc<Mutex<Option<Panel>>>, state: DaemonState) {
                 },
                 DisplayMode::NetConnections => (render_net_connections(), 5),
                 DisplayMode::UptimeFancy    => (render_uptime(), 2),
+                DisplayMode::OsInfo         => (render_os_info(), 10),
                 DisplayMode::Idle
                 | DisplayMode::CustomImage
                 | DisplayMode::CustomText
@@ -5935,6 +5941,83 @@ async fn api_profiles_delete(
     } else {
         HttpResponse::NotFound().body(format!("profile '{}' not found", name))
     }
+}
+
+
+// ─── OS Info API ──────────────────────────────────────────────────────────────
+
+/// GET /api/sys/os — return OS, kernel, CPU, and architecture information.
+async fn api_sys_os() -> impl Responder {
+    // OS release info
+    let (os_name, os_version, os_pretty) = std::fs::read_to_string("/etc/os-release")
+        .map(|text| {
+            let mut name    = String::new();
+            let mut version = String::new();
+            let mut pretty  = String::new();
+            for line in text.lines() {
+                if let Some(v) = line.strip_prefix("NAME=")         { name    = v.trim_matches('"').to_string(); }
+                if let Some(v) = line.strip_prefix("VERSION_ID=")   { version = v.trim_matches('"').to_string(); }
+                if let Some(v) = line.strip_prefix("PRETTY_NAME=")  { pretty  = v.trim_matches('"').to_string(); }
+            }
+            (name, version, pretty)
+        })
+        .unwrap_or_default();
+
+    let kernel = std::fs::read_to_string("/proc/sys/kernel/osrelease")
+        .unwrap_or_else(|_| "unknown".to_string())
+        .trim()
+        .to_string();
+
+    let arch = std::process::Command::new("uname")
+        .arg("-m")
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .unwrap_or_else(|_| "x86_64".to_string());
+
+    let hostname = std::fs::read_to_string("/proc/sys/kernel/hostname")
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+
+    let cpu_model = std::fs::read_to_string("/proc/cpuinfo")
+        .unwrap_or_default()
+        .lines()
+        .find_map(|l| l.strip_prefix("model name").map(|r| {
+                r.trim_start_matches(|c: char| c == '\t' || c == ':' || c == ' ').to_string()
+            }))
+        .unwrap_or_else(|| "Unknown".to_string());
+
+    let cpu_cores = std::fs::read_to_string("/proc/cpuinfo")
+        .unwrap_or_default()
+        .lines()
+        .filter(|l| l.starts_with("processor"))
+        .count();
+
+    let mem_total_kb: u64 = std::fs::read_to_string("/proc/meminfo")
+        .unwrap_or_default()
+        .lines()
+        .find_map(|l| l.strip_prefix("MemTotal:").and_then(|r|
+            r.split_whitespace().next().and_then(|v| v.parse().ok())))
+        .unwrap_or(0);
+
+    let uptime_secs = std::fs::read_to_string("/proc/uptime")
+        .ok()
+        .and_then(|s| s.split_whitespace().next().and_then(|v| v.parse::<f64>().ok()))
+        .unwrap_or(0.0) as u64;
+
+    HttpResponse::Ok().json(serde_json::json!({
+        "hostname":      hostname,
+        "os_name":       os_name,
+        "os_version":    os_version,
+        "os_pretty":     os_pretty,
+        "kernel":        kernel,
+        "arch":          arch,
+        "cpu_model":     cpu_model,
+        "cpu_cores":     cpu_cores,
+        "mem_total_mb":  mem_total_kb / 1024,
+        "uptime_secs":   uptime_secs,
+        "daemon_version": env!("CARGO_PKG_VERSION"),
+    }))
 }
 
 // ─── Comprehensive system snapshot ───────────────────────────────────────────

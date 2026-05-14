@@ -3257,6 +3257,9 @@ document.addEventListener('keydown', e => {
     case 'C':  // Shift+C = Net Connections
       api('POST', '/api/mode', { mode: 'net_connections' }).then(() => fetchStatus()).catch(() => {});
       break;
+    case 'O':  // Shift+O = OS Info
+      api('POST', '/api/mode', { mode: 'os_info' }).then(() => fetchStatus()).catch(() => {});
+      break;
     case 'Escape':
       if (returnBtn.style.display !== 'none') returnBtn.click();
       break;

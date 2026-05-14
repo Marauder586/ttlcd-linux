@@ -1489,6 +1489,12 @@ line 8";
         assert_panel_size(&img);
     }
 
+    #[test]
+    fn test_os_info_size() {
+        let img = render_os_info();
+        assert_panel_size(&img);
+    }
+
 }
 
 /// Thermal sensor detail — all available temperature components with color-coded bars.
@@ -4805,6 +4811,130 @@ pub fn render_uptime() -> DynamicImage {
     let hostname = hostname.trim();
     draw_divider(&mut img, 452);
     draw_centered(&mut img, &mono, PxScale::from(15.0), 456, SUBTEXT, hostname);
+
+    DynamicImage::ImageRgb8(img)
+}
+
+// ─── OS / System info display ─────────────────────────────────────────────────
+
+/// Render a comprehensive OS and system information display.
+pub fn render_os_info() -> DynamicImage {
+    let mut img = blank();
+    let bold = font_bold();
+    let mono = font_mono();
+
+    // --- Gather info ---
+    // OS name
+    let os_pretty = std::fs::read_to_string("/etc/os-release")
+        .unwrap_or_default()
+        .lines()
+        .find_map(|l| l.strip_prefix("PRETTY_NAME=").map(|v| v.trim_matches('"').to_string()))
+        .unwrap_or_else(|| "Linux".to_string());
+
+    // Kernel version
+    let kernel = std::fs::read_to_string("/proc/sys/kernel/osrelease")
+        .unwrap_or_else(|_| "unknown".to_string());
+    let kernel = kernel.trim().to_string();
+
+    // Architecture
+    let arch = std::fs::read_to_string("/proc/sys/kernel/arch")
+        .or_else(|_| std::process::Command::new("uname").arg("-m").output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e)))
+        .unwrap_or_else(|_| "x86_64".to_string());
+    let arch = arch.trim().to_string();
+
+    // Hostname
+    let hostname = std::fs::read_to_string("/proc/sys/kernel/hostname")
+        .unwrap_or_default();
+    let hostname = hostname.trim().to_string();
+
+    // CPU model
+    let cpu_model = std::fs::read_to_string("/proc/cpuinfo")
+        .unwrap_or_default()
+        .lines()
+        .find_map(|l| l.strip_prefix("model name").map(|r| r.trim_start_matches(|c: char| c == '\t' || c == ':' || c == ' ').to_string()))
+        .unwrap_or_else(|| "Unknown CPU".to_string());
+    // Shorten CPU name
+    let cpu_model = cpu_model
+        .replace("(R)", "")
+        .replace("(TM)", "")
+        .replace("  ", " ");
+    let cpu_short: String = cpu_model.chars().take(32).collect();
+
+    // CPU core count
+    let cpu_cores = std::fs::read_to_string("/proc/cpuinfo")
+        .unwrap_or_default()
+        .lines()
+        .filter(|l| l.starts_with("processor"))
+        .count();
+
+    // Memory total
+    let mem_total_kb: u64 = std::fs::read_to_string("/proc/meminfo")
+        .unwrap_or_default()
+        .lines()
+        .find_map(|l| l.strip_prefix("MemTotal:").and_then(|r| r.split_whitespace().next().and_then(|v| v.parse().ok())))
+        .unwrap_or(0);
+
+    // Uptime
+    let uptime_secs = std::fs::read_to_string("/proc/uptime")
+        .ok()
+        .and_then(|s| s.split_whitespace().next().and_then(|v| v.parse::<f64>().ok()))
+        .unwrap_or(0.0) as u64;
+    let up_days  = uptime_secs / 86400;
+    let up_hours = (uptime_secs % 86400) / 3600;
+    let uptime_str = if up_days > 0 {
+        format!("{}d {}h up", up_days, up_hours)
+    } else {
+        let up_mins = (uptime_secs % 3600) / 60;
+        format!("{}h {}m up", up_hours, up_mins)
+    };
+
+    // --- Header ---
+    draw_filled_rect_mut(&mut img, Rect::at(0, 0).of_size(480, 52), SURFACE0);
+    draw_centered(&mut img, &bold, PxScale::from(22.0), 6, MAUVE, "SYSTEM INFO");
+    draw_centered(&mut img, &mono, PxScale::from(13.0), 32, OVERLAY0,
+        &Local::now().format("%Y-%m-%d %H:%M:%S").to_string());
+
+    // --- OS Name (big) ---
+    let os_scale = if os_pretty.len() <= 22 { 28.0f32 } else if os_pretty.len() <= 30 { 22.0 } else { 18.0 };
+    draw_centered(&mut img, &bold, PxScale::from(os_scale), 60, TEXT, &os_pretty);
+
+    draw_divider(&mut img, 98);
+
+    // --- Info rows ---
+    let row_h = 34i32;
+    let mut y = 104i32;
+    let label_scale = PxScale::from(14.0);
+    let value_scale = PxScale::from(17.0);
+
+    let rows: &[(&str, String, Rgb<u8>)] = &[
+        ("Hostname",  hostname.clone(),                  TEAL),
+        ("Kernel",    format!("{} ({})", kernel, arch),  BLUE),
+        ("CPU",       cpu_short.clone(),                  SUBTEXT),
+        ("Cores",     format!("{} logical cores", cpu_cores), YELLOW),
+        ("Memory",    format!("{:.1} GB RAM", mem_total_kb as f64 / 1_048_576.0), GREEN),
+        ("Uptime",    uptime_str,                         PEACH),
+    ];
+
+    for (label, value, color) in rows {
+        // Label
+        draw_text_mut(&mut img, OVERLAY0, 12, y + 8, label_scale, &mono, label);
+        // Value (right-aligned or after a separator)
+        let val_short: String = value.chars().take(30).collect();
+        let vw = text_width(&mono, value_scale, &val_short);
+        draw_text_mut(&mut img, *color, 480 - vw - 12, y + 5, value_scale, &bold, &val_short);
+        // Light divider
+        if y + row_h < 440 {
+            draw_filled_rect_mut(&mut img, Rect::at(0, y + row_h - 1).of_size(480, 1), SURFACE0);
+        }
+        y += row_h;
+    }
+
+    // --- Footer ---
+    draw_divider(&mut img, 452);
+    draw_centered(&mut img, &mono, PxScale::from(13.0), 457, OVERLAY0,
+        &format!("ttlcd v{}", env!("CARGO_PKG_VERSION")));
 
     DynamicImage::ImageRgb8(img)
 }
