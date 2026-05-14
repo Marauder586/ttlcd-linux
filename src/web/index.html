@@ -78,6 +78,7 @@
         <button class="mode-btn" data-mode="matrix_rain"      title="Matrix digital rain screensaver — animated falling green characters">🟩<span>Matrix</span></button>
         <button class="mode-btn" data-mode="temp_graph"        title="Temperature history graph — CPU/component temperature over time with thermal thresholds">🌡<span>Temp Graph</span></button>
         <button class="mode-btn" data-mode="disk_io_graph"     title="Disk I/O history graph: total read and write throughput over time">💾<span>Disk I/O Graph</span></button>
+        <button class="mode-btn" data-mode="graphs_overview"  title="4-panel mini-charts: CPU, Load average, Memory, and Temperature at a glance">📈<span>Graphs Overview</span></button>
         <button class="mode-btn" data-mode="idle"              title="Keepalive — no display update">💤<span>Idle</span></button>
       </div>
       <p id="mode-filter-count" style="font-size:0.78rem;color:var(--overlay0);margin:0.3rem 0 0"></p>
@@ -591,6 +592,33 @@
         <tbody id="sessions-tbody"></tbody>
       </table>
     </section>
+
+    <!-- ── Alert Thresholds ──────────────────────────────────────────── -->
+    <details class="card" id="thresholds-section">
+      <summary>🔔 Alert Thresholds</summary>
+      <p class="card-hint">Automatically fire alerts when CPU or temperature exceeds these limits. Set to 0 to disable. Alerts are shown on the panel and forwarded to ntfy.sh if configured.</p>
+      <div id="threshold-status-line" class="hint-inline" style="display:block;margin-bottom:0.5rem"></div>
+      <div class="form-row two-col">
+        <div class="form-group">
+          <label for="thresh-cpu">CPU alert threshold (%) <span class="hint-inline">0 = disabled</span></label>
+          <input type="number" id="thresh-cpu" min="0" max="100" value="95" step="1">
+        </div>
+        <div class="form-group">
+          <label for="thresh-temp">Temp alert threshold (°C) <span class="hint-inline">0 = disabled</span></label>
+          <input type="number" id="thresh-temp" min="0" max="120" value="85" step="1">
+        </div>
+      </div>
+      <div class="form-row two-col">
+        <div class="form-group">
+          <label for="thresh-cooldown">Cooldown between alerts (s)</label>
+          <input type="number" id="thresh-cooldown" min="10" max="3600" value="120">
+        </div>
+      </div>
+      <div class="form-actions">
+        <button id="thresh-save-btn" class="primary">💾 Save Thresholds</button>
+        <span id="thresh-action-status"></span>
+      </div>
+    </details>
 
     <!-- ── ntfy.sh Push Notifications ───────────────────────────────────── -->
     <details class="card" id="ntfy-section">

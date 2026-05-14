@@ -3737,6 +3737,56 @@ async function fetchAuthStatus() {
   });
 })();
 
+
+// ─── Alert thresholds ─────────────────────────────────────────────────────────
+
+async function fetchThresholds() {
+  try {
+    const data = await api('GET', '/api/alerts/thresholds');
+    const line  = document.getElementById('threshold-status-line');
+    if (line) {
+      const parts = [];
+      if (data.cpu_pct > 0) parts.push(`CPU > ${data.cpu_pct}%`);
+      if (data.temp_c > 0)  parts.push(`Temp > ${data.temp_c}°C`);
+      if (parts.length > 0) {
+        line.innerHTML = `⚠ Active thresholds: ${parts.join(', ')} — cooldown ${data.cooldown_secs}s`;
+        line.style.color = 'var(--yellow)';
+      } else {
+        line.innerHTML = '✓ No thresholds configured (all disabled)';
+        line.style.color = 'var(--overlay0)';
+      }
+    }
+    // Populate form fields
+    const cpuEl  = document.getElementById('thresh-cpu');
+    const tempEl = document.getElementById('thresh-temp');
+    const cdEl   = document.getElementById('thresh-cooldown');
+    if (cpuEl  && data.cpu_pct   !== undefined) cpuEl.value  = data.cpu_pct;
+    if (tempEl && data.temp_c    !== undefined) tempEl.value = data.temp_c;
+    if (cdEl   && data.cooldown_secs !== undefined) cdEl.value = data.cooldown_secs;
+  } catch (_) {}
+}
+
+(function injectThresholdsSection() {
+  const saveBtn = document.getElementById('thresh-save-btn');
+  const statusEl = document.getElementById('thresh-action-status');
+  if (!saveBtn) return;
+
+  saveBtn.addEventListener('click', async () => {
+    const cpu_pct      = parseFloat(document.getElementById('thresh-cpu')?.value || '0');
+    const temp_c       = parseFloat(document.getElementById('thresh-temp')?.value || '0');
+    const cooldown_secs = parseInt(document.getElementById('thresh-cooldown')?.value || '120', 10);
+    try {
+      await api('POST', '/api/alerts/thresholds', { cpu_pct, temp_c, cooldown_secs });
+      if (statusEl) statusEl.textContent = 'Thresholds saved';
+      await fetchThresholds();
+    } catch (e) {
+      if (statusEl) statusEl.textContent = `Error: ${e.message}`;
+    }
+  });
+
+  fetchThresholds();
+})();
+
 // ─── Screensaver / idle timeout section ──────────────────────────────────────
 
 async function fetchScreensaverStatus() {

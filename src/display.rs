@@ -5997,6 +5997,175 @@ pub fn render_matrix_rain() -> DynamicImage {
 
 
 
+
+// ─── Graphs overview (4-panel mini-charts) ───────────────────────────────────
+
+/// Render a 4-panel mini-charts overview (480×480).
+///
+/// Shows CPU usage, load average, memory usage, and temperature as four
+/// equal-sized line charts arranged in a 2×2 grid. This is the best
+/// "at a glance" view for system health monitoring.
+pub fn render_graphs_overview() -> DynamicImage {
+    use sysinfo::{Components, CpuRefreshKind, RefreshKind, System};
+
+    let mut img  = blank();
+    let bold = font_bold();
+    let mono = font_mono();
+
+    // Gather current values
+    let load = System::load_average();
+    let cpu_count = {
+        let s = System::new_with_specifics(RefreshKind::nothing().with_cpu(CpuRefreshKind::nothing()));
+        s.cpus().len().max(1)
+    };
+    let mut sys = System::new();
+    sys.refresh_memory();
+    let used  = sys.used_memory();
+    let total = sys.total_memory();
+    let mem_pct = if total > 0 { used as f32 / total as f32 * 100.0 } else { 0.0 };
+
+    let comps = Components::new_with_refreshed_list();
+    let hot_temp = comps.iter()
+        .filter_map(|c| c.temperature())
+        .filter(|t| t.is_finite() && *t > 0.0)
+        .fold(0.0_f32, f32::max);
+
+    // Collect histories
+    let cpu_hist:  Vec<f32> = get_cpu_history();
+    let load_hist: Vec<f32> = load_graph_data().iter().cloned().collect();
+    let mem_hist:  Vec<f32> = mem_graph_data().iter().cloned().collect();
+    let temp_hist: Vec<f32> = temp_graph_data().iter().cloned().collect();
+    let diog_r_hist: Vec<f32> = disk_read_data().iter().cloned().collect();
+
+    let now = Local::now();
+    let ts  = now.format("%H:%M:%S").to_string();
+
+    // Draw a subtle dividing cross
+    let mid = 240i32;
+    for x in 0..480u32 {
+        img.put_pixel(x, mid as u32, SURFACE0);
+    }
+    for y in 0..480u32 {
+        img.put_pixel(mid as u32, y, SURFACE0);
+    }
+
+    // ── Helper: draw one panel ────────────────────────────────────────────────
+    let draw_panel = |img: &mut image::RgbImage,
+                      ox: i32, oy: i32, pw: i32, ph: i32,
+                      title: &str,
+                      value_str: &str,
+                      history: &[f32],
+                      max_val: f32,
+                      line_color: Rgb<u8>,
+                      fill_color: Rgb<u8>,
+                      font_b: &ab_glyph::FontRef<'_>,
+                      font_m: &ab_glyph::FontRef<'_>| {
+        // Panel background (slightly lighter than base)
+        let panel_bg = Rgb([24u8, 24, 37]); // Catppuccin Mantle
+        draw_filled_rect_mut(img, Rect::at(ox + 2, oy + 2).of_size((pw - 4) as u32, (ph - 4) as u32), panel_bg);
+
+        // Title (small, top-left)
+        draw_text_mut(img, OVERLAY0, ox + 6, oy + 5, PxScale::from(13.0), font_b, title);
+
+        // Current value (top-right)
+        let vw = text_width(font_m, PxScale::from(16.0), value_str);
+        draw_text_mut(img, line_color, ox + pw - 8 - vw, oy + 5, PxScale::from(16.0), font_m, value_str);
+
+        // Mini chart (uses most of the panel height)
+        let cx = ox + 2;
+        let cy = oy + 26;
+        let cw = pw - 4;
+        let ch = ph - 32;
+        draw_line_chart(img, history, max_val, cx, cy, cw, ch, line_color, fill_color);
+
+        // Bottom border
+        draw_filled_rect_mut(img, Rect::at(cx, cy + ch).of_size(cw as u32, 1), SURFACE0);
+    };
+
+    // ── CPU panel (top-left) ──────────────────────────────────────────────────
+    let cpu_cur = cpu_hist.last().cloned().unwrap_or(0.0);
+    let cpu_acc = if cpu_cur > 80.0 { RED } else if cpu_cur > 50.0 { YELLOW } else { MAUVE };
+    draw_panel(
+        &mut img, 0, 0, mid, mid,
+        "CPU %",
+        &format!("{:.0}%", cpu_cur),
+        &cpu_hist, 100.0,
+        cpu_acc,
+        Rgb([cpu_acc.0[0] / 7, cpu_acc.0[1] / 7, cpu_acc.0[2] / 7]),
+        &bold, &mono,
+    );
+
+    // ── Load avg panel (top-right) ────────────────────────────────────────────
+    let load_max = (cpu_count as f32).max(4.0);
+    let load_acc = {
+        let l = load.one as f32 / cpu_count as f32;
+        if l > 1.0 { RED } else if l > 0.7 { YELLOW } else { GREEN }
+    };
+    draw_panel(
+        &mut img, mid, 0, mid, mid,
+        "Load avg",
+        &format!("{:.2}", load.one),
+        &load_hist, load_max,
+        load_acc,
+        Rgb([load_acc.0[0] / 7, load_acc.0[1] / 7, load_acc.0[2] / 7]),
+        &bold, &mono,
+    );
+
+    // ── Memory panel (bottom-left) ────────────────────────────────────────────
+    let mem_acc = if mem_pct > 90.0 { RED } else if mem_pct > 75.0 { YELLOW } else { BLUE };
+    draw_panel(
+        &mut img, 0, mid, mid, mid,
+        "Memory %",
+        &format!("{:.0}%", mem_pct),
+        &mem_hist, 100.0,
+        mem_acc,
+        Rgb([mem_acc.0[0] / 7, mem_acc.0[1] / 7, mem_acc.0[2] / 7]),
+        &bold, &mono,
+    );
+
+    // ── Temperature panel (bottom-right) ─────────────────────────────────────
+    // If no temp data, fall back to disk read history
+    let (temp_use_hist, temp_max, temp_acc, temp_label, temp_val) = if hot_temp > 0.0 {
+        let acc = if hot_temp >= 85.0 { RED } else if hot_temp >= 70.0 { PEACH } else { GREEN };
+        (temp_hist.as_slice(), (hot_temp * 1.1).max(100.0), acc,
+         "Temp °C", format!("{:.0}°C", hot_temp))
+    } else {
+        let peak_r = diog_r_hist.iter().cloned().fold(0.0_f32, f32::max);
+        (diog_r_hist.as_slice(), (peak_r * 1.2).max(1024.0 * 1024.0), YELLOW,
+         "Disk R/s", format_bps(*diog_r_hist.last().unwrap_or(&0.0) as u64))
+    };
+    draw_panel(
+        &mut img, mid, mid, mid, mid,
+        temp_label,
+        &temp_val,
+        temp_use_hist, temp_max,
+        temp_acc,
+        Rgb([temp_acc.0[0] / 7, temp_acc.0[1] / 7, temp_acc.0[2] / 7]),
+        &bold, &mono,
+    );
+
+    // ── Center timestamp overlay ──────────────────────────────────────────────
+    let tw_ts = text_width(&mono, PxScale::from(12.0), &ts);
+    let tx = (480 - tw_ts) / 2;
+    // Draw behind-the-cross: tiny label at center
+    draw_filled_rect_mut(&mut img, Rect::at(tx - 2, mid - 9).of_size(tw_ts as u32 + 4, 14), SURFACE0);
+    draw_text_mut(&mut img, OVERLAY0, tx, mid - 9, PxScale::from(12.0), &mono, &ts);
+
+    DynamicImage::ImageRgb8(img)
+}
+
+#[cfg(test)]
+mod graphs_overview_tests {
+    use super::*;
+
+    #[test]
+    fn test_render_graphs_overview_size() {
+        let img = render_graphs_overview();
+        assert_eq!(img.width(), 480);
+        assert_eq!(img.height(), 480);
+    }
+}
+
 // ─── Disk I/O history graph ───────────────────────────────────────────────────
 
 static DISK_READ_HISTORY:  OnceLock<std::sync::Mutex<std::collections::VecDeque<f32>>> = OnceLock::new();
