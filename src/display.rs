@@ -12684,3 +12684,5464 @@ pub fn render_hypno() -> DynamicImage {
     }
     DynamicImage::ImageRgb8(img)
 }
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// render_lorenz  — Lorenz attractor 3D trail with slowly-rotating view
+// ─────────────────────────────────────────────────────────────────────────────
+static LORENZ_STATE: std::sync::OnceLock<std::sync::Mutex<(Vec<(f32,f32,f32)>, u64)>> =
+    std::sync::OnceLock::new();
+
+pub fn render_lorenz() -> DynamicImage {
+    const SIGMA: f32 = 10.0;
+    const RHO:   f32 = 28.0;
+    const BETA:  f32 = 8.0 / 3.0;
+    const DT:    f32 = 0.004;
+    const TRAIL: usize = 3000;
+    const STEPS_PER_FRAME: usize = 8;
+
+    let state = LORENZ_STATE.get_or_init(|| {
+        let mut pts: Vec<(f32,f32,f32)> = Vec::with_capacity(TRAIL);
+        pts.push((0.1, 0.0, 0.0));
+        std::sync::Mutex::new((pts, 0u64))
+    });
+    let mut st = state.lock().unwrap();
+    let (ref mut pts, ref mut tick) = *st;
+    *tick += 1;
+
+    for _ in 0..STEPS_PER_FRAME {
+        let &(x, y, z) = pts.last().unwrap();
+        let dx = SIGMA * (y - x);
+        let dy = x * (RHO - z) - y;
+        let dz = x * y - BETA * z;
+        pts.push((x + dx * DT, y + dy * DT, z + dz * DT));
+        if pts.len() > TRAIL { pts.remove(0); }
+    }
+
+    let tf = *tick as f32;
+    let rot_z = tf * 0.003;
+    let (sz, cz) = rot_z.sin_cos();
+    let rot_x = 0.55_f32;
+    let (sx, cx) = rot_x.sin_cos();
+
+    let mut img = RgbImage::new(480, 480);
+    for p in img.pixels_mut() { *p = BG; }
+
+    let n = pts.len();
+    for (i, &(x, y, z)) in pts.iter().enumerate() {
+        let nx = x / 25.0;
+        let ny = y / 25.0;
+        let nz = (z - 25.0) / 25.0;
+
+        let rx = nx * cz - ny * sz;
+        let ry = nx * sz + ny * cz;
+        let fy = ry * cx - nz * sx;
+
+        let px_i = (240.0 + rx * 80.0) as i32;
+        let py_i = (240.0 + fy * 80.0) as i32;
+        if px_i < 0 || px_i >= 480 || py_i < 0 || py_i >= 480 { continue; }
+
+        let t = i as f32 / n as f32;
+        let r = (BLUE[0] as f32 + (MAUVE[0] as f32 - BLUE[0] as f32) * t) as u8;
+        let g = (BLUE[1] as f32 + (MAUVE[1] as f32 - BLUE[1] as f32) * t) as u8;
+        let b = (BLUE[2] as f32 + (MAUVE[2] as f32 - BLUE[2] as f32) * t) as u8;
+        // Alpha-blend over background
+        let alpha = (t * t * 255.0) as u8;
+        let px = px_i as u32;
+        let py_u = py_i as u32;
+        let bg = img.get_pixel(px, py_u);
+        let fa = alpha as f32 / 255.0;
+        img.put_pixel(px, py_u, Rgb([
+            (bg[0] as f32 * (1.0 - fa) + r as f32 * fa) as u8,
+            (bg[1] as f32 * (1.0 - fa) + g as f32 * fa) as u8,
+            (bg[2] as f32 * (1.0 - fa) + b as f32 * fa) as u8,
+        ]));
+    }
+    DynamicImage::ImageRgb8(img)
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// render_mandelbrot  — animated Mandelbrot zoom into the Seahorse Valley
+// ─────────────────────────────────────────────────────────────────────────────
+static MANDELBROT_TICK: std::sync::OnceLock<std::sync::Mutex<u64>> = std::sync::OnceLock::new();
+
+pub fn render_mandelbrot() -> DynamicImage {
+    let tick = {
+        let m = MANDELBROT_TICK.get_or_init(|| std::sync::Mutex::new(0u64));
+        let mut t = m.lock().unwrap();
+        *t += 1;
+        *t
+    };
+
+    const W: u32 = 240;
+    const H: u32 = 240;
+    const CELL: u32 = 2;
+    const MAX_ITER: u32 = 96;
+    const CX: f64 = -0.743_643_887;
+    const CY: f64 =  0.131_825_904;
+
+    let tf = tick as f64;
+    let zoom = (0.8_f64 / (1.0 + tf * 0.003)).max(1e-7);
+
+    let palette: [[u8;3]; 8] = [
+        [BG[0],BG[1],BG[2]],
+        [BLUE[0],BLUE[1],BLUE[2]],
+        [TEAL[0],TEAL[1],TEAL[2]],
+        [GREEN[0],GREEN[1],GREEN[2]],
+        [YELLOW[0],YELLOW[1],YELLOW[2]],
+        [PEACH[0],PEACH[1],PEACH[2]],
+        [RED[0],RED[1],RED[2]],
+        [MAUVE[0],MAUVE[1],MAUVE[2]],
+    ];
+
+    let mut img = RgbImage::new(480, 480);
+
+    for cy_cell in 0..H {
+        for cx_cell in 0..W {
+            let x0 = CX + (cx_cell as f64 / W as f64 - 0.5) * 2.5 * zoom;
+            let y0 = CY + (cy_cell as f64 / H as f64 - 0.5) * 2.5 * zoom;
+            let mut x = 0.0_f64;
+            let mut y = 0.0_f64;
+            let mut iter = 0u32;
+            while x*x + y*y <= 4.0 && iter < MAX_ITER {
+                let xn = x*x - y*y + x0;
+                y = 2.0*x*y + y0;
+                x = xn;
+                iter += 1;
+            }
+            let col: [u8;3] = if iter == MAX_ITER {
+                [BG[0],BG[1],BG[2]]
+            } else {
+                let r2 = (x*x + y*y) as f32;
+                let smooth = if r2 > 1.0 {
+                    iter as f32 + 1.0 - (r2.ln() / 2.0_f32.ln()).ln() / 2.0_f32.ln()
+                } else {
+                    iter as f32
+                };
+                let t = (smooth / 12.0).rem_euclid(1.0);
+                let idx = (t * 7.0) as usize;
+                let frac = (t * 7.0).fract();
+                let c0 = palette[idx % 8];
+                let c1 = palette[(idx + 1) % 8];
+                [
+                    (c0[0] as f32 + (c1[0] as f32 - c0[0] as f32) * frac) as u8,
+                    (c0[1] as f32 + (c1[1] as f32 - c0[1] as f32) * frac) as u8,
+                    (c0[2] as f32 + (c1[2] as f32 - c0[2] as f32) * frac) as u8,
+                ]
+            };
+
+            for dy in 0..CELL {
+                for dx in 0..CELL {
+                    img.put_pixel(cx_cell * CELL + dx, cy_cell * CELL + dy, Rgb(col));
+                }
+            }
+        }
+    }
+    DynamicImage::ImageRgb8(img)
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// render_kaleidoscope  — 6-fold symmetry plasma pattern
+// ─────────────────────────────────────────────────────────────────────────────
+static KALEIDO_TICK: std::sync::OnceLock<std::sync::Mutex<u64>> = std::sync::OnceLock::new();
+
+pub fn render_kaleidoscope() -> DynamicImage {
+    let tick = {
+        let m = KALEIDO_TICK.get_or_init(|| std::sync::Mutex::new(0u64));
+        let mut t = m.lock().unwrap();
+        *t += 1;
+        *t
+    };
+
+    let tf = tick as f32 * 0.015;
+    const FOLDS: f32 = 6.0;
+    const TAU: f32 = std::f32::consts::TAU;
+
+    let mut img = RgbImage::new(480, 480);
+
+    for py in 0..480u32 {
+        for px in 0..480u32 {
+            let dx = px as f32 - 240.0;
+            let dy = py as f32 - 240.0;
+            let dist  = (dx*dx + dy*dy).sqrt();
+            let mut angle = dy.atan2(dx);
+
+            let sector_angle = std::f32::consts::PI / FOLDS;
+            angle = (angle + std::f32::consts::PI) % (2.0 * sector_angle);
+            if angle > sector_angle { angle = 2.0 * sector_angle - angle; }
+
+            let ex = dist * angle.cos();
+            let ey = dist * angle.sin();
+
+            let v = ((ex * 0.012 + tf).sin()
+                   + (ey * 0.012 - tf * 0.7).sin()
+                   + ((ex + ey) * 0.008 + tf * 1.3).sin()
+                   + (dist * 0.015 - tf * 0.9).sin()) * 0.25 + 0.5;
+
+            let h = (v + tf * 0.01) % 1.0;
+            // HSL to RGB inline (already have hsl_to_rgb)
+            let col = hsl_to_rgb(h, 0.95, 0.45 + v * 0.15);
+            let _ = TAU;
+            img.put_pixel(px, py, col);
+        }
+    }
+    DynamicImage::ImageRgb8(img)
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// render_dna_helix  — DNA double helix scrolling animation
+// ─────────────────────────────────────────────────────────────────────────────
+static DNA_TICK: std::sync::OnceLock<std::sync::Mutex<u64>> = std::sync::OnceLock::new();
+
+pub fn render_dna_helix() -> DynamicImage {
+    let tick = {
+        let m = DNA_TICK.get_or_init(|| std::sync::Mutex::new(0u64));
+        let mut t = m.lock().unwrap();
+        *t += 1;
+        *t
+    };
+
+    let mut img = RgbImage::new(480, 480);
+    for p in img.pixels_mut() { *p = BG; }
+
+    let scroll = tick as f32 * 1.2;
+    const CX: f32 = 240.0;
+    const AMPLITUDE: f32 = 130.0;
+    const PERIOD: f32 = 140.0;
+    let pair_cols: [Rgb<u8>; 4] = [GREEN, TEAL, MAUVE, PEACH];
+
+    // Helper: alpha-blend a colour onto img
+    let blend = |img: &mut RgbImage, px: u32, py: u32, col: Rgb<u8>, alpha: u8| {
+        let fa = alpha as f32 / 255.0;
+        let bg = *img.get_pixel(px, py);
+        img.put_pixel(px, py, Rgb([
+            (bg[0] as f32 * (1.0-fa) + col[0] as f32 * fa) as u8,
+            (bg[1] as f32 * (1.0-fa) + col[1] as f32 * fa) as u8,
+            (bg[2] as f32 * (1.0-fa) + col[2] as f32 * fa) as u8,
+        ]));
+    };
+
+    // Draw base pairs
+    let mut y = -20.0_f32;
+    while y < 520.0 {
+        let phase = (y + scroll) / PERIOD * std::f32::consts::TAU;
+        let facing = phase.cos().abs();
+        if facing < 0.5 {
+            let x1 = CX + AMPLITUDE * phase.cos();
+            let x2 = CX - AMPLITUDE * phase.cos();
+            let ci = (((y + scroll) / 30.0) as usize) % 4;
+            let col = pair_cols[ci];
+            let alpha = (255.0 * (0.5 - facing) / 0.5) as u8;
+            let (xa, xb) = if x1 < x2 { (x1 as i32, x2 as i32) } else { (x2 as i32, x1 as i32) };
+            let yi = y as i32;
+            if yi >= 0 && yi < 480 {
+                for xi in xa..=xb {
+                    if xi >= 0 && xi < 480 {
+                        blend(&mut img, xi as u32, yi as u32, col, alpha);
+                    }
+                }
+            }
+        }
+        y += 8.0;
+    }
+
+    // Draw the two strands
+    for py in 0i32..480 {
+        let phase = (py as f32 + scroll) / PERIOD * std::f32::consts::TAU;
+        let ax = (CX + AMPLITUDE * phase.cos()) as i32;
+        for dx in -3i32..=3 {
+            let px_i = ax + dx;
+            if px_i >= 0 && px_i < 480 {
+                let alpha = (255.0 * (1.0 - dx.abs() as f32 / 4.0)) as u8;
+                blend(&mut img, px_i as u32, py as u32, BLUE, alpha);
+            }
+        }
+        let bx = (CX - AMPLITUDE * phase.cos()) as i32;
+        for dx in -3i32..=3 {
+            let px_i = bx + dx;
+            if px_i >= 0 && px_i < 480 {
+                let alpha = (255.0 * (1.0 - dx.abs() as f32 / 4.0)) as u8;
+                blend(&mut img, px_i as u32, py as u32, RED, alpha);
+            }
+        }
+    }
+
+    let font = font_bold();
+    draw_text_mut(&mut img, OVERLAY0, 180, 8, PxScale::from(16.0), &font, "DNA Helix");
+
+    DynamicImage::ImageRgb8(img)
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// render_rain_glass  — raindrops running down a glass pane
+// ─────────────────────────────────────────────────────────────────────────────
+struct Raindrop {
+    x: f32,
+    y: f32,
+    vy: f32,
+    size: f32,
+    trail_len: f32,
+    wobble_seed: f32,
+    alive: bool,
+}
+
+static RAIN_GLASS_STATE: std::sync::OnceLock<std::sync::Mutex<(Vec<Raindrop>, u32, u64)>> =
+    std::sync::OnceLock::new();
+
+pub fn render_rain_glass() -> DynamicImage {
+    let lcg_f = |s: &mut u32| -> f32 {
+        *s = s.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+        (*s as f32) / u32::MAX as f32
+    };
+
+    let state = RAIN_GLASS_STATE.get_or_init(|| {
+        std::sync::Mutex::new((Vec::new(), 0x5A15_5EEDu32, 0u64))
+    });
+    let mut st = state.lock().unwrap();
+    let (ref mut drops, ref mut seed, ref mut tick) = *st;
+    *tick += 1;
+    let tf = *tick as f32;
+
+    let mut img = RgbImage::new(480, 480);
+    // Dark blue-grey gradient background
+    for py in 0u32..480 {
+        let t = py as f32 / 480.0;
+        let r = (0x24_u32 + ((0x1e - 0x24) as f32 * t) as u32) as u8;
+        let g = (0x28_u32 + ((0x1e - 0x28) as f32 * t) as u32) as u8;
+        let b = (0x3c_u32 + ((0x2e - 0x3c) as f32 * t) as u32) as u8;
+        for px in 0..480u32 {
+            img.put_pixel(px, py, Rgb([r, g, b]));
+        }
+    }
+
+    // Spawn new drops
+    if *tick % 3 == 0 && drops.len() < 80 {
+        let x = lcg_f(seed) * 460.0 + 10.0;
+        let size = 2.0 + lcg_f(seed) * 4.0;
+        let vy = 0.6 + lcg_f(seed) * 1.8;
+        let trail_len = 20.0 + lcg_f(seed) * 60.0;
+        let wobble_seed = lcg_f(seed) * 100.0;
+        drops.push(Raindrop { x, y: 0.0, vy, size, trail_len, wobble_seed, alive: true });
+    }
+
+    // Update and draw drops
+    for drop in drops.iter_mut() {
+        if !drop.alive { continue; }
+        drop.y += drop.vy;
+        if drop.y > 490.0 { drop.alive = false; continue; }
+
+        let wobble = ((drop.y * 0.03 + drop.wobble_seed + tf * 0.05).sin()) * 2.0;
+        let x = drop.x + wobble;
+        let y = drop.y;
+
+        // Trail
+        let trail = drop.trail_len.min(y);
+        let drop_col = Rgb([0x89u8, 0xb4u8, 0xfau8]);
+        for i in 0..(trail as i32) {
+            let ty = y - i as f32;
+            let tx = (x + wobble * (1.0 - i as f32 / trail)) as i32;
+            let alpha = ((1.0 - i as f32 / trail) * 160.0) as u8;
+            if tx >= 0 && tx < 480 && ty >= 0.0 && (ty as u32) < 480 {
+                let fa = alpha as f32 / 255.0;
+                let bg = *img.get_pixel(tx as u32, ty as u32);
+                img.put_pixel(tx as u32, ty as u32, Rgb([
+                    (bg[0] as f32 * (1.0-fa) + drop_col[0] as f32 * fa) as u8,
+                    (bg[1] as f32 * (1.0-fa) + drop_col[1] as f32 * fa) as u8,
+                    (bg[2] as f32 * (1.0-fa) + drop_col[2] as f32 * fa) as u8,
+                ]));
+            }
+        }
+
+        // Drop body oval
+        let rx = drop.size;
+        let ry = drop.size * 1.6;
+        let body_col = Rgb([0xb4u8, 0xdeu8, 0xffu8]);
+        for dy in (-(ry as i32))..=(ry as i32) {
+            for dx in (-(rx as i32))..=(rx as i32) {
+                let d = (dx as f32 / rx).powi(2) + (dy as f32 / ry).powi(2);
+                if d <= 1.0 {
+                    let alpha = ((1.0 - d) * 180.0) as u8;
+                    let px_i = x as i32 + dx;
+                    let py_i = y as i32 + dy;
+                    if px_i >= 0 && px_i < 480 && py_i >= 0 && py_i < 480 {
+                        let fa = alpha as f32 / 255.0;
+                        let bg = *img.get_pixel(px_i as u32, py_i as u32);
+                        img.put_pixel(px_i as u32, py_i as u32, Rgb([
+                            (bg[0] as f32 * (1.0-fa) + body_col[0] as f32 * fa) as u8,
+                            (bg[1] as f32 * (1.0-fa) + body_col[1] as f32 * fa) as u8,
+                            (bg[2] as f32 * (1.0-fa) + body_col[2] as f32 * fa) as u8,
+                        ]));
+                    }
+                }
+            }
+        }
+    }
+
+    drops.retain(|d| d.alive);
+
+    DynamicImage::ImageRgb8(img)
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// render_perlin_terrain  — scrolling procedural terrain heightmap
+// ─────────────────────────────────────────────────────────────────────────────
+static TERRAIN_TICK: std::sync::OnceLock<std::sync::Mutex<u64>> = std::sync::OnceLock::new();
+
+/// 2D value noise using a hashed grid.
+fn vnoise2(ix: i32, iy: i32) -> f32 {
+    let h = ix.wrapping_mul(1619).wrapping_add(iy.wrapping_mul(31337)).wrapping_mul(6791);
+    let h2 = h ^ (h >> 14) ^ (h << 5);
+    (h2 as u32 as f32) / u32::MAX as f32
+}
+
+fn smooth_noise(x: f32, y: f32) -> f32 {
+    let x0 = x.floor() as i32;
+    let y0 = y.floor() as i32;
+    let fx = x - x.floor();
+    let fy = y - y.floor();
+    // Smooth step
+    let ux = fx * fx * (3.0 - 2.0 * fx);
+    let uy = fy * fy * (3.0 - 2.0 * fy);
+    let v00 = vnoise2(x0,   y0);
+    let v10 = vnoise2(x0+1, y0);
+    let v01 = vnoise2(x0,   y0+1);
+    let v11 = vnoise2(x0+1, y0+1);
+    v00 * (1.0-ux) * (1.0-uy)
+        + v10 * ux * (1.0-uy)
+        + v01 * (1.0-ux) * uy
+        + v11 * ux * uy
+}
+
+fn fbm(x: f32, y: f32, octaves: u32) -> f32 {
+    let mut val = 0.0f32;
+    let mut amp = 0.5f32;
+    let mut freq = 1.0f32;
+    for _ in 0..octaves {
+        val += smooth_noise(x * freq, y * freq) * amp;
+        amp  *= 0.5;
+        freq *= 2.0;
+    }
+    val
+}
+
+pub fn render_perlin_terrain() -> DynamicImage {
+    let tick = {
+        let m = TERRAIN_TICK.get_or_init(|| std::sync::Mutex::new(0u64));
+        let mut t = m.lock().unwrap();
+        *t += 1;
+        *t
+    };
+
+    let mut img = RgbImage::new(480, 480);
+    let scroll = tick as f32 * 0.005;
+
+    for py in 0u32..480 {
+        for px in 0u32..480 {
+            let nx = px as f32 / 480.0 * 4.0 + scroll;
+            let ny = py as f32 / 480.0 * 4.0;
+            let h = fbm(nx, ny, 5);
+
+            // Height→colour: deep water, shallow, beach, grass, rock, snow
+            let col = if h < 0.35 {
+                // Deep water
+                let t = h / 0.35;
+                Rgb([
+                    (0x17_u8 as f32 + t * (0x1e - 0x17) as f32) as u8,
+                    (0x3d_u8 as f32 + t * (0x5a - 0x3d) as f32) as u8,
+                    (0x72_u8 as f32 + t * (0x8c - 0x72) as f32) as u8,
+                ])
+            } else if h < 0.42 {
+                // Shallow water / coast
+                Rgb([0x74, 0xc7, 0xec])
+            } else if h < 0.46 {
+                // Beach (yellow)
+                Rgb([0xf9, 0xe2, 0xaf])
+            } else if h < 0.62 {
+                // Grass
+                let t = (h - 0.46) / 0.16;
+                Rgb([
+                    (GREEN[0] as f32 * (1.0-t) + TEAL[0] as f32 * t) as u8,
+                    (GREEN[1] as f32 * (1.0-t) + TEAL[1] as f32 * t) as u8,
+                    (GREEN[2] as f32 * (1.0-t) + TEAL[2] as f32 * t) as u8,
+                ])
+            } else if h < 0.80 {
+                // Rock / stone
+                let br = (h - 0.62) / 0.18;
+                let base = (100.0 + br * 50.0) as u8;
+                Rgb([base, base, base])
+            } else {
+                // Snow cap
+                Rgb([0xcd, 0xd6, 0xf4])
+            };
+            img.put_pixel(px, py, col);
+        }
+    }
+
+    // Overlay label
+    let font = font_bold();
+    draw_text_mut(&mut img, TEXT, 8, 458, PxScale::from(14.0), &font, "Terrain");
+
+    DynamicImage::ImageRgb8(img)
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// render_fire_text  — "ttlcd" burning in Doom-style fire
+// ─────────────────────────────────────────────────────────────────────────────
+static FIRE_TEXT_STATE: std::sync::OnceLock<std::sync::Mutex<(Vec<u8>, u32, u64)>> =
+    std::sync::OnceLock::new();
+
+pub fn render_fire_text() -> DynamicImage {
+    const FIRE_W: usize = 120;
+    const FIRE_H: usize = 120;
+    const CELL:   usize = 4;
+
+    let state = FIRE_TEXT_STATE.get_or_init(|| {
+        std::sync::Mutex::new((vec![0u8; FIRE_W * FIRE_H], 0xFEED_FAC3u32, 0u64))
+    });
+    let mut st = state.lock().unwrap();
+    let (ref mut buf, ref mut seed, ref mut tick) = *st;
+    *tick += 1;
+
+    let lcg = |s: &mut u32| -> u32 {
+        *s = s.wrapping_mul(1_664_525).wrapping_add(1_013_904_223); *s
+    };
+
+    // Every 60 ticks re-seed the text mask into the bottom rows
+    if *tick % 4 == 0 {
+        // Seed row = bottom row of fire buffer
+        // Use rows 110-119 as heat source from "text pixels"
+        // We'll stamp a simple bitmap for "ttlcd" at row 115
+        for x in 0..FIRE_W { buf[119 * FIRE_W + x] = 36; }
+        // Row 110-118: text mask  — simplified rasterised glyphs for "ttlcd"
+        // 6 chars × 6px wide = 36px wide, centred at 42..77
+        let glyphs: &[&[u8]] = &[
+            // 't'
+            &[0,1,1,1,0,0, 0,1,0,0,0,0, 0,1,1,0,0,0, 0,1,0,0,0,0, 0,1,1,1,0,0],
+            // 't' again
+            &[0,1,1,1,0,0, 0,1,0,0,0,0, 0,1,1,0,0,0, 0,1,0,0,0,0, 0,1,1,1,0,0],
+            // 'l'
+            &[0,1,0,0,0,0, 0,1,0,0,0,0, 0,1,0,0,0,0, 0,1,0,0,0,0, 0,1,1,1,0,0],
+            // 'c'
+            &[0,1,1,1,0,0, 0,1,0,0,0,0, 0,1,0,0,0,0, 0,1,0,0,0,0, 0,1,1,1,0,0],
+            // 'd'
+            &[0,0,1,1,0,0, 0,1,0,1,0,0, 0,1,0,1,0,0, 0,1,0,1,0,0, 0,0,1,1,0,0],
+        ];
+        let start_x = 15usize; // start column
+        let start_row = 110usize;
+        for (ci, glyph) in glyphs.iter().enumerate() {
+            for row in 0..5usize {
+                for col in 0..6usize {
+                    if glyph[row * 6 + col] == 1 {
+                        let fx = start_x + ci * 7 + col;
+                        let fy = start_row + row;
+                        if fx < FIRE_W && fy < FIRE_H {
+                            buf[fy * FIRE_W + fx] = 36;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Propagate fire upward
+    for y in 1..FIRE_H {
+        for x in 0..FIRE_W {
+            let below = buf[(FIRE_H - 1 - y + 1) * FIRE_W + x] as u32;
+            let decay = lcg(seed) % 3;
+            let shift = (lcg(seed) % 3) as i32 - 1;
+            let nx = ((x as i32 + shift).rem_euclid(FIRE_W as i32)) as usize;
+            let new_val = if below >= decay { below - decay } else { 0 };
+            buf[(FIRE_H - 1 - y) * FIRE_W + nx] = new_val as u8;
+        }
+    }
+
+    // Render
+    let palette: [[u8;3]; 37] = [
+        [0x1e,0x1e,0x2e],[0x28,0x15,0x10],[0x3c,0x1a,0x08],[0x55,0x20,0x04],
+        [0x6e,0x26,0x02],[0x88,0x2d,0x01],[0xa0,0x35,0x00],[0xba,0x3e,0x00],
+        [0xd3,0x48,0x00],[0xec,0x54,0x00],[0xf9,0x62,0x00],[0xfa,0x72,0x00],
+        [0xfb,0x83,0x00],[0xfc,0x95,0x00],[0xfd,0xa8,0x00],[0xfe,0xbb,0x00],
+        [0xff,0xce,0x00],[0xff,0xd8,0x08],[0xff,0xe2,0x14],[0xff,0xea,0x22],
+        [0xff,0xf0,0x32],[0xff,0xf4,0x44],[0xff,0xf7,0x58],[0xff,0xf9,0x6e],
+        [0xff,0xfb,0x86],[0xff,0xfc,0x9e],[0xff,0xfd,0xb6],[0xff,0xfe,0xcc],
+        [0xff,0xfe,0xe0],[0xff,0xff,0xf0],[0xff,0xff,0xff],[0xff,0xff,0xff],
+        [0xff,0xff,0xff],[0xff,0xff,0xff],[0xff,0xff,0xff],[0xff,0xff,0xff],
+        [0xff,0xff,0xff],
+    ];
+
+    let mut img = RgbImage::new(480, 480);
+    for p in img.pixels_mut() { *p = BG; }
+
+    for fy in 0..FIRE_H {
+        for fx in 0..FIRE_W {
+            let heat = buf[fy * FIRE_W + fx] as usize;
+            if heat == 0 { continue; }
+            let col = palette[heat.min(36)];
+            for cy in 0..CELL {
+                for cx in 0..CELL {
+                    let px = fx * CELL + cx;
+                    let py = fy * CELL + cy;
+                    if px < 480 && py < 480 {
+                        img.put_pixel(px as u32, py as u32, Rgb(col));
+                    }
+                }
+            }
+        }
+    }
+
+    DynamicImage::ImageRgb8(img)
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// render_disco_floor  — flashing coloured tiles like a disco dance floor
+// ─────────────────────────────────────────────────────────────────────────────
+static DISCO_TICK: std::sync::OnceLock<std::sync::Mutex<u64>> = std::sync::OnceLock::new();
+
+pub fn render_disco_floor() -> DynamicImage {
+    let tick = {
+        let m = DISCO_TICK.get_or_init(|| std::sync::Mutex::new(0u64));
+        let mut t = m.lock().unwrap();
+        *t += 1;
+        *t
+    };
+
+    const COLS:  u32 = 8;
+    const ROWS:  u32 = 8;
+    const CELL_W: u32 = 60;
+    const CELL_H: u32 = 60;
+    const GAP:   u32 = 2;
+
+    let tf = tick as f32 * 0.08;
+
+    let disco_cols: [[u8;3]; 9] = [
+        [BLUE[0],BLUE[1],BLUE[2]],
+        [RED[0],RED[1],RED[2]],
+        [GREEN[0],GREEN[1],GREEN[2]],
+        [YELLOW[0],YELLOW[1],YELLOW[2]],
+        [MAUVE[0],MAUVE[1],MAUVE[2]],
+        [TEAL[0],TEAL[1],TEAL[2]],
+        [PEACH[0],PEACH[1],PEACH[2]],
+        [0xff,0xff,0xff],
+        [0x89,0xdc,0xeb],
+    ];
+
+    let mut img = RgbImage::new(480, 480);
+    for p in img.pixels_mut() { *p = Rgb([0x11,0x11,0x18]); }
+
+    for row in 0..ROWS {
+        for col in 0..COLS {
+            // Each tile has a phase offset
+            let phase = row as f32 * 0.9 + col as f32 * 0.7 + tf;
+            let brightness = (phase.sin() * 0.5 + 0.5).powi(2);
+
+            // Colour cycles through palette based on tile position and time
+            let ci = ((row * COLS + col) as usize
+                + (tick / 12) as usize
+                + row as usize) % disco_cols.len();
+            let base = disco_cols[ci];
+
+            let x0 = col * CELL_W + GAP;
+            let y0 = row * CELL_H + GAP;
+            let x1 = x0 + CELL_W - GAP * 2;
+            let y1 = y0 + CELL_H - GAP * 2;
+
+            for py in y0..y1 {
+                for px in x0..x1 {
+                    // Spotlight vignette within tile
+                    let tcx = (px - x0) as f32 / (CELL_W - GAP * 2 - 1) as f32 - 0.5;
+                    let tcy = (py - y0) as f32 / (CELL_H - GAP * 2 - 1) as f32 - 0.5;
+                    let vignette = (1.0 - (tcx*tcx + tcy*tcy) * 4.0).max(0.0);
+                    let br = brightness * vignette;
+
+                    // Floor reflection: brighter at centre-bottom of each cell
+                    let reflect = (1.0 - (py - y0) as f32 / (CELL_H - GAP * 2) as f32) * 0.3;
+                    let final_br = (br + reflect).min(1.0);
+
+                    img.put_pixel(px, py, Rgb([
+                        (base[0] as f32 * final_br) as u8,
+                        (base[1] as f32 * final_br) as u8,
+                        (base[2] as f32 * final_br) as u8,
+                    ]));
+                }
+            }
+        }
+    }
+
+    DynamicImage::ImageRgb8(img)
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// render_heartbeat  — ECG-style heartbeat waveform driven by CPU load
+// ─────────────────────────────────────────────────────────────────────────────
+static HEARTBEAT_STATE: std::sync::OnceLock<std::sync::Mutex<(std::collections::VecDeque<f32>, u64)>> =
+    std::sync::OnceLock::new();
+
+pub fn render_heartbeat() -> DynamicImage {
+    let state = HEARTBEAT_STATE.get_or_init(|| {
+        std::sync::Mutex::new((std::collections::VecDeque::with_capacity(480), 0u64))
+    });
+    let mut st = state.lock().unwrap();
+    let (ref mut wave, ref mut tick) = *st;
+    *tick += 1;
+    let tf = *tick as f32;
+
+    // Sample CPU load
+    let mut sys = System::new();
+    sys.refresh_cpu_usage();
+    let cpu = sys.global_cpu_usage() / 100.0;
+
+    // ECG waveform synthesis:
+    // Base = fast sine for P-wave, tall spike for QRS complex, T-wave
+    let period = 80.0_f32;  // frames per beat
+    let phase = (tf % period) / period;
+
+    let ecg_val = if phase < 0.05 {
+        // P wave (small bump)
+        (phase / 0.05 * std::f32::consts::PI).sin() * 0.15
+    } else if phase < 0.35 {
+        // Flat PQ segment
+        0.0
+    } else if phase < 0.38 {
+        // Q dip
+        -0.2
+    } else if phase < 0.42 {
+        // R spike (height proportional to CPU)
+        let t = (phase - 0.38) / 0.04;
+        let spike = (t * std::f32::consts::PI).sin();
+        spike * (0.8 + cpu * 0.8)
+    } else if phase < 0.46 {
+        // S dip
+        -0.15
+    } else if phase < 0.65 {
+        // Flat ST segment
+        0.0
+    } else if phase < 0.80 {
+        // T wave
+        let t = (phase - 0.65) / 0.15;
+        (t * std::f32::consts::PI).sin() * 0.25
+    } else {
+        0.0
+    };
+
+    wave.push_back(ecg_val);
+    if wave.len() > 480 { wave.pop_front(); }
+
+    let mut img = RgbImage::new(480, 480);
+    for p in img.pixels_mut() { *p = BG; }
+
+    // Grid lines
+    for i in (0..480u32).step_by(60) {
+        for py in 0..480u32 {
+            let bg = *img.get_pixel(i, py);
+            img.put_pixel(i, py, Rgb([(bg[0]+8).min(255), (bg[1]+8).min(255), (bg[2]+8).min(255)]));
+        }
+        for px in 0..480u32 {
+            let bg = *img.get_pixel(px, i);
+            img.put_pixel(px, i, Rgb([(bg[0]+8).min(255), (bg[1]+8).min(255), (bg[2]+8).min(255)]));
+        }
+    }
+
+    // Draw waveform
+    let centre_y = 240.0_f32;
+    let scale = 180.0_f32;
+    let wave_vec: Vec<f32> = wave.iter().copied().collect();
+    let n = wave_vec.len();
+    let x_start = 480 - n as u32;
+
+    for i in 1..wave_vec.len() {
+        let y0_f = centre_y - wave_vec[i-1] * scale;
+        let y1_f = centre_y - wave_vec[i] * scale;
+        let x0 = x_start as i32 + i as i32 - 1;
+        let x1 = x_start as i32 + i as i32;
+
+        // Draw line segment with glow
+        let steps = ((y1_f - y0_f).abs() as i32).max(1);
+        for s in 0..=steps {
+            let t = s as f32 / steps as f32;
+            let x = (x0 as f32 + (x1 - x0) as f32 * t) as i32;
+            let y = (y0_f + (y1_f - y0_f) * t) as i32;
+            // Glow: ±2 pixels
+            for dy in -2i32..=2 {
+                for dx in -2i32..=2 {
+                    let glow_d = (dx*dx + dy*dy) as f32;
+                    let alpha = (1.0 - glow_d / 8.0).max(0.0);
+                    let px_g = x + dx;
+                    let py_g = y + dy;
+                    if px_g >= 0 && px_g < 480 && py_g >= 0 && py_g < 480 {
+                        let bg = *img.get_pixel(px_g as u32, py_g as u32);
+                        let fa = alpha;
+                        img.put_pixel(px_g as u32, py_g as u32, Rgb([
+                            (bg[0] as f32 * (1.0-fa) + GREEN[0] as f32 * fa) as u8,
+                            (bg[1] as f32 * (1.0-fa) + GREEN[1] as f32 * fa) as u8,
+                            (bg[2] as f32 * (1.0-fa) + GREEN[2] as f32 * fa) as u8,
+                        ]));
+                    }
+                }
+            }
+        }
+    }
+
+    // CPU bar at top
+    let cpu_w = (cpu * 460.0) as u32;
+    for px in 0..cpu_w {
+        for py in 0..6u32 {
+            let t = px as f32 / 460.0;
+            img.put_pixel(px + 10, py + 8, Rgb([
+                (GREEN[0] as f32 * (1.0-t) + RED[0] as f32 * t) as u8,
+                (GREEN[1] as f32 * (1.0-t) + RED[1] as f32 * t) as u8,
+                (GREEN[2] as f32 * (1.0-t) + RED[2] as f32 * t) as u8,
+            ]));
+        }
+    }
+
+    let font = font_bold();
+    draw_text_mut(&mut img, TEXT, 8, 460, PxScale::from(14.0), &font,
+        &format!("CPU {:3.0}% BPM~{:.0}", cpu * 100.0, 60000.0 / (period * 33.0)));
+
+    DynamicImage::ImageRgb8(img)
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// render_clock_faces  — three analog clock faces (local + UTC ± offsets)
+// ─────────────────────────────────────────────────────────────────────────────
+pub fn render_clock_faces() -> DynamicImage {
+    let mut img = RgbImage::new(480, 480);
+    for p in img.pixels_mut() { *p = BG; }
+
+    let now = Local::now();
+    let font = font_bold();
+    let font_sm = font_bold();
+
+    // Three clock centres
+    let clocks: [(i32, i32, f32, &str); 3] = [
+        (120, 160, 0.0,    "Local"),
+        (360, 160, 5.0,    "UTC+5"),
+        (240, 360, -8.0,   "UTC-8"),
+    ];
+
+    let draw_clock = |img: &mut RgbImage, cx: i32, cy: i32, h_off: f32, label: &str| {
+        let hour_f: f32 = now.hour() as f32 + now.minute() as f32 / 60.0 + h_off;
+        let min_f:  f32 = now.minute() as f32 + now.second() as f32 / 60.0;
+        let sec_f:  f32 = now.second() as f32;
+
+        let r = 100.0_f32;
+
+        // Clock face
+        for py in (cy - r as i32 - 5)..(cy + r as i32 + 5) {
+            for px in (cx - r as i32 - 5)..(cx + r as i32 + 5) {
+                if px < 0 || px >= 480 || py < 0 || py >= 480 { continue; }
+                let dx = px as f32 - cx as f32;
+                let dy = py as f32 - cy as f32;
+                let d = (dx*dx + dy*dy).sqrt();
+                if d < r {
+                    // Interior
+                    let shade = if d < r - 3.0 { SURFACE0 } else { OVERLAY0 };
+                    img.put_pixel(px as u32, py as u32, shade);
+                }
+            }
+        }
+
+        // Hour marks
+        for i in 0..12u32 {
+            let angle = i as f32 * std::f32::consts::TAU / 12.0 - std::f32::consts::PI / 2.0;
+            let (s, c) = angle.sin_cos();
+            let tick_len = if i % 3 == 0 { 14.0_f32 } else { 7.0_f32 };
+            let x0 = cx as f32 + c * (r - tick_len);
+            let y0 = cy as f32 + s * (r - tick_len);
+            let x1 = cx as f32 + c * (r - 4.0);
+            let y1 = cy as f32 + s * (r - 4.0);
+            // Draw tick
+            let steps = ((x1-x0).abs() + (y1-y0).abs()) as i32;
+            for t in 0..=steps {
+                let t_f = t as f32 / steps.max(1) as f32;
+                let px = (x0 + (x1-x0) * t_f) as i32;
+                let py = (y0 + (y1-y0) * t_f) as i32;
+                if px >= 0 && px < 480 && py >= 0 && py < 480 {
+                    img.put_pixel(px as u32, py as u32, OVERLAY0);
+                }
+            }
+        }
+
+        // Draw hand helper
+        let draw_hand = |img: &mut RgbImage, angle: f32, length: f32, col: Rgb<u8>, thick: i32| {
+            let (s, c) = angle.sin_cos();
+            let _x1 = cx as f32 + c * length;
+            let _y1 = cy as f32 + s * length;
+            let steps = (length * 2.0) as i32;
+            for ti in 0..=steps {
+                let t = ti as f32 / steps as f32;
+                for off in -thick..=thick {
+                    let px = (cx as f32 + c * length * t - s * off as f32) as i32;
+                    let py = (cy as f32 + s * length * t + c * off as f32) as i32;
+                    if px >= 0 && px < 480 && py >= 0 && py < 480 {
+                        img.put_pixel(px as u32, py as u32, col);
+                    }
+                }
+            }
+        };
+
+        // Hour hand
+        let ha = (hour_f.rem_euclid(12.0) / 12.0) * std::f32::consts::TAU - std::f32::consts::PI / 2.0;
+        draw_hand(img, ha, r * 0.55, TEXT, 3);
+        // Minute hand
+        let ma = (min_f / 60.0) * std::f32::consts::TAU - std::f32::consts::PI / 2.0;
+        draw_hand(img, ma, r * 0.80, SUBTEXT, 2);
+        // Second hand
+        let sa = (sec_f / 60.0) * std::f32::consts::TAU - std::f32::consts::PI / 2.0;
+        draw_hand(img, sa, r * 0.85, RED, 1);
+
+        // Centre dot
+        for dy in -4i32..=4 {
+            for dx in -4i32..=4 {
+                if dx*dx + dy*dy <= 16 {
+                    let px = cx + dx;
+                    let py = cy + dy;
+                    if px >= 0 && px < 480 && py >= 0 && py < 480 {
+                        img.put_pixel(px as u32, py as u32, RED);
+                    }
+                }
+            }
+        }
+
+        // Label
+        let lx = (cx - 22) as u32;
+        let ly = (cy + r as i32 + 8) as u32;
+        if lx < 460 && ly < 470 {
+            draw_text_mut(img, SUBTEXT, lx as i32, ly as i32, PxScale::from(14.0), &font_sm, label);
+        }
+    };
+
+    for &(cx, cy, h_off, label) in &clocks {
+        draw_clock(&mut img, cx, cy, h_off, label);
+    }
+
+    let time_str = now.format("%H:%M:%S").to_string();
+    draw_text_mut(&mut img, TEXT, 170, 458, PxScale::from(16.0), &font, &time_str);
+
+    DynamicImage::ImageRgb8(img)
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// render_waveform_bars  — CPU-core frequency bars like an audio visualiser
+// ─────────────────────────────────────────────────────────────────────────────
+static WAVEFORM_HISTORY: std::sync::OnceLock<std::sync::Mutex<Vec<std::collections::VecDeque<f32>>>> =
+    std::sync::OnceLock::new();
+
+pub fn render_waveform_bars() -> DynamicImage {
+    let mut sys = System::new();
+    sys.refresh_cpu_usage();
+    let cpus = sys.cpus();
+    let n_cores = cpus.len().max(1).min(16);
+    let core_loads: Vec<f32> = cpus.iter().take(n_cores)
+        .map(|c| c.cpu_usage() / 100.0)
+        .collect();
+
+    let state = WAVEFORM_HISTORY.get_or_init(|| {
+        std::sync::Mutex::new(vec![std::collections::VecDeque::with_capacity(240); 16])
+    });
+    let mut hist = state.lock().unwrap();
+    // Ensure we have enough histories
+    while hist.len() < n_cores { hist.push(std::collections::VecDeque::with_capacity(240)); }
+
+    for (i, &load) in core_loads.iter().enumerate() {
+        if hist[i].len() >= 240 { hist[i].pop_front(); }
+        hist[i].push_back(load);
+    }
+
+    let mut img = RgbImage::new(480, 480);
+    for p in img.pixels_mut() { *p = BG; }
+
+    let cols: [Rgb<u8>; 8] = [BLUE, GREEN, MAUVE, TEAL, YELLOW, PEACH, RED, Rgb([0x89,0xdc,0xeb])];
+
+    let bar_area_h = 360u32;
+    let bar_area_top = 60u32;
+    let bar_w = (480 / n_cores as u32).min(60);
+    let gap = 4u32;
+
+    // Draw scrolling history for each core
+    for (ci, core_hist) in hist.iter().take(n_cores).enumerate() {
+        let col = cols[ci % cols.len()];
+        let x_start = ci as u32 * bar_w;
+
+        // Bar fill (current value)
+        let load = core_hist.back().copied().unwrap_or(0.0);
+        let bar_h = (load * bar_area_h as f32) as u32;
+        for py in (bar_area_top + bar_area_h - bar_h)..(bar_area_top + bar_area_h) {
+            for px in (x_start + gap)..(x_start + bar_w - gap) {
+                // Gradient: brighter at top
+                let t = (py - (bar_area_top + bar_area_h - bar_h)) as f32 / bar_h.max(1) as f32;
+                let brightness = 1.0 - t * 0.5;
+                img.put_pixel(px, py, Rgb([
+                    (col[0] as f32 * brightness) as u8,
+                    (col[1] as f32 * brightness) as u8,
+                    (col[2] as f32 * brightness) as u8,
+                ]));
+            }
+        }
+
+        // Mini history waveform above the bar
+        let wave_h = 50u32;
+        let wave_y_base = bar_area_top - 4;
+        let wave_len = core_hist.len() as u32;
+        if wave_len > 1 {
+            for i in 1..wave_len {
+                let v_prev = core_hist[i as usize - 1];
+                let v_curr = core_hist[i as usize];
+                let x0 = x_start + gap + (i - 1) * (bar_w - gap * 2) / wave_len;
+                let x1 = x_start + gap + i * (bar_w - gap * 2) / wave_len;
+                let y0 = wave_y_base - (v_prev * wave_h as f32) as u32;
+                let y1 = wave_y_base - (v_curr * wave_h as f32) as u32;
+                if x0 < 480 && x1 < 480 && y0 < 480 && y1 < 480 {
+                    img.put_pixel(x0, y0, Rgb([
+                        (col[0] / 2), (col[1] / 2), (col[2] / 2)
+                    ]));
+                    img.put_pixel(x1, y1, col);
+                }
+            }
+        }
+
+        // Core label
+        let font = font_bold();
+        let label = format!("C{}", ci);
+        let lx = (x_start + 4) as i32;
+        draw_text_mut(&mut img, SUBTEXT, lx, (bar_area_top + bar_area_h + 4) as i32,
+                      PxScale::from(12.0), &font, &label);
+        let pct = (load * 100.0) as u8;
+        draw_text_mut(&mut img, col, lx,
+                      (bar_area_top + bar_area_h + 18) as i32,
+                      PxScale::from(12.0), &font, &format!("{pct}%"));
+    }
+
+    // Title
+    let font = font_bold();
+    draw_text_mut(&mut img, TEXT, 8, 8, PxScale::from(22.0), &font,
+                  &format!("CPU Cores ×{n_cores}"));
+
+    DynamicImage::ImageRgb8(img)
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// render_city_skyline  — night city silhouette with twinkling windows
+// ─────────────────────────────────────────────────────────────────────────────
+static CITY_TICK: std::sync::OnceLock<std::sync::Mutex<(Vec<u32>, u64)>> =
+    std::sync::OnceLock::new();
+
+pub fn render_city_skyline() -> DynamicImage {
+    const N_BUILDINGS: usize = 20;
+    const GROUND_Y: u32 = 380;
+    const SKY_H: u32 = GROUND_Y;
+
+    let state = CITY_TICK.get_or_init(|| {
+        // Generate building widths and heights using a deterministic sequence
+        let mut s = 0xC175_B1D6u32;
+        let lcg = |r: &mut u32| -> u32 {
+            *r = r.wrapping_mul(1_664_525).wrapping_add(1_013_904_223); *r
+        };
+        let mut buildings = Vec::with_capacity(N_BUILDINGS);
+        for _ in 0..N_BUILDINGS {
+            let w = 16 + lcg(&mut s) % 32;
+            let h = 60 + lcg(&mut s) % 200;
+            buildings.push(w << 16 | h);  // pack width|height
+        }
+        std::sync::Mutex::new((buildings, 0u64))
+    });
+    let mut st = state.lock().unwrap();
+    let (ref buildings, ref mut tick) = *st;
+    *tick += 1;
+    let tf = *tick as f32;
+
+    let mut img = RgbImage::new(480, 480);
+
+    // Sky gradient: deep navy to lighter blue
+    for py in 0..480u32 {
+        let t = py as f32 / SKY_H as f32;
+        let r = (0x11_u32 + ((0x1e - 0x11) as f32 * t) as u32) as u8;
+        let g = (0x15_u32 + ((0x1e - 0x15) as f32 * t) as u32) as u8;
+        let b = (0x28_u32 + ((0x2e - 0x28) as f32 * t) as u32) as u8;
+        for px in 0..480u32 {
+            img.put_pixel(px, py, Rgb([r, g, b]));
+        }
+    }
+
+    // Stars in the sky
+    let mut star_seed = 0xA5A5_A5A5u32;
+    let star_lcg = |s: &mut u32| -> u32 {
+        *s = s.wrapping_mul(1_664_525).wrapping_add(1_013_904_223); *s
+    };
+    for _ in 0..200 {
+        let sx = star_lcg(&mut star_seed) % 480;
+        let sy = star_lcg(&mut star_seed) % (SKY_H - 30);
+        let twinkle = ((sx as f32 * 0.17 + sy as f32 * 0.13 + tf * 0.04).sin() * 0.4 + 0.6) as f32;
+        let br = (200.0 * twinkle) as u8;
+        if sy < 480 { img.put_pixel(sx, sy, Rgb([br, br, br])); }
+    }
+
+    // Moon
+    let moon_x = 380i32;
+    let moon_y = 60i32;
+    let moon_r = 28i32;
+    for dy in -moon_r..=moon_r {
+        for dx in -moon_r..=moon_r {
+            if dx*dx + dy*dy <= moon_r*moon_r {
+                let px_i = moon_x + dx;
+                let py_i = moon_y + dy;
+                if px_i >= 0 && px_i < 480 && py_i >= 0 && py_i < 480 {
+                    // Moon glow falloff
+                    let d = ((dx*dx + dy*dy) as f32).sqrt() / moon_r as f32;
+                    let br = (255.0 * (1.0 - d * 0.3)) as u8;
+                    img.put_pixel(px_i as u32, py_i as u32, Rgb([br, br, (br as u32 * 90 / 100) as u8]));
+                }
+            }
+        }
+    }
+
+    // Draw buildings
+    let total_w: u32 = buildings.iter().map(|&b| (b >> 16) + 4).sum();
+    let scale_x = 480.0 / total_w as f32;
+    let mut x = 0u32;
+    let mut win_seed = 0xF00D_CAFEu32;
+
+    for &bld in buildings.iter() {
+        let bw = ((bld >> 16) as f32 * scale_x) as u32;
+        let bh = (bld & 0xFFFF).min(GROUND_Y - 10);
+        let by = GROUND_Y - bh;
+
+        // Building silhouette (dark grey)
+        for py in by..GROUND_Y {
+            for px in x..(x + bw).min(480) {
+                let shade = if py < by + 2 || px == x || px == (x + bw - 1).min(479) {
+                    Rgb([0x35, 0x37, 0x4a])  // edge highlight
+                } else {
+                    Rgb([0x24, 0x27, 0x3a])
+                };
+                img.put_pixel(px, py, shade);
+            }
+        }
+
+        // Windows (small rectangles)
+        let win_w = 6u32;
+        let win_h = 8u32;
+        let win_gap = 4u32;
+        let mut wy = by + 8;
+        while wy + win_h < GROUND_Y - 5 {
+            let mut wx = x + 5;
+            while wx + win_w < x + bw - 3 {
+                let on = star_lcg(&mut win_seed) % 3 != 0;
+                let flicker = (wx as f32 * 0.31 + wy as f32 * 0.17 + tf * 0.02).sin();
+                let bright = on && flicker > -0.8;
+                if bright {
+                    let win_col_idx = star_lcg(&mut win_seed) % 4;
+                    let win_col: Rgb<u8> = match win_col_idx {
+                        0 => Rgb([0xf9, 0xe2, 0xaf]),  // warm yellow
+                        1 => Rgb([0xa0, 0xc8, 0xff]),  // cool blue-white
+                        2 => Rgb([0xff, 0xe0, 0xa0]),  // warm white
+                        _ => Rgb([0xe0, 0xf0, 0xff]),  // cool white
+                    };
+                    for wpy in wy..(wy + win_h) {
+                        for wpx in wx..(wx + win_w) {
+                            if wpx < 480 && wpy < 480 {
+                                img.put_pixel(wpx, wpy, win_col);
+                            }
+                        }
+                    }
+                }
+                wx += win_w + win_gap;
+            }
+            wy += win_h + win_gap;
+        }
+
+        x += bw + 2;
+        if x >= 480 { break; }
+    }
+
+    // Ground / road
+    for py in GROUND_Y..480u32 {
+        let t = (py - GROUND_Y) as f32 / (480 - GROUND_Y) as f32;
+        let shade = (0x18_u32 + ((0x30 - 0x18) as f32 * t) as u32) as u8;
+        for px in 0..480u32 {
+            img.put_pixel(px, py, Rgb([shade, shade, shade + 8]));
+        }
+    }
+
+    // Road markings
+    for i in (0..480u32).step_by(60) {
+        for px in i..(i + 30).min(480) {
+            if (px + (*tick as u32 / 2)) % 60 < 30 {
+                img.put_pixel(px, GROUND_Y + 15, Rgb([0x80, 0x80, 0x60]));
+                img.put_pixel(px, GROUND_Y + 16, Rgb([0x80, 0x80, 0x60]));
+            }
+        }
+    }
+
+    DynamicImage::ImageRgb8(img)
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// render_neon_sign  — flickering neon "ttlcd" sign on dark wall
+// ─────────────────────────────────────────────────────────────────────────────
+static NEON_SIGN_TICK: std::sync::OnceLock<std::sync::Mutex<(u64, u32)>> =
+    std::sync::OnceLock::new();
+
+pub fn render_neon_sign() -> DynamicImage {
+    let state = NEON_SIGN_TICK.get_or_init(|| std::sync::Mutex::new((0u64, 0x0E00_1234u32)));
+    let mut st = state.lock().unwrap();
+    let (ref mut tick, ref mut seed) = *st;
+    *tick += 1;
+    let tf = *tick as f32;
+
+    let lcg = |s: &mut u32| -> f32 {
+        *s = s.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+        (*s as f32) / u32::MAX as f32
+    };
+
+    let mut img = RgbImage::new(480, 480);
+
+    // Dark brick-wall background
+    for py in 0u32..480 {
+        for px in 0u32..480 {
+            let brick_row = py / 20;
+            let brick_col_off = if brick_row % 2 == 0 { 0u32 } else { 25 };
+            let brick_col = (px + brick_col_off) / 50;
+            let mortar_h = py % 20 < 2;
+            let mortar_v = (px + brick_col_off) % 50 < 2;
+            let shade: u8 = if mortar_h || mortar_v {
+                0x20
+            } else {
+                // Brick variation
+                let var = ((brick_col as i32 * 17 + brick_row as i32 * 31) & 0xF) as u8;
+                0x30 + var
+            };
+            img.put_pixel(px, py, Rgb([shade, (shade as u32 * 2 / 3) as u8, (shade as u32 * 2 / 3) as u8]));
+        }
+    }
+
+    // Neon colours for each letter: t=pink, t=blue, l=green, c=yellow, d=mauve
+    let neon_colours: [Rgb<u8>; 5] = [RED, BLUE, GREEN, YELLOW, MAUVE];
+    // Letters are drawn as 3D neon tube outlines using thick anti-aliased lines
+    // We'll rasterise large stroked letter outlines using simple segment drawing
+
+    // Positions of letter centres (approximate), scale=large
+    let letter_cx = [70, 150, 230, 320, 400i32];
+    let cy = 220i32;
+
+    // Simple T stroke: horizontal bar + vertical stem
+    // Each letter: define strokes as line segments
+    // Format: Vec of (x0, y0, x1, y1) in local coords (±50 scale)
+    let letter_strokes: [&[(i32,i32,i32,i32)]; 5] = [
+        // 't' — horizontal at 0, vertical from -40 to +40
+        &[(-25,-40,25,-40), (0,-40,0,40)],
+        // 't' again
+        &[(-25,-40,25,-40), (0,-40,0,40)],
+        // 'l' — vertical only
+        &[(0,-40,0,40), (-15,40,15,40)],
+        // 'c' — arc approximated by 3 segments
+        &[(20,-40,-20,-40), (-20,-40,-20,40), (-20,40,20,40)],
+        // 'd' — right side + arc
+        &[(20,-40,20,40), (20,-40,-10,-40), (-20,-20,-20,20), (-10,40,20,40)],
+    ];
+
+    let scale = 42i32;
+
+    for (li, &lx) in letter_cx.iter().enumerate() {
+        let col = neon_colours[li % neon_colours.len()];
+        let flicker_base = (tf * 0.07 + li as f32 * 1.3).sin();
+        let flicker_fast = (tf * 0.29 + li as f32 * 0.7).sin();
+        // Occasional full letter flicker off
+        let flicker_off = lcg(seed) > 0.997;
+        let brightness = if flicker_off { 0.0 }
+                        else { (flicker_base * 0.1 + flicker_fast * 0.05 + 0.85).clamp(0.0, 1.0) };
+
+        for &(lx0, ly0, lx1, ly1) in letter_strokes[li] {
+            let x0 = lx + lx0 * scale / 50;
+            let y0 = cy + ly0 * scale / 50;
+            let x1 = lx + lx1 * scale / 50;
+            let y1 = cy + ly1 * scale / 50;
+
+            let steps = ((x1-x0).abs() + (y1-y0).abs()).max(1);
+            for step in 0..=steps {
+                let t = step as f32 / steps as f32;
+                let px_f = x0 as f32 + (x1 - x0) as f32 * t;
+                let py_f = y0 as f32 + (y1 - y0) as f32 * t;
+
+                // Glow: multiple radii
+                for glow_r in 0..12i32 {
+                    let glow_falloff = (-glow_r as f32 * 0.35).exp();
+                    for dy in -glow_r..=glow_r {
+                        for dx in -glow_r..=glow_r {
+                            if dx*dx + dy*dy > glow_r*glow_r { continue; }
+                            let px_i = (px_f as i32 + dx) as u32;
+                            let py_i = (py_f as i32 + dy) as u32;
+                            if px_i >= 480 || py_i >= 480 { continue; }
+                            let fa = glow_falloff * brightness;
+                            let bg = *img.get_pixel(px_i, py_i);
+                            img.put_pixel(px_i, py_i, Rgb([
+                                (bg[0] as f32 * (1.0-fa) + col[0] as f32 * fa).min(255.0) as u8,
+                                (bg[1] as f32 * (1.0-fa) + col[1] as f32 * fa).min(255.0) as u8,
+                                (bg[2] as f32 * (1.0-fa) + col[2] as f32 * fa).min(255.0) as u8,
+                            ]));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Ground reflection
+    let reflect_y = cy + scale + 10;
+    if reflect_y > 0 && (reflect_y as u32) < 460 {
+        for py_src in (reflect_y as u32)..(reflect_y as u32 + 80).min(480) {
+            let dist = (py_src - reflect_y as u32) as f32;
+            let fade = (1.0 - dist / 80.0) * 0.3;
+            let src_py = (2 * reflect_y as u32).saturating_sub(py_src);
+            if src_py < 480 {
+                for px in 0..480u32 {
+                    let src = *img.get_pixel(px, src_py);
+                    let dst = *img.get_pixel(px, py_src);
+                    img.put_pixel(px, py_src, Rgb([
+                        (dst[0] as f32 * (1.0-fade) + src[0] as f32 * fade) as u8,
+                        (dst[1] as f32 * (1.0-fade) + src[1] as f32 * fade) as u8,
+                        (dst[2] as f32 * (1.0-fade) + src[2] as f32 * fade) as u8,
+                    ]));
+                }
+            }
+        }
+    }
+
+    DynamicImage::ImageRgb8(img)
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// render_gradient_clock  — big clock on a flowing gradient background
+// ─────────────────────────────────────────────────────────────────────────────
+static GRAD_CLOCK_TICK: std::sync::OnceLock<std::sync::Mutex<u64>> = std::sync::OnceLock::new();
+
+pub fn render_gradient_clock() -> DynamicImage {
+    let tick = {
+        let m = GRAD_CLOCK_TICK.get_or_init(|| std::sync::Mutex::new(0u64));
+        let mut t = m.lock().unwrap();
+        *t += 1;
+        *t
+    };
+
+    let tf = tick as f32 * 0.006;
+    let mut img = RgbImage::new(480, 480);
+
+    // Animated gradient background
+    for py in 0u32..480 {
+        for px in 0u32..480 {
+            let nx = px as f32 / 480.0;
+            let ny = py as f32 / 480.0;
+            let wave1 = (nx * 2.0 + tf).sin() * 0.3;
+            let wave2 = (ny * 2.0 - tf * 0.7).sin() * 0.3;
+            let wave3 = ((nx + ny) * 1.5 + tf * 0.5).cos() * 0.2;
+            let h = ((wave1 + wave2 + wave3) * 0.5 + 0.5) % 1.0;
+            img.put_pixel(px, py, hsl_to_rgb(h, 0.6, 0.12));
+        }
+    }
+
+    // Clock text
+    let now = Local::now();
+    let h = now.hour();
+    let m = now.minute();
+    let s = now.second();
+    let font = font_bold();
+
+    let time_str = format!("{:02}:{:02}:{:02}", h, m, s);
+    let date_str = now.format("%A, %d %b %Y").to_string();
+
+    // Time — giant text
+    draw_text_mut(&mut img, TEXT, 40, 160, PxScale::from(100.0), &font, &time_str);
+    // Date below
+    draw_text_mut(&mut img, SUBTEXT, 80, 290, PxScale::from(28.0), &font, &date_str);
+
+    // Progress ring: seconds around the border
+    let sec_f = s as f32 + now.nanosecond() as f32 / 1e9;
+    let progress = sec_f / 60.0;
+    let cx = 240.0_f32;
+    let cy = 390.0_f32;
+    let r = 60.0_f32;
+
+    for i in 0..360u32 {
+        let angle = i as f32 / 360.0;
+        let a = angle * std::f32::consts::TAU - std::f32::consts::PI / 2.0;
+        let (sa, ca) = a.sin_cos();
+        let col = if angle <= progress {
+            hsl_to_rgb(progress * 0.3 + 0.55, 0.9, 0.65)
+        } else {
+            SURFACE0
+        };
+        // Draw a thick arc segment (2 radii)
+        for ri in 0..5u32 {
+            let r2 = r + ri as f32;
+            let px_f = cx + ca * r2;
+            let py_f = cy + sa * r2;
+            let px_i = px_f as u32;
+            let py_i = py_f as u32;
+            if px_i < 480 && py_i < 480 {
+                img.put_pixel(px_i, py_i, col);
+            }
+        }
+    }
+
+    // Centre second dot
+    let sdot_x = (cx + (sec_f / 60.0 * std::f32::consts::TAU - std::f32::consts::PI / 2.0).cos() * r) as i32;
+    let sdot_y = (cy + (sec_f / 60.0 * std::f32::consts::TAU - std::f32::consts::PI / 2.0).sin() * r) as i32;
+    for dy in -4i32..=4 {
+        for dx in -4i32..=4 {
+            if dx*dx + dy*dy <= 16 {
+                let px = (sdot_x + dx) as u32;
+                let py_d = (sdot_y + dy) as u32;
+                if px < 480 && py_d < 480 { img.put_pixel(px, py_d, TEXT); }
+            }
+        }
+    }
+
+    DynamicImage::ImageRgb8(img)
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// render_galaxy  — spiral galaxy with stars and core glow
+// ─────────────────────────────────────────────────────────────────────────────
+static GALAXY_TICK: std::sync::OnceLock<std::sync::Mutex<u64>> = std::sync::OnceLock::new();
+
+pub fn render_galaxy() -> DynamicImage {
+    let tick = {
+        let m = GALAXY_TICK.get_or_init(|| std::sync::Mutex::new(0u64));
+        let mut t = m.lock().unwrap();
+        *t += 1;
+        *t
+    };
+
+    let tf = tick as f32 * 0.008;
+    let mut img = RgbImage::new(480, 480);
+    for p in img.pixels_mut() { *p = Rgb([0x05, 0x05, 0x12]); }
+
+    // Core glow
+    let cx = 240.0_f32;
+    let cy = 240.0_f32;
+    for py in 0..480u32 {
+        for px in 0..480u32 {
+            let dx = px as f32 - cx;
+            let dy = py as f32 - cy;
+            let r = (dx*dx + dy*dy).sqrt();
+            let glow = (-r * 0.018).exp();
+            if glow > 0.01 {
+                let cur = *img.get_pixel(px, py);
+                img.put_pixel(px, py, Rgb([
+                    (cur[0] as f32 + 0x89 as f32 * glow * 0.6).min(255.0) as u8,
+                    (cur[1] as f32 + 0xb4 as f32 * glow * 0.5).min(255.0) as u8,
+                    (cur[2] as f32 + 0xff as f32 * glow * 0.4).min(255.0) as u8,
+                ]));
+            }
+        }
+    }
+
+    // Spiral arms with stars
+    let n_arms = 2i32;
+    let stars_per_arm = 600;
+    let mut star_seed = 0x6A1A_A1A5u32;
+    let star_lcg = |s: &mut u32| -> f32 {
+        *s = s.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+        (*s as f32) / u32::MAX as f32
+    };
+
+    for arm in 0..n_arms {
+        for _ in 0..stars_per_arm {
+            let t_star = star_lcg(&mut star_seed);  // 0..1 along arm
+            let r = t_star * 220.0_f32;
+            // Spiral: angle = arm offset + r * tightness + rotation
+            let angle = arm as f32 * std::f32::consts::PI
+                + r * 0.04
+                + tf
+                + star_lcg(&mut star_seed) * 0.3; // scatter
+            let scatter = star_lcg(&mut star_seed) * 20.0 * t_star;
+
+            let (sa, ca) = angle.sin_cos();
+            let sx = cx + (ca * r + sa * scatter);
+            let sy = cy + (sa * r - ca * scatter);
+
+            if sx < 0.0 || sx >= 480.0 || sy < 0.0 || sy >= 480.0 { continue; }
+
+            // Star colour: blue near centre, yellow/white at edges
+            let heat = 1.0 - t_star;
+            let col = Rgb([
+                (0x89 as f32 + heat * (0xff - 0x89) as f32) as u8,
+                (0xb4 as f32 + heat * (0xff - 0xb4) as f32) as u8,
+                (0xfa as f32) as u8,
+            ]);
+            let brightness = star_lcg(&mut star_seed) * 0.5 + 0.5;
+            let alpha = (brightness * 200.0) as u8;
+            let pi = sx as u32;
+            let qi = sy as u32;
+            let bg = *img.get_pixel(pi, qi);
+            let fa = alpha as f32 / 255.0;
+            img.put_pixel(pi, qi, Rgb([
+                (bg[0] as f32 * (1.0-fa) + col[0] as f32 * fa).min(255.0) as u8,
+                (bg[1] as f32 * (1.0-fa) + col[1] as f32 * fa).min(255.0) as u8,
+                (bg[2] as f32 * (1.0-fa) + col[2] as f32 * fa).min(255.0) as u8,
+            ]));
+        }
+    }
+
+    // Bright core stars
+    for i in 0..80i32 {
+        let r = (i as f32 / 80.0).powi(2) * 40.0;
+        let angle = i as f32 * 2.399963;  // golden angle
+        let (sa, ca) = (angle + tf * 0.3).sin_cos();
+        let px_i = (cx + ca * r) as u32;
+        let py_i = (cy + sa * r) as u32;
+        if px_i < 480 && py_i < 480 {
+            img.put_pixel(px_i, py_i, TEXT);
+        }
+    }
+
+    DynamicImage::ImageRgb8(img)
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// render_ocean_waves  — rolling sine-based ocean surface
+// ─────────────────────────────────────────────────────────────────────────────
+static OCEAN_TICK: std::sync::OnceLock<std::sync::Mutex<u64>> = std::sync::OnceLock::new();
+
+pub fn render_ocean_waves() -> DynamicImage {
+    let tick = {
+        let m = OCEAN_TICK.get_or_init(|| std::sync::Mutex::new(0u64));
+        let mut t = m.lock().unwrap();
+        *t += 1;
+        *t
+    };
+
+    let tf = tick as f32 * 0.04;
+    let mut img = RgbImage::new(480, 480);
+
+    for py in 0u32..480 {
+        for px in 0u32..480 {
+            let x = px as f32 / 480.0;
+            let y = py as f32 / 480.0;
+
+            // Sky above, water below
+            // Wave surface height at this x position
+            let w1 = (x * 6.0 + tf).sin() * 0.04;
+            let w2 = (x * 11.0 - tf * 1.3).sin() * 0.02;
+            let w3 = (x * 3.5 + tf * 0.7).cos() * 0.03;
+            let surface_y = 0.45 + w1 + w2 + w3;
+
+            let col = if y < surface_y - 0.01 {
+                // Sky gradient
+                let t_sky = y / (surface_y - 0.01);
+                Rgb([
+                    (0x1e_u8 as f32 + t_sky * (0x74 - 0x1e) as f32) as u8,
+                    (0x1e_u8 as f32 + t_sky * (0xc7 - 0x1e) as f32) as u8,
+                    (0x2e_u8 as f32 + t_sky * (0xec - 0x2e) as f32) as u8,
+                ])
+            } else if y < surface_y + 0.01 {
+                // Foam / wave crest
+                let dist = (y - surface_y).abs() / 0.01;
+                let foam = (1.0 - dist) * 0.8;
+                Rgb([
+                    (0xcdd6f4 >> 16 & 0xFF) as u8,
+                    (0xcdd6f4 >> 8 & 0xFF) as u8,
+                    (255.0 * foam) as u8,
+                ])
+            } else {
+                // Water depth: fade to darker blue
+                let depth = (y - surface_y) / (1.0 - surface_y);
+                // Refraction distortion
+                let distort = ((x * 8.0 + depth * 4.0 + tf).sin() * 0.005) + depth;
+                let caustic = ((x * 20.0 + tf * 2.0).sin() * (distort * 10.0 + tf).cos() * 0.5 + 0.5) * 0.2;
+                Rgb([
+                    ((0x17 as f32 + caustic * 40.0) * (1.0 - depth * 0.7)) as u8,
+                    ((0x5a as f32 + caustic * 60.0) * (1.0 - depth * 0.5)) as u8,
+                    ((0x8c as f32 + caustic * 40.0) * (1.0 - depth * 0.3)) as u8,
+                ])
+            };
+
+            img.put_pixel(px, py, col);
+        }
+    }
+
+    DynamicImage::ImageRgb8(img)
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// render_warp_speed  — hyperspace warp streaks
+// ─────────────────────────────────────────────────────────────────────────────
+struct WarpStar { x: f32, y: f32, vx: f32, vy: f32, len: f32, col_idx: usize }
+static WARP_STATE: std::sync::OnceLock<std::sync::Mutex<(Vec<WarpStar>, u32, u64)>> =
+    std::sync::OnceLock::new();
+
+pub fn render_warp_speed() -> DynamicImage {
+    const N_STARS: usize = 200;
+
+    let state = WARP_STATE.get_or_init(|| {
+        let mut s = 0x0A45_5EEDu32;
+        let lcg = |r: &mut u32| -> f32 {
+            *r = r.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            (*r as f32) / u32::MAX as f32
+        };
+        let stars = (0..N_STARS).map(|i| {
+            let angle = lcg(&mut s) * std::f32::consts::TAU;
+            let speed = 1.0 + lcg(&mut s) * 8.0;
+            WarpStar {
+                x: lcg(&mut s) * 480.0,
+                y: lcg(&mut s) * 480.0,
+                vx: angle.cos() * speed,
+                vy: angle.sin() * speed,
+                len: 1.0 + lcg(&mut s) * 3.0,
+                col_idx: i % 8,
+            }
+        }).collect();
+        std::sync::Mutex::new((stars, s, 0u64))
+    });
+    let mut st = state.lock().unwrap();
+    let (ref mut stars, ref mut seed, ref mut tick) = *st;
+    *tick += 1;
+
+    let mut img = RgbImage::new(480, 480);
+    // Motion blur: darken existing frame rather than clearing
+    for p in img.pixels_mut() { *p = BG; }
+
+    let cols: [Rgb<u8>; 8] = [TEXT, BLUE, TEAL, SUBTEXT, Rgb([0xff,0xff,0xff]), GREEN, MAUVE, PEACH];
+
+    let lcg_spawn = |s: &mut u32| -> f32 {
+        *s = s.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+        (*s as f32) / u32::MAX as f32
+    };
+
+    for star in stars.iter_mut() {
+        // Accelerate away from center
+        let dx = star.x - 240.0;
+        let dy = star.y - 240.0;
+        let dist = (dx*dx + dy*dy).sqrt().max(1.0);
+        star.vx += dx / dist * 0.4;
+        star.vy += dy / dist * 0.4;
+
+        // Speed limit
+        let spd = (star.vx * star.vx + star.vy * star.vy).sqrt();
+        let max_spd = 30.0_f32;
+        if spd > max_spd { star.vx = star.vx / spd * max_spd; star.vy = star.vy / spd * max_spd; }
+
+        let x0 = star.x as i32;
+        let y0 = star.y as i32;
+        star.x += star.vx;
+        star.y += star.vy;
+        let x1 = star.x as i32;
+        let y1 = star.y as i32;
+        let trail_len = (star.len * spd * 0.3) as i32;
+
+        // Draw streak
+        let col = cols[star.col_idx % cols.len()];
+        let steps = (x1 - x0).abs().max((y1 - y0).abs()).max(1);
+        for ti in 0..=steps.max(trail_len) {
+            let t = ti as f32 / steps.max(trail_len) as f32;
+            let px = x0 as f32 + (x1 - x0) as f32 * t;
+            let py = y0 as f32 + (y1 - y0) as f32 * t;
+            let alpha = (200.0 * (1.0 - t * 0.7)) as u8;
+            if px >= 0.0 && px < 480.0 && py >= 0.0 && py < 480.0 {
+                let pxi = px as u32;
+                let pyi = py as u32;
+                let bg = *img.get_pixel(pxi, pyi);
+                let fa = alpha as f32 / 255.0;
+                img.put_pixel(pxi, pyi, Rgb([
+                    (bg[0] as f32 + col[0] as f32 * fa).min(255.0) as u8,
+                    (bg[1] as f32 + col[1] as f32 * fa).min(255.0) as u8,
+                    (bg[2] as f32 + col[2] as f32 * fa).min(255.0) as u8,
+                ]));
+            }
+        }
+
+        // Respawn if off-screen
+        if star.x < -50.0 || star.x > 530.0 || star.y < -50.0 || star.y > 530.0 {
+            let angle = lcg_spawn(seed) * std::f32::consts::TAU;
+            let r_init = lcg_spawn(seed) * 30.0;
+            star.x = 240.0 + angle.cos() * r_init;
+            star.y = 240.0 + angle.sin() * r_init;
+            star.vx = angle.cos() * (0.5 + lcg_spawn(seed));
+            star.vy = angle.sin() * (0.5 + lcg_spawn(seed));
+        }
+    }
+
+    DynamicImage::ImageRgb8(img)
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// render_morphing_blobs  — organic morphing blob shapes with signed-distance
+// ─────────────────────────────────────────────────────────────────────────────
+static MORPH_TICK: std::sync::OnceLock<std::sync::Mutex<u64>> = std::sync::OnceLock::new();
+
+pub fn render_morphing_blobs() -> DynamicImage {
+    let tick = {
+        let m = MORPH_TICK.get_or_init(|| std::sync::Mutex::new(0u64));
+        let mut t = m.lock().unwrap();
+        *t += 1;
+        *t
+    };
+
+    let tf = tick as f32 * 0.02;
+    let mut img = RgbImage::new(480, 480);
+
+    const W: u32 = 160;
+    const H: u32 = 160;
+    const CELL: u32 = 3;
+
+    // 5 blobs with orbiting positions
+    let blobs: [(f32, f32, f32); 5] = [
+        (240.0 + 120.0 * tf.cos(),        240.0 + 80.0 * tf.sin(),        55.0),
+        (240.0 + 100.0 * (tf*0.7).sin(),  240.0 + 120.0 * (tf*0.7).cos(), 45.0),
+        (240.0 + 70.0 * (tf*1.3).cos(),   240.0 + 70.0 * (tf*1.1).sin(),  40.0),
+        (240.0 + 90.0 * (tf*0.5+1.0).sin(), 240.0 + 90.0 * (tf*0.5).cos(), 50.0),
+        (240.0,                            240.0 + 50.0 * (tf*0.9).sin(),  35.0),
+    ];
+
+    let blob_colours: [Rgb<u8>; 5] = [BLUE, MAUVE, TEAL, PEACH, RED];
+
+    for cy in 0..H {
+        for cx in 0..W {
+            let px = cx as f32 / W as f32 * 480.0;
+            let py = cy as f32 / H as f32 * 480.0;
+
+            // Evaluate metaball field
+            let mut field = 0.0f32;
+            let mut weighted_col = [0.0f32; 3];
+
+            for (bi, &(bx, by, br)) in blobs.iter().enumerate() {
+                let dx = px - bx;
+                let dy = py - by;
+                let d2 = dx*dx + dy*dy;
+                let w = (br * br) / d2.max(1.0);
+                field += w;
+                let c = blob_colours[bi % blob_colours.len()];
+                weighted_col[0] += c[0] as f32 * w;
+                weighted_col[1] += c[1] as f32 * w;
+                weighted_col[2] += c[2] as f32 * w;
+            }
+
+            let col = if field > 1.0 {
+                // Inside blob — interpolated colour
+                Rgb([
+                    (weighted_col[0] / field).min(255.0) as u8,
+                    (weighted_col[1] / field).min(255.0) as u8,
+                    (weighted_col[2] / field).min(255.0) as u8,
+                ])
+            } else if field > 0.55 {
+                // Edge glow
+                let t = (field - 0.55) / 0.45;
+                Rgb([
+                    (BG[0] as f32 * (1.0-t) + (weighted_col[0] / field.max(0.01)) * t).min(255.0) as u8,
+                    (BG[1] as f32 * (1.0-t) + (weighted_col[1] / field.max(0.01)) * t).min(255.0) as u8,
+                    (BG[2] as f32 * (1.0-t) + (weighted_col[2] / field.max(0.01)) * t).min(255.0) as u8,
+                ])
+            } else {
+                BG
+            };
+
+            for dy in 0..CELL {
+                for dx in 0..CELL {
+                    img.put_pixel(cx * CELL + dx, cy * CELL + dy, col);
+                }
+            }
+        }
+    }
+
+    DynamicImage::ImageRgb8(img)
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// render_clock_matrix  — Matrix-style falling digits that resolve to the time
+// ─────────────────────────────────────────────────────────────────────────────
+struct MatrixClockCol {
+    head_y: f32,
+    speed:  f32,
+    chars:  Vec<char>,
+    bright_head: bool,
+}
+static CLOCK_MATRIX_STATE: std::sync::OnceLock<std::sync::Mutex<(Vec<MatrixClockCol>, u32, u64)>> =
+    std::sync::OnceLock::new();
+
+pub fn render_clock_matrix() -> DynamicImage {
+    const COLS: usize = 40;    // number of columns
+    const ROWS: usize = 40;    // character rows
+    const CW: u32 = 12;        // cell width
+    const CH: u32 = 12;        // cell height
+
+    let now = Local::now();
+    let time_str: Vec<char> = now.format("%H:%M:%S").to_string().chars().collect();
+
+    let state = CLOCK_MATRIX_STATE.get_or_init(|| {
+        let mut s = 0xC10C_C0DEu32;
+        let lcg = |r: &mut u32| -> u32 {
+            *r = r.wrapping_mul(1_664_525).wrapping_add(1_013_904_223); *r
+        };
+        let cols = (0..COLS).map(|_| MatrixClockCol {
+            head_y: (lcg(&mut s) % ROWS as u32) as f32,
+            speed:  0.3 + (lcg(&mut s) as f32 / u32::MAX as f32) * 0.9,
+            chars: (0..ROWS).map(|_| {
+                let c = lcg(&mut s) % 10;
+                (b'0' + c as u8) as char
+            }).collect(),
+            bright_head: lcg(&mut s) % 3 != 0,
+        }).collect();
+        std::sync::Mutex::new((cols, s, 0u64))
+    });
+
+    let mut st = state.lock().unwrap();
+    let (ref mut cols, ref mut seed, ref mut tick) = *st;
+    *tick += 1;
+
+    let lcg = |s: &mut u32| -> u32 {
+        *s = s.wrapping_mul(1_664_525).wrapping_add(1_013_904_223); *s
+    };
+
+    let mut img = RgbImage::new(480, 480);
+    for p in img.pixels_mut() { *p = BG; }
+
+    let font = font_mono();
+
+    // Update columns
+    for col in cols.iter_mut() {
+        col.head_y += col.speed;
+        if col.head_y >= ROWS as f32 + 5.0 {
+            col.head_y = -5.0;
+            // Randomise chars
+            for c in col.chars.iter_mut() {
+                let r = lcg(seed) % 10;
+                *c = (b'0' + r as u8) as char;
+            }
+        }
+        // Occasionally flicker a char
+        if lcg(seed) % 20 == 0 {
+            let ri = lcg(seed) as usize % ROWS;
+            let r = lcg(seed) % 10;
+            col.chars[ri] = (b'0' + r as u8) as char;
+        }
+    }
+
+    // Time overlay position (centre 8 characters)
+    let time_start_col = (COLS / 2).saturating_sub(4);
+    let time_row = ROWS / 2;
+
+    // Draw columns
+    for (ci, col) in cols.iter().enumerate() {
+        let px_base = ci as u32 * CW;
+        let head = col.head_y as i32;
+
+        for ri in 0..ROWS {
+            let py_base = ri as u32 * CH;
+            let dist_from_head = head - ri as i32;
+
+            // Is this cell part of the time display?
+            let time_idx = ci as i32 - time_start_col as i32;
+            let is_time_cell = ri == time_row
+                && time_idx >= 0
+                && (time_idx as usize) < time_str.len();
+
+            let (display_char, col_rgb) = if is_time_cell {
+                (time_str[time_idx as usize], TEXT)
+            } else {
+                let c = col.chars[ri % ROWS];
+                let col_rgb = if dist_from_head == 0 && col.bright_head {
+                    TEXT  // bright head
+                } else if dist_from_head > 0 && dist_from_head < 12 {
+                    let alpha = 255 - dist_from_head as u32 * 20;
+                    Rgb([0, (GREEN[1] as u32 * alpha / 255) as u8, 0])
+                } else if dist_from_head >= 0 {
+                    Rgb([0, (GREEN[1] / 3) as u8, 0])
+                } else {
+                    continue;
+                };
+                (c, col_rgb)
+            };
+
+            if px_base < 480 && py_base < 480 {
+                draw_text_mut(&mut img, col_rgb,
+                    px_base as i32, py_base as i32,
+                    PxScale::from(11.0), &font, &display_char.to_string());
+            }
+        }
+    }
+
+    DynamicImage::ImageRgb8(img)
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// render_sierpinski  — animated Sierpiński triangle fractal (chaos game)
+// ─────────────────────────────────────────────────────────────────────────────
+static SIERP_STATE: std::sync::OnceLock<std::sync::Mutex<(Vec<(f32,f32)>, u32, u64)>> =
+    std::sync::OnceLock::new();
+
+pub fn render_sierpinski() -> DynamicImage {
+    const N_DOTS: usize = 25_000;
+    let state = SIERP_STATE.get_or_init(|| {
+        std::sync::Mutex::new((vec![(240.0f32, 240.0f32)], 0xF4AC_7A1Bu32, 0u64))
+    });
+    let mut st = state.lock().unwrap();
+    let (ref mut dots, ref mut seed, ref mut tick) = *st;
+    *tick += 1;
+    let tf = *tick as f32;
+
+    let lcg = |s: &mut u32| -> f32 {
+        *s = s.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+        (*s as f32) / u32::MAX as f32
+    };
+
+    // Slowly rotate the triangle over time
+    let base_angle = tf * 0.005;
+    let r = 210.0_f32;
+    let verts: [(f32,f32); 3] = [
+        (240.0 + r * (base_angle + std::f32::consts::TAU * 0.0 / 3.0).cos(),
+         240.0 + r * (base_angle + std::f32::consts::TAU * 0.0 / 3.0).sin()),
+        (240.0 + r * (base_angle + std::f32::consts::TAU * 1.0 / 3.0).cos(),
+         240.0 + r * (base_angle + std::f32::consts::TAU * 1.0 / 3.0).sin()),
+        (240.0 + r * (base_angle + std::f32::consts::TAU * 2.0 / 3.0).cos(),
+         240.0 + r * (base_angle + std::f32::consts::TAU * 2.0 / 3.0).sin()),
+    ];
+
+    // Chaos game iterations
+    while dots.len() < N_DOTS {
+        let last = *dots.last().unwrap();
+        let vi = (lcg(seed) * 3.0) as usize % 3;
+        let v = verts[vi];
+        dots.push(((last.0 + v.0) * 0.5, (last.1 + v.1) * 0.5));
+    }
+    // Reset periodically to avoid stale dots after rotation
+    if *tick % 200 == 0 {
+        dots.clear();
+        dots.push((240.0, 240.0));
+    }
+
+    let mut img = RgbImage::new(480, 480);
+    for p in img.pixels_mut() { *p = BG; }
+
+    let cols: [Rgb<u8>; 3] = [BLUE, MAUVE, TEAL];
+
+    for (i, &(x, y)) in dots.iter().enumerate() {
+        let px = x as u32;
+        let py = y as u32;
+        if px >= 480 || py >= 480 { continue; }
+        // Colour by which third of the fractal
+        let dx = x - 240.0;
+        let dy = y - 240.0;
+        let angle_f = (dy.atan2(dx) + std::f32::consts::PI) / std::f32::consts::TAU;
+        let ci = (angle_f * 3.0) as usize % 3;
+        let brightness = 0.5 + (i as f32 / N_DOTS as f32) * 0.5;
+        let c = cols[ci];
+        let existing = *img.get_pixel(px, py);
+        img.put_pixel(px, py, Rgb([
+            (existing[0] as f32 + c[0] as f32 * brightness * 0.6).min(255.0) as u8,
+            (existing[1] as f32 + c[1] as f32 * brightness * 0.6).min(255.0) as u8,
+            (existing[2] as f32 + c[2] as f32 * brightness * 0.6).min(255.0) as u8,
+        ]));
+    }
+
+    DynamicImage::ImageRgb8(img)
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// render_lava_lamp  — warm lava-lamp blob simulation
+// ─────────────────────────────────────────────────────────────────────────────
+struct LavaBlob { x: f32, y: f32, vy: f32, r: f32, phase: f32, ci: usize }
+static LAVA_STATE: std::sync::OnceLock<std::sync::Mutex<Vec<LavaBlob>>> =
+    std::sync::OnceLock::new();
+
+pub fn render_lava_lamp() -> DynamicImage {
+    const N: usize = 8;
+    const W: u32 = 120;
+    const H: u32 = 120;
+    const CELL: u32 = 4;
+
+    let state = LAVA_STATE.get_or_init(|| {
+        let mut s = 0x1A7A_1A4Bu32;
+        let lcg = |r: &mut u32| -> f32 {
+            *r = r.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            (*r as f32) / u32::MAX as f32
+        };
+        let blobs = (0..N).map(|i| LavaBlob {
+            x:  20.0 + lcg(&mut s) * 440.0,
+            y:  lcg(&mut s) * 480.0,
+            vy: (lcg(&mut s) - 0.5) * 1.0,
+            r:  28.0 + lcg(&mut s) * 32.0,
+            phase: lcg(&mut s) * 6.28,
+            ci: i % 5,
+        }).collect();
+        std::sync::Mutex::new(blobs)
+    });
+    let mut blobs = state.lock().unwrap();
+
+    // Background: warm gradient
+    let mut img = RgbImage::new(480, 480);
+    for py in 0u32..480 {
+        let t = py as f32 / 480.0;
+        img.put_pixel(0, py, Rgb([0x18, 0x08, 0x0a]));  // seed row for fill
+        for px in 0u32..480 {
+            img.put_pixel(px, py, Rgb([
+                (0x18_u32 + (t * (0x30 - 0x18) as f32) as u32) as u8,
+                (0x08_u32 + (t * (0x10 - 0x08) as f32) as u32) as u8,
+                (0x0a_u32 + (t * (0x14 - 0x0a) as f32) as u32) as u8,
+            ]));
+        }
+    }
+
+    let lava_cols: [[u8;3]; 5] = [
+        [0xf3, 0x8b, 0xa8],  // red
+        [0xfa, 0xb3, 0x87],  // peach
+        [0xf9, 0xe2, 0xaf],  // yellow
+        [0xcb, 0xa6, 0xf7],  // mauve
+        [0xff, 0x60, 0x00],  // orange
+    ];
+
+    // Update blobs
+    for blob in blobs.iter_mut() {
+        blob.phase += 0.02;
+        blob.vy += (blob.y / 480.0 - 0.5) * -0.05;  // buoyancy: pull toward centre
+        blob.vy += (blob.phase * 0.5).sin() * 0.03;  // slow wobble
+        blob.vy = blob.vy.clamp(-1.5, 1.5);
+        blob.y += blob.vy;
+        // Horizontal wobble
+        blob.x += (blob.phase * 0.7).sin() * 0.4;
+        blob.x = blob.x.clamp(blob.r + 5.0, 480.0 - blob.r - 5.0);
+        if blob.y < -blob.r { blob.y = 480.0 + blob.r; }
+        if blob.y > 480.0 + blob.r { blob.y = -blob.r; }
+    }
+
+    // Render metaballs on 120×120 grid
+    for cy in 0..H {
+        for cx in 0..W {
+            let px_f = cx as f32 / W as f32 * 480.0;
+            let py_f = cy as f32 / H as f32 * 480.0;
+
+            let mut field = 0.0f32;
+            let mut wc = [0.0f32; 3];
+            for blob in blobs.iter() {
+                let dx = px_f - blob.x;
+                let dy = py_f - blob.y;
+                let d2 = dx*dx + dy*dy;
+                let w = blob.r * blob.r / d2.max(1.0);
+                field += w;
+                let c = lava_cols[blob.ci % lava_cols.len()];
+                wc[0] += c[0] as f32 * w;
+                wc[1] += c[1] as f32 * w;
+                wc[2] += c[2] as f32 * w;
+            }
+
+            if field > 1.0 {
+                let col = [
+                    (wc[0] / field).min(255.0) as u8,
+                    (wc[1] / field).min(255.0) as u8,
+                    (wc[2] / field).min(255.0) as u8,
+                ];
+                for dy in 0..CELL {
+                    for dx in 0..CELL {
+                        img.put_pixel(cx * CELL + dx, cy * CELL + dy, Rgb(col));
+                    }
+                }
+            } else if field > 0.5 {
+                // Glow
+                let t = (field - 0.5) * 2.0;
+                let bg = *img.get_pixel(cx * CELL, cy * CELL);
+                let col = Rgb([
+                    (bg[0] as f32 * (1.0-t) + wc[0] / field.max(0.01) * t).min(255.0) as u8,
+                    (bg[1] as f32 * (1.0-t) + wc[1] / field.max(0.01) * t).min(255.0) as u8,
+                    (bg[2] as f32 * (1.0-t) + wc[2] / field.max(0.01) * t).min(255.0) as u8,
+                ]);
+                for dy in 0..CELL {
+                    for dx in 0..CELL {
+                        img.put_pixel(cx * CELL + dx, cy * CELL + dy, col);
+                    }
+                }
+            }
+        }
+    }
+
+    DynamicImage::ImageRgb8(img)
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// render_pendulum_wave  — phase wave of 16 pendulums
+// ─────────────────────────────────────────────────────────────────────────────
+static PENDULUM_TICK: std::sync::OnceLock<std::sync::Mutex<u64>> = std::sync::OnceLock::new();
+
+pub fn render_pendulum_wave() -> DynamicImage {
+    let tick = {
+        let m = PENDULUM_TICK.get_or_init(|| std::sync::Mutex::new(0u64));
+        let mut t = m.lock().unwrap();
+        *t += 1;
+        *t
+    };
+
+    let tf = tick as f32 * 0.015;
+    let mut img = RgbImage::new(480, 480);
+    for p in img.pixels_mut() { *p = BG; }
+
+    const N: usize = 16;
+    const PIVOT_Y: f32 = 50.0;
+    const L_MIN: f32 = 100.0;
+    const L_MAX: f32 = 380.0;
+
+    let pivot_xs: Vec<f32> = (0..N).map(|i| 30.0 + i as f32 * (420.0 / (N-1) as f32)).collect();
+
+    let col_cycle: [Rgb<u8>; 8] = [BLUE, TEAL, GREEN, YELLOW, PEACH, RED, MAUVE, Rgb([0x89,0xdc,0xeb])];
+
+    for (i, &px) in pivot_xs.iter().enumerate() {
+        // Length varies so that periods differ slightly
+        let l = L_MIN + (i as f32 / (N-1) as f32) * (L_MAX - L_MIN);
+        // Angular frequency: omega = sqrt(g/l), normalised
+        let omega = (9.81_f32 / l).sqrt() * 40.0;  // scaling for screen
+        let angle = 0.35_f32 * (omega * tf).sin();
+
+        let bob_x = px + l * angle.sin();
+        let bob_y = PIVOT_Y + l * angle.cos();
+
+        let col = col_cycle[i % col_cycle.len()];
+
+        // Draw string
+        let steps = ((bob_y - PIVOT_Y).abs() as i32 + 1).max(2);
+        for s in 0..=steps {
+            let t = s as f32 / steps as f32;
+            let sx = (px + (bob_x - px) * t) as i32;
+            let sy = (PIVOT_Y + (bob_y - PIVOT_Y) * t) as i32;
+            if sx >= 0 && sx < 480 && sy >= 0 && sy < 480 {
+                let dim_col = Rgb([(col[0] / 3), (col[1] / 3), (col[2] / 3)]);
+                img.put_pixel(sx as u32, sy as u32, dim_col);
+            }
+        }
+
+        // Draw bob (circle)
+        let bob_r = 8i32;
+        for dy in -bob_r..=bob_r {
+            for dx in -bob_r..=bob_r {
+                if dx*dx + dy*dy <= bob_r*bob_r {
+                    let bx = bob_x as i32 + dx;
+                    let by = bob_y as i32 + dy;
+                    if bx >= 0 && bx < 480 && by >= 0 && by < 480 {
+                        let bright = 1.0 - (dx*dx + dy*dy) as f32 / (bob_r*bob_r) as f32;
+                        img.put_pixel(bx as u32, by as u32, Rgb([
+                            (col[0] as f32 * bright) as u8,
+                            (col[1] as f32 * bright) as u8,
+                            (col[2] as f32 * bright) as u8,
+                        ]));
+                    }
+                }
+            }
+        }
+
+        // Pivot dot
+        let pd = PIVOT_Y as i32;
+        if px >= 0.0 && (px as u32) < 480 && pd >= 0 && pd < 480 {
+            img.put_pixel(px as u32, pd as u32, OVERLAY0);
+        }
+    }
+
+    DynamicImage::ImageRgb8(img)
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// render_fiber_optic  — glowing fiber-optic light strands radiating from centre
+// ─────────────────────────────────────────────────────────────────────────────
+static FIBER_TICK: std::sync::OnceLock<std::sync::Mutex<u64>> = std::sync::OnceLock::new();
+
+pub fn render_fiber_optic() -> DynamicImage {
+    let tick = {
+        let m = FIBER_TICK.get_or_init(|| std::sync::Mutex::new(0u64));
+        let mut t = m.lock().unwrap();
+        *t += 1;
+        *t
+    };
+
+    let tf = tick as f32 * 0.016;
+    let mut img = RgbImage::new(480, 480);
+    for p in img.pixels_mut() { *p = Rgb([0x04, 0x04, 0x0a]); }
+
+    const N_FIBERS: usize = 80;
+    const CX: f32 = 240.0;
+    const CY: f32 = 240.0;
+
+    let fiber_cols: [Rgb<u8>; 6] = [BLUE, TEAL, GREEN, MAUVE, PEACH, RED];
+
+    let mut fs = 0xF1BE_7A3Cu32;
+    let fiber_lcg = |s: &mut u32| -> f32 {
+        *s = s.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+        (*s as f32) / u32::MAX as f32
+    };
+
+    for fi in 0..N_FIBERS {
+        let base_angle = fi as f32 / N_FIBERS as f32 * std::f32::consts::TAU;
+        // Each fiber curves away from its base angle with a sinusoidal bend
+        let fiber_phase = fiber_lcg(&mut fs) * std::f32::consts::TAU;
+        let bend_amp = fiber_lcg(&mut fs) * 0.5;
+        let ci = fi % fiber_cols.len();
+        let col = fiber_cols[ci];
+
+        // Animate: brightness pulses along fiber
+        let pulse_phase = fiber_lcg(&mut fs) * std::f32::consts::TAU;
+        let pulse_freq = 0.3 + fiber_lcg(&mut fs) * 0.7;
+
+        // Draw fiber as a curve with 60 segments
+        let mut prev_x = CX;
+        let mut prev_y = CY;
+
+        for seg in 1..=60usize {
+            let t = seg as f32 / 60.0;
+            let r = t * 230.0;
+            let curve = bend_amp * (fiber_phase + t * 4.0 + tf * 0.5).sin();
+            let angle = base_angle + curve;
+            let x = CX + angle.cos() * r;
+            let y = CY + angle.sin() * r;
+
+            // Pulse brightness along the fiber
+            let dist_from_pulse = ((t - ((tf * pulse_freq + pulse_phase) % 1.0)).abs()) % 1.0;
+            let brightness = ((-dist_from_pulse * 8.0).exp() + (1.0 - t) * 0.3).min(1.0);
+
+            if x >= 0.0 && x < 480.0 && y >= 0.0 && y < 480.0 {
+                let bg = *img.get_pixel(x as u32, y as u32);
+                img.put_pixel(x as u32, y as u32, Rgb([
+                    (bg[0] as f32 + col[0] as f32 * brightness).min(255.0) as u8,
+                    (bg[1] as f32 + col[1] as f32 * brightness).min(255.0) as u8,
+                    (bg[2] as f32 + col[2] as f32 * brightness).min(255.0) as u8,
+                ]));
+            }
+            prev_x = x; prev_y = y;
+        }
+        let _ = (prev_x, prev_y);
+    }
+
+    // Central glow
+    for r in 0..=25u32 {
+        for angle_deg in 0..360u32 {
+            let a = angle_deg as f32 * std::f32::consts::TAU / 360.0;
+            let px = (CX + a.cos() * r as f32) as u32;
+            let py = (CY + a.sin() * r as f32) as u32;
+            if px < 480 && py < 480 {
+                let glow = (-(r as f32) * 0.2).exp();
+                let bg = *img.get_pixel(px, py);
+                img.put_pixel(px, py, Rgb([
+                    (bg[0] as f32 + 255.0 * glow).min(255.0) as u8,
+                    (bg[1] as f32 + 255.0 * glow).min(255.0) as u8,
+                    (bg[2] as f32 + 255.0 * glow).min(255.0) as u8,
+                ]));
+            }
+        }
+    }
+
+    DynamicImage::ImageRgb8(img)
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// render_network_globe  — wireframe globe with network activity arcs
+// ─────────────────────────────────────────────────────────────────────────────
+static GLOBE_TICK: std::sync::OnceLock<std::sync::Mutex<(u64, u32)>> =
+    std::sync::OnceLock::new();
+
+pub fn render_network_globe() -> DynamicImage {
+    let state = GLOBE_TICK.get_or_init(|| std::sync::Mutex::new((0u64, 0xBABE_F00Du32)));
+    let mut st = state.lock().unwrap();
+    let (ref mut tick, ref mut _seed) = *st;
+    *tick += 1;
+    let tf = *tick as f32 * 0.012;
+
+    let lcg = |s: &mut u32| -> f32 {
+        *s = s.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+        (*s as f32) / u32::MAX as f32
+    };
+
+    let mut img = RgbImage::new(480, 480);
+    for p in img.pixels_mut() { *p = BG; }
+
+    const CX: f32 = 240.0;
+    const CY: f32 = 240.0;
+    const R:  f32 = 180.0;
+
+    // Rotation: slowly spin the globe
+    let rot_y = tf;
+
+    // Project a 3D point on the sphere onto 2D
+    let project = |lat: f32, lon: f32| -> Option<(u32, u32, f32)> {
+        // Rotate around Y axis
+        let lon_r = lon + rot_y;
+        let x = R * lat.cos() * lon_r.cos();
+        let y = R * lat.sin();
+        let z = R * lat.cos() * lon_r.sin();
+        if z < 0.0 { return None; }  // back-face cull
+        Some(((CX + x) as u32, (CY - y) as u32, z))
+    };
+
+    // Draw latitude lines
+    for lat_deg in (-75i32..=75).step_by(15) {
+        let lat = lat_deg as f32 * std::f32::consts::PI / 180.0;
+        let steps = 120;
+        for i in 0..steps {
+            let lon1 = i as f32 / steps as f32 * std::f32::consts::TAU;
+            let lon2 = (i + 1) as f32 / steps as f32 * std::f32::consts::TAU;
+            if let (Some((x1, y1, _z1)), Some((x2, y2, z2))) = (project(lat, lon1), project(lat, lon2)) {
+                if x1 < 480 && y1 < 480 && x2 < 480 && y2 < 480 {
+                    let bright = (z2 / R * 0.6 + 0.2) as f32;
+                    let col = Rgb([(SURFACE0[0] as f32 * bright) as u8, (SURFACE0[1] as f32 * bright) as u8, (SURFACE0[2] as f32 * bright) as u8]);
+                    img.put_pixel(x1, y1, col);
+                }
+            }
+        }
+    }
+
+    // Draw longitude lines
+    for lon_deg in (0i32..360).step_by(20) {
+        let lon = lon_deg as f32 * std::f32::consts::PI / 180.0;
+        let steps = 60;
+        for i in 0..=steps {
+            let lat = (i as f32 / steps as f32 - 0.5) * std::f32::consts::PI;
+            if let Some((px, py, z)) = project(lat, lon) {
+                if px < 480 && py < 480 {
+                    let bright = (z / R * 0.6 + 0.2) as f32;
+                    let col = Rgb([(SURFACE0[0] as f32 * bright) as u8, (SURFACE0[1] as f32 * bright) as u8, (SURFACE0[2] as f32 * bright) as u8]);
+                    img.put_pixel(px, py, col);
+                }
+            }
+        }
+    }
+
+    // Network activity arcs (4-6 active connections)
+    let n_arcs = 5usize;
+    let arc_cols: [Rgb<u8>; 5] = [GREEN, TEAL, BLUE, MAUVE, YELLOW];
+    let mut arc_seed = 0x0A4C_5EEDu32;
+
+    for i in 0..n_arcs {
+        // Randomise source and dest on the sphere
+        let lat1 = (lcg(&mut arc_seed) - 0.5) * std::f32::consts::PI * 0.8;
+        let lon1 = lcg(&mut arc_seed) * std::f32::consts::TAU;
+        let lat2 = (lcg(&mut arc_seed) - 0.5) * std::f32::consts::PI * 0.8;
+        let lon2 = lcg(&mut arc_seed) * std::f32::consts::TAU;
+        let col = arc_cols[i % arc_cols.len()];
+
+        // Animate the arc drawing progress (pulse)
+        let arc_phase = (tf * 0.5 + i as f32 * 1.3).rem_euclid(2.0);
+        let progress = arc_phase.min(1.0);
+
+        let steps = 30;
+        for s in 0..(steps as f32 * progress) as i32 {
+            let t = s as f32 / steps as f32;
+            let lat = lat1 + (lat2 - lat1) * t;
+            let lon = lon1 + (lon2 - lon1) * t;
+            // Lift the arc above the surface
+            let lift = (t * std::f32::consts::PI).sin() * 0.3;
+            let lat_lifted = lat + lift;
+            if let Some((px, py, z)) = project(lat_lifted, lon) {
+                if px < 480 && py < 480 {
+                    let brightness = (1.0 - (t - 0.5).abs() * 2.0).max(0.0);
+                    let fa = brightness * 0.8 * (z / R);
+                    let bg = *img.get_pixel(px, py);
+                    img.put_pixel(px, py, Rgb([
+                        (bg[0] as f32 + col[0] as f32 * fa).min(255.0) as u8,
+                        (bg[1] as f32 + col[1] as f32 * fa).min(255.0) as u8,
+                        (bg[2] as f32 + col[2] as f32 * fa).min(255.0) as u8,
+                    ]));
+                }
+            }
+        }
+    }
+
+    // Globe outline
+    let steps = 360;
+    for i in 0..steps {
+        let a = i as f32 / steps as f32 * std::f32::consts::TAU;
+        let px = (CX + R * a.cos()) as u32;
+        let py = (CY + R * a.sin()) as u32;
+        if px < 480 && py < 480 { img.put_pixel(px, py, OVERLAY0); }
+    }
+
+    let font = font_bold();
+    draw_text_mut(&mut img, SUBTEXT, 150, 458, PxScale::from(14.0), &font, "Network Globe");
+
+    DynamicImage::ImageRgb8(img)
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// render_plasma_ball  — electric plasma ball with tendrils
+// ─────────────────────────────────────────────────────────────────────────────
+static PLASMA_BALL_TICK: std::sync::OnceLock<std::sync::Mutex<u64>> = std::sync::OnceLock::new();
+
+pub fn render_plasma_ball() -> DynamicImage {
+    let tick = {
+        let m = PLASMA_BALL_TICK.get_or_init(|| std::sync::Mutex::new(0u64));
+        let mut t = m.lock().unwrap();
+        *t += 1;
+        *t
+    };
+
+    let tf = tick as f32 * 0.025;
+    let mut img = RgbImage::new(480, 480);
+    for p in img.pixels_mut() { *p = Rgb([0x06, 0x04, 0x10]); }
+
+    const CX: f32 = 240.0;
+    const CY: f32 = 240.0;
+    const R:  f32 = 160.0;
+
+    for py in 0u32..480 {
+        for px in 0u32..480 {
+            let dx = px as f32 - CX;
+            let dy = py as f32 - CY;
+            let r = (dx*dx + dy*dy).sqrt();
+
+            if r > R + 15.0 { continue; }
+
+            let angle = dy.atan2(dx);
+            let t_sphere = (r / R).min(1.0);
+
+            // Electric field lines: sum of multiple sine frequencies
+            let e1 = (r * 0.04 - tf * 2.0 + angle * 5.0 + (tf * 0.7).sin()).sin();
+            let e2 = (r * 0.06 - tf * 1.5 + angle * 3.0 + (tf * 1.1).cos()).sin();
+            let e3 = (r * 0.08 - tf * 3.0 + angle * 7.0).sin();
+            let e4 = ((dx * 0.05).sin() + (dy * 0.05).cos() + tf * 0.8).sin();
+
+            let energy = ((e1 + e2 * 0.5 + e3 * 0.25 + e4 * 0.25) * 0.4 + 0.5)
+                .powi(2)
+                * (1.0 - t_sphere * 0.5);
+
+            // Glass sphere effect: bright at rim
+            let rim = if r > R - 8.0 && r <= R + 5.0 {
+                (1.0 - (r - (R - 4.0)).abs() / 9.0).max(0.0) * 0.5
+            } else { 0.0 };
+
+            // Core glow
+            let core_glow = (-r * 0.012).exp() * 0.4;
+
+            let final_energy = (energy + rim + core_glow).min(1.0);
+            if final_energy < 0.05 { continue; }
+
+            // Color: purple/blue/white electric
+            let h = ((e1 * 0.1 + tf * 0.003) + 0.7) % 1.0;
+            let sat = 0.8 - t_sphere * 0.3;
+            let lit = 0.15 + final_energy * 0.65;
+            let col = hsl_to_rgb(h, sat, lit);
+            img.put_pixel(px, py, col);
+        }
+    }
+
+    DynamicImage::ImageRgb8(img)
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// render_moss_growth  — cellular automaton: slow-growing organic moss/lichen
+// ─────────────────────────────────────────────────────────────────────────────
+static MOSS_STATE: std::sync::OnceLock<std::sync::Mutex<(Vec<u8>, Vec<f32>, u32, u64)>> =
+    std::sync::OnceLock::new();
+
+pub fn render_moss_growth() -> DynamicImage {
+    const W: usize = 160;
+    const H: usize = 160;
+    const CELL: u32 = 3;
+
+    let state = MOSS_STATE.get_or_init(|| {
+        let mut s = 0x4051_C0FFu32;
+        let lcg = |r: &mut u32| -> f32 {
+            *r = r.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            (*r as f32) / u32::MAX as f32
+        };
+        let mut cells = vec![0u8; W * H];
+        // Seed small patches
+        for _ in 0..20 {
+            let x = (lcg(&mut s) * (W-10) as f32) as usize;
+            let y = (lcg(&mut s) * (H-10) as f32) as usize;
+            for dy in 0..3 {
+                for dx in 0..3 {
+                    cells[(y+dy)*W + x+dx] = 1;
+                }
+            }
+        }
+        let health = vec![1.0f32; W * H];
+        std::sync::Mutex::new((cells, health, s, 0u64))
+    });
+
+    let mut st = state.lock().unwrap();
+    let (ref mut cells, ref mut health, ref mut seed, ref mut tick) = *st;
+    *tick += 1;
+
+    let lcg = |s: &mut u32| -> f32 {
+        *s = s.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+        (*s as f32) / u32::MAX as f32
+    };
+
+    // Cellular automaton step (every frame)
+    let old = cells.clone();
+    let old_h = health.clone();
+
+    for y in 1..(H-1) {
+        for x in 1..(W-1) {
+            let i = y*W+x;
+            let neighbors: [usize; 8] = [
+                (y-1)*W+x-1, (y-1)*W+x, (y-1)*W+x+1,
+                y*W+x-1,                 y*W+x+1,
+                (y+1)*W+x-1, (y+1)*W+x, (y+1)*W+x+1,
+            ];
+            let live_n: u32 = neighbors.iter().map(|&ni| old[ni] as u32).sum();
+            let avg_h: f32 = neighbors.iter().map(|&ni| old_h[ni]).sum::<f32>() / 8.0;
+
+            if old[i] == 0 {
+                // Spread: grow if 1-3 live neighbors and random chance
+                if live_n >= 1 && live_n <= 3 && lcg(seed) < 0.03 {
+                    cells[i] = 1;
+                    health[i] = (avg_h * 0.8).clamp(0.1, 1.0);
+                }
+            } else {
+                // Alive: die if overcrowded or underpopulated
+                if live_n == 0 || live_n > 5 {
+                    health[i] -= 0.03;
+                    if health[i] <= 0.0 { cells[i] = 0; health[i] = 0.0; }
+                } else {
+                    health[i] = (health[i] + 0.005).min(1.0);
+                }
+            }
+        }
+    }
+
+    // Re-seed if population crashes
+    let live_count: u32 = cells.iter().map(|&c| c as u32).sum();
+    if live_count < 200 {
+        let x = (lcg(seed) * (W-5) as f32) as usize;
+        let y = (lcg(seed) * (H-5) as f32) as usize;
+        for dy in 0..4 { for dx in 0..4 {
+            cells[(y+dy)*W+x+dx] = 1;
+            health[(y+dy)*W+x+dx] = 1.0;
+        }}
+    }
+
+    let mut img = RgbImage::new(480, 480);
+    for p in img.pixels_mut() { *p = Rgb([0x1e, 0x1a, 0x0e]); }
+
+    let cols: [(f32, f32, f32); 4] = [
+        (0.32, 0.6, 0.25),  // light green
+        (0.38, 0.55, 0.22), // medium green
+        (0.28, 0.65, 0.30), // lime green
+        (0.42, 0.45, 0.18), // dark green
+    ];
+
+    for y in 0..H {
+        for x in 0..W {
+            let i = y*W+x;
+            if cells[i] == 0 { continue; }
+            let h = health[i];
+            // Pick colour by position hash
+            let ci = (x * 7 + y * 13) % 4;
+            let (ch, cs, mut cl) = cols[ci];
+            cl = cl * h;
+            let col = hsl_to_rgb(ch, cs, cl);
+
+            for dy in 0..CELL {
+                for dx in 0..CELL {
+                    img.put_pixel(x as u32 * CELL + dx, y as u32 * CELL + dy, col);
+                }
+            }
+        }
+    }
+
+    let font = font_bold();
+    draw_text_mut(&mut img, SUBTEXT, 8, 462, PxScale::from(12.0), &font,
+        &format!("Moss: {} cells", live_count));
+
+    DynamicImage::ImageRgb8(img)
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// render_asteroid_field  — rotating asteroids in space
+// ─────────────────────────────────────────────────────────────────────────────
+struct Asteroid {
+    x:  f32, y:  f32,
+    vx: f32, vy: f32,
+    r:  f32,    // radius
+    rot: f32,   // rotation angle
+    rot_v: f32, // rotation speed
+    ci:  usize,
+}
+
+static ASTEROID_STATE: std::sync::OnceLock<std::sync::Mutex<(Vec<Asteroid>, u32, u64)>> =
+    std::sync::OnceLock::new();
+
+pub fn render_asteroid_field() -> DynamicImage {
+    const N: usize = 22;
+
+    let state = ASTEROID_STATE.get_or_init(|| {
+        let mut s = 0xA57E_4010u32;
+        let lcg = |r: &mut u32| -> f32 {
+            *r = r.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            (*r as f32) / u32::MAX as f32
+        };
+        let asteroids = (0..N).map(|i| Asteroid {
+            x: lcg(&mut s) * 480.0,
+            y: lcg(&mut s) * 480.0,
+            vx: (lcg(&mut s) - 0.5) * 1.2,
+            vy: (lcg(&mut s) - 0.5) * 1.2,
+            r:  5.0 + lcg(&mut s) * 22.0,
+            rot: lcg(&mut s) * std::f32::consts::TAU,
+            rot_v: (lcg(&mut s) - 0.5) * 0.04,
+            ci: i % 4,
+        }).collect();
+        std::sync::Mutex::new((asteroids, s, 0u64))
+    });
+
+    let mut st = state.lock().unwrap();
+    let (ref mut asteroids, ref mut _seed, ref mut tick) = *st;
+    *tick += 1;
+    let tf = *tick as f32;
+
+    let mut img = RgbImage::new(480, 480);
+    for p in img.pixels_mut() { *p = Rgb([0x04, 0x04, 0x10]); }
+
+    // Stars
+    let mut star_s = 0xA5A5_A5A5u32;
+    let sclg = |s: &mut u32| -> u32 { *s = s.wrapping_mul(1_664_525).wrapping_add(1_013_904_223); *s };
+    for _ in 0..150 {
+        let sx = sclg(&mut star_s) % 480;
+        let sy = sclg(&mut star_s) % 480;
+        let br = (sclg(&mut star_s) % 200 + 55) as u8;
+        img.put_pixel(sx, sy, Rgb([br, br, br]));
+    }
+
+    // Rock colours: warm grey tones
+    let rock_cols: [[u8;3]; 4] = [
+        [0x7f, 0x78, 0x6e],
+        [0x6a, 0x65, 0x60],
+        [0x95, 0x8e, 0x84],
+        [0x55, 0x52, 0x4e],
+    ];
+
+    // Update and draw asteroids
+    for ast in asteroids.iter_mut() {
+        ast.x = (ast.x + ast.vx).rem_euclid(490.0) - 5.0;
+        ast.y = (ast.y + ast.vy).rem_euclid(490.0) - 5.0;
+        ast.rot += ast.rot_v;
+
+        // Draw a rough polygon (7 vertices, perturbed)
+        let n_verts = 7;
+        let base_col = rock_cols[ast.ci % rock_cols.len()];
+        let cx = ast.x;
+        let cy = ast.y;
+        let r = ast.r;
+
+        // Scan fill within bounding box
+        let x0 = (cx - r - 2.0) as i32;
+        let x1 = (cx + r + 2.0) as i32;
+        let y0 = (cy - r - 2.0) as i32;
+        let y1 = (cy + r + 2.0) as i32;
+
+        let vert_rs: Vec<f32> = (0..n_verts).map(|v| {
+            let h = (v as u32).wrapping_mul(2654435761).wrapping_add(cx as u32 * 17);
+            r * (0.65 + (h as f32 / u32::MAX as f32) * 0.35)
+        }).collect();
+
+        for py in y0..=y1 {
+            for px in x0..=x1 {
+                if px < 0 || px >= 480 || py < 0 || py >= 480 { continue; }
+                let dx = px as f32 - cx;
+                let dy = py as f32 - cy;
+                let pt_angle = dy.atan2(dx) - ast.rot;
+                let pt_r = (dx*dx + dy*dy).sqrt();
+
+                // Interpolate radius at this angle
+                let frac = (pt_angle + std::f32::consts::PI) / std::f32::consts::TAU * n_verts as f32;
+                let vi = frac as usize % n_verts;
+                let vi2 = (vi + 1) % n_verts;
+                let t = frac.fract();
+                let poly_r = vert_rs[vi] * (1.0 - t) + vert_rs[vi2] * t;
+
+                if pt_r <= poly_r {
+                    // Shading: lit from upper-left
+                    let light = ((-dx - dy) / (r * 2.0)).clamp(0.0, 1.0) * 0.6 + 0.4;
+                    img.put_pixel(px as u32, py as u32, Rgb([
+                        (base_col[0] as f32 * light) as u8,
+                        (base_col[1] as f32 * light) as u8,
+                        (base_col[2] as f32 * light) as u8,
+                    ]));
+                }
+            }
+        }
+    }
+
+    let _ = tf;
+    DynamicImage::ImageRgb8(img)
+}
+
+// ── Solar System ─────────────────────────────────────────────────────────────
+pub fn render_solar_system() -> DynamicImage {
+    static SOLAR_TICK: std::sync::OnceLock<std::sync::Mutex<u64>> =
+        std::sync::OnceLock::new();
+    let tick = {
+        let mut g = SOLAR_TICK.get_or_init(|| std::sync::Mutex::new(0)).lock().unwrap();
+        *g += 1; *g
+    };
+    let tf = tick as f32;
+
+    let mut img = RgbImage::new(480, 480);
+    let bg = Rgb([4u8, 4, 14]);
+    for p in img.pixels_mut() { *p = bg; }
+
+    // Background stars (seeded, static)
+    let mut s: u32 = 0xA5EE_D123u32;
+    for _ in 0..250u32 {
+        s = s.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+        let sx = (s >> 23) % 480;
+        s = s.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+        let sy = (s >> 23) % 480;
+        s = s.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+        let b = 80u8 + (s >> 26) as u8;
+        img.put_pixel(sx, sy, Rgb([b, b, b]));
+    }
+
+    let cx = 240.0f32;
+    let cy = 240.0f32;
+
+    // Sun glow
+    for py in 180u32..300 {
+        for px in 180u32..300 {
+            let dx = px as f32 - cx;
+            let dy = py as f32 - cy;
+            let r = (dx * dx + dy * dy).sqrt();
+            if r <= 26.0 {
+                let t = ((26.0 - r) / 26.0).powi(2);
+                img.put_pixel(px, py, Rgb([
+                    (220.0 + 35.0 * t) as u8,
+                    (160.0 + 60.0 * t) as u8,
+                    (40.0 * t) as u8,
+                ]));
+            } else if r < 60.0 {
+                let t = ((60.0 - r) / 34.0) * 0.18;
+                let p = img.get_pixel(px, py);
+                img.put_pixel(px, py, Rgb([
+                    (p[0] as f32 + (220.0 - p[0] as f32) * t).min(255.0) as u8,
+                    (p[1] as f32 + (160.0 - p[1] as f32) * t).min(255.0) as u8,
+                    p[2],
+                ]));
+            }
+        }
+    }
+
+    // Planets: (orbital_r, period, planet_r, R, G, B, initial_phase)
+    let planets: &[(f32, f32, f32, u8, u8, u8, f32)] = &[
+        ( 55.0,  18.0, 4.0, 180, 140, 120, 0.0),   // Mercury
+        ( 88.0,  46.0, 7.0, 210, 175, 60,  1.0),   // Venus
+        (120.0,  75.0, 7.5, 60,  120, 220, 2.1),   // Earth
+        (160.0, 140.0, 6.0, 200, 80,  60,  3.5),   // Mars
+        (205.0, 470.0,14.0, 195, 155, 100, 0.7),   // Jupiter
+        (235.0, 1170.0,11.0,195, 175, 115, 4.2),   // Saturn
+    ];
+
+    // Draw orbits first
+    for &(orb_r, _, _, _, _, _, _) in planets {
+        for a in 0..720u32 {
+            let ang = a as f32 * std::f32::consts::PI / 360.0;
+            let ox = (cx + ang.cos() * orb_r) as i32;
+            let oy = (cy + ang.sin() * orb_r) as i32;
+            if ox >= 0 && ox < 480 && oy >= 0 && oy < 480 {
+                let p = img.get_pixel(ox as u32, oy as u32);
+                if p[0] < 30 {
+                    img.put_pixel(ox as u32, oy as u32, Rgb([22, 22, 35]));
+                }
+            }
+        }
+    }
+
+    // Draw planet bodies
+    for &(orb_r, period, psize, cr, cg, cb, phase0) in planets {
+        let angle = tf / period * std::f32::consts::TAU + phase0;
+        let px = cx + angle.cos() * orb_r;
+        let py = cy + angle.sin() * orb_r;
+
+        let ir = psize as i32 + 2;
+        for dy in -ir..=ir {
+            for dx in -ir..=ir {
+                let dist = ((dx * dx + dy * dy) as f32).sqrt();
+                if dist <= psize {
+                    let bx = px as i32 + dx;
+                    let by = py as i32 + dy;
+                    if bx >= 0 && bx < 480 && by >= 0 && by < 480 {
+                        // Lambert diffuse shading (light from upper-left)
+                        let nx = dx as f32 / psize;
+                        let ny = dy as f32 / psize;
+                        let nz = (1.0 - nx * nx - ny * ny).max(0.0).sqrt();
+                        let diff = (-0.6 * nx - 0.6 * ny + 0.5 * nz).max(0.0);
+                        let light = 0.3 + 0.7 * diff;
+                        img.put_pixel(bx as u32, by as u32, Rgb([
+                            (cr as f32 * light).min(255.0) as u8,
+                            (cg as f32 * light).min(255.0) as u8,
+                            (cb as f32 * light).min(255.0) as u8,
+                        ]));
+                    }
+                }
+            }
+        }
+
+        // Saturn rings (index 5 = Saturn, orbital_r == 235)
+        if (orb_r - 235.0).abs() < 1.0 {
+            let rstart = psize + 3.0;
+            let rend   = psize + 10.0;
+            for ra in 0..720u32 {
+                let rang = ra as f32 * std::f32::consts::PI / 360.0;
+                // Elliptical projection
+                let rx = rang.cos() * rend;
+                let ry = rang.sin() * rend * 0.28;
+                let rd = (rx * rx + ry * ry / (0.28 * 0.28)).sqrt();
+                if rd >= rstart && rd <= rend {
+                    let rbx = (px + rx) as i32;
+                    let rby = (py + ry) as i32;
+                    if rbx >= 0 && rbx < 480 && rby >= 0 && rby < 480 {
+                        img.put_pixel(rbx as u32, rby as u32, Rgb([175, 155, 95]));
+                    }
+                }
+            }
+        }
+    }
+
+    DynamicImage::ImageRgb8(img)
+}
+
+// ── Lightning Storm ───────────────────────────────────────────────────────────
+pub fn render_lightning_storm() -> DynamicImage {
+    static LS_STATE: std::sync::OnceLock<std::sync::Mutex<(u64, u32, f32)>> =
+        std::sync::OnceLock::new();
+    let (tick, bolt_seed, bolt_bv) = {
+        let mut g = LS_STATE.get_or_init(|| std::sync::Mutex::new((0u64, 0xBEEF_1234u32, 0.0f32))).lock().unwrap();
+        g.0 += 1;
+        if g.0 % 110 == 1 {
+            g.1 = (g.0 as u32).wrapping_mul(2_654_435_761).wrapping_add(0x9E37_79B9);
+            g.2 = 1.0;
+        } else {
+            g.2 = (g.2 - 0.018).max(0.0);
+        }
+        (g.0, g.1, g.2)
+    };
+
+    let mut img = RgbImage::new(480, 480);
+
+    // Dark stormy sky gradient
+    for py in 0..480u32 {
+        let t = py as f32 / 480.0;
+        let r = (12.0 + t * 10.0) as u8;
+        let gv = (10.0 + t * 8.0) as u8;
+        let b = (18.0 + t * 18.0) as u8;
+        for px in 0..480u32 {
+            img.put_pixel(px, py, Rgb([r, gv, b]));
+        }
+    }
+
+    // Cloud texture (static, LCG-derived)
+    {
+        let mut cs: u32 = 0xC10D_D0A5u32;
+        for _ in 0..1200u32 {
+            cs = cs.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            let cx2 = cs % 480;
+            cs = cs.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            let cy2 = cs % 160;
+            cs = cs.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            let cb = 8u8 + (cs >> 26) as u8;
+            let p = img.get_pixel(cx2, cy2);
+            img.put_pixel(cx2, cy2, Rgb([p[0]+cb/2, p[1]+cb/2, p[2]+cb]));
+        }
+    }
+
+    // Sky flash when bolt is fresh
+    if bolt_bv > 0.4 {
+        let flash = (bolt_bv - 0.4) / 0.6 * 0.25;
+        for py in 0..160u32 {
+            for px in 0..480u32 {
+                let p = img.get_pixel(px, py);
+                img.put_pixel(px, py, Rgb([
+                    (p[0] as f32 + 50.0 * flash).min(255.0) as u8,
+                    (p[1] as f32 + 55.0 * flash).min(255.0) as u8,
+                    (p[2] as f32 + 80.0 * flash).min(255.0) as u8,
+                ]));
+            }
+        }
+    }
+
+    // Draw bolt from seed (deterministic shape)
+    if bolt_bv > 0.0 {
+        let mut s = bolt_seed;
+        let rand = |s: &mut u32| -> f32 {
+            *s = s.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            (*s as f32) / (u32::MAX as f32)
+        };
+
+        let start_x = (rand(&mut s) * 380.0 + 50.0) as i32;
+        // Stack: (x, y, angle, length_remaining, depth)
+        let mut stack: Vec<(i32, i32, f32, f32, u8)> = vec![(start_x, 5, 0.05, 340.0, 7u8)];
+        let mut segs: Vec<(i32, i32, i32, i32)> = Vec::new();
+
+        while let Some((x, y, angle, remaining, depth)) = stack.pop() {
+            if depth == 0 || remaining < 8.0 { continue; }
+            let seg_len = remaining * (0.35 + rand(&mut s) * 0.35);
+            let dev = (rand(&mut s) - 0.5) * 0.55;
+            let new_angle = angle + dev;
+            let ex = x + (new_angle.sin() * seg_len) as i32;
+            let ey = y + (new_angle.cos() * seg_len) as i32;
+            segs.push((x, y, ex, ey));
+            stack.push((ex, ey, new_angle, remaining - seg_len, depth - 1));
+            if rand(&mut s) < 0.38 && depth > 2 {
+                let bangle = new_angle + (rand(&mut s) - 0.5) * 1.4;
+                stack.push((ex, ey, bangle, seg_len * 0.45, depth - 3));
+            }
+        }
+
+        for &(x1, y1, x2, y2) in &segs {
+            let dx_abs = (x2 - x1).abs();
+            let dy_abs = (y2 - y1).abs();
+            let steps = dx_abs.max(dy_abs).max(1);
+            for i in 0..=steps {
+                let t = i as f32 / steps as f32;
+                let px = x1 + ((x2 - x1) as f32 * t) as i32;
+                let py = y1 + ((y2 - y1) as f32 * t) as i32;
+                if px >= 1 && px < 479 && py >= 0 && py < 480 {
+                    img.put_pixel(px as u32, py as u32, Rgb([
+                        (200.0 * bolt_bv) as u8,
+                        (220.0 * bolt_bv) as u8,
+                        (255.0 * bolt_bv) as u8,
+                    ]));
+                    for (gx, gy) in &[(px-1,py),(px+1,py),(px,py.saturating_sub(1) as i32),(px,(py+1).min(479))] {
+                        let gxi = *gx as u32;
+                        let gyi = *gy as u32;
+                        if *gx >= 0 && *gx < 480 && *gy >= 0 && *gy < 480 {
+                            let gp = img.get_pixel(gxi, gyi);
+                            img.put_pixel(gxi, gyi, Rgb([
+                                (gp[0] as f32 + 70.0 * bolt_bv).min(255.0) as u8,
+                                (gp[1] as f32 + 80.0 * bolt_bv).min(255.0) as u8,
+                                (gp[2] as f32 + 120.0 * bolt_bv).min(255.0) as u8,
+                            ]));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    let _ = tick;
+    DynamicImage::ImageRgb8(img)
+}
+
+// ── Spirograph ────────────────────────────────────────────────────────────────
+pub fn render_spirograph() -> DynamicImage {
+    static SPIRO_TICK: std::sync::OnceLock<std::sync::Mutex<u64>> =
+        std::sync::OnceLock::new();
+    let tick = {
+        let mut g = SPIRO_TICK.get_or_init(|| std::sync::Mutex::new(0)).lock().unwrap();
+        *g += 1; *g
+    };
+    let tf = tick as f32;
+
+    let mut img = RgbImage::new(480, 480);
+    let bg = Rgb([24u8, 24, 37]);
+    for p in img.pixels_mut() { *p = bg; }
+
+    let cx = 240.0f32;
+    let cy = 240.0f32;
+
+    // Hypotrochoid: x=(R-r)*cos(t)+d*cos((R-r)/r*t)
+    //               y=(R-r)*sin(t)-d*sin((R-r)/r*t)
+    // 5 curves with different parameters and hue
+    let curves: &[(f32, f32, f32, f32, [u8;3])] = &[
+        (100.0, 41.0, 80.0, 0.0,  [137, 180, 250]),  // blue
+        (108.0, 33.0, 68.0, 0.5,  [203, 166, 247]),  // mauve
+        ( 92.0, 29.0, 62.0, 1.1,  [166, 227, 161]),  // green
+        (115.0, 46.0, 74.0, 1.7,  [250, 179, 135]),  // peach
+        (104.0, 38.0, 66.0, 2.3,  [249, 226, 175]),  // yellow
+    ];
+
+    let phase_drift = tf * 0.006;
+
+    for &(big_r, small_r, d, offset, col) in curves {
+        let ratio = big_r / small_r;
+        let period = std::f32::consts::TAU * ratio.ceil();
+        let steps = 2400usize;
+        let mut prev: Option<(i32, i32)> = None;
+        for i in 0..=steps {
+            let t = i as f32 / steps as f32 * period + phase_drift + offset;
+            let inner_t = (big_r - small_r) / small_r * t + phase_drift;
+            let x = (big_r - small_r) * t.cos() + d * inner_t.cos();
+            let y = (big_r - small_r) * t.sin() - d * inner_t.sin();
+            let px = (cx + x) as i32;
+            let py = (cy + y) as i32;
+            // Draw thick dot
+            if px >= 1 && px < 479 && py >= 1 && py < 479 {
+                for dy in -1i32..=1 {
+                    for dx in -1i32..=1 {
+                        let qx = (px + dx) as u32;
+                        let qy = (py + dy) as u32;
+                        let existing = img.get_pixel(qx, qy);
+                        img.put_pixel(qx, qy, Rgb([
+                            ((existing[0] as u32 + col[0] as u32 * 2 / 3).min(255)) as u8,
+                            ((existing[1] as u32 + col[1] as u32 * 2 / 3).min(255)) as u8,
+                            ((existing[2] as u32 + col[2] as u32 * 2 / 3).min(255)) as u8,
+                        ]));
+                    }
+                }
+            }
+            prev = Some((px, py));
+        }
+        let _ = prev;
+    }
+
+    DynamicImage::ImageRgb8(img)
+}
+
+// ── Fractal Tree ──────────────────────────────────────────────────────────────
+pub fn render_fractal_tree() -> DynamicImage {
+    static TREE_TICK: std::sync::OnceLock<std::sync::Mutex<u64>> =
+        std::sync::OnceLock::new();
+    let tick = {
+        let mut g = TREE_TICK.get_or_init(|| std::sync::Mutex::new(0)).lock().unwrap();
+        *g += 1; *g
+    };
+    let tf = tick as f32;
+
+    let mut img = RgbImage::new(480, 480);
+
+    // Night sky gradient (upper) to ground (lower)
+    for py in 0..480u32 {
+        let t = py as f32 / 480.0;
+        let (r, g, b) = if t < 0.75 {
+            (8u8, 10u8, (20.0 + t * 15.0) as u8)
+        } else {
+            let gt = (t - 0.75) / 0.25;
+            ((gt * 30.0) as u8, (20.0 + gt * 30.0) as u8, (35.0 - gt * 15.0) as u8)
+        };
+        for px in 0..480u32 {
+            img.put_pixel(px, py, Rgb([r, g, b]));
+        }
+    }
+
+    // Moon
+    for py in 20i32..80 {
+        for px in 360i32..420 {
+            let dx = px as f32 - 390.0;
+            let dy = py as f32 - 50.0;
+            if dx * dx + dy * dy <= 22.0 * 22.0 {
+                img.put_pixel(px as u32, py as u32, Rgb([240, 235, 190]));
+            }
+        }
+    }
+
+    let sway = (tf * 0.025).sin() * 0.14;
+
+    // Iterative branching tree
+    // Stack: (x, y, angle, length, depth, green_frac)
+    let root_angle = -std::f32::consts::FRAC_PI_2 + sway * 0.3;
+    let mut stack: Vec<(f32, f32, f32, f32, u8)> = vec![(240.0, 460.0, root_angle, 75.0, 9u8)];
+
+    while let Some((x, y, angle, length, depth)) = stack.pop() {
+        if depth == 0 || length < 2.5 { continue; }
+
+        let ex = x + angle.cos() * length;
+        let ey = y + angle.sin() * length;
+
+        let col = match depth {
+            8..=9 => Rgb([75u8, 45, 18]),
+            5..=7 => Rgb([90u8, 58, 25]),
+            3..=4 => Rgb([50u8, 80, 30]),
+            _     => {
+                let g_var = (depth as u8).wrapping_mul(43).wrapping_add(30);
+                Rgb([25u8, 100 + g_var / 3, 28])
+            }
+        };
+
+        let thick = (depth as i32).min(4);
+        let dx_abs = (ex - x).abs() as i32;
+        let dy_abs = (ey - y).abs() as i32;
+        let steps = dx_abs.max(dy_abs).max(1);
+        for si in 0..=steps {
+            let t = si as f32 / steps as f32;
+            let spx = (x + (ex - x) * t) as i32;
+            let spy = (y + (ey - y) * t) as i32;
+            for ty in -thick..=thick {
+                for tx in -thick..=thick {
+                    if tx * tx + ty * ty <= thick * thick {
+                        let bx = spx + tx;
+                        let by = spy + ty;
+                        if bx >= 0 && bx < 480 && by >= 0 && by < 480 {
+                            img.put_pixel(bx as u32, by as u32, col);
+                        }
+                    }
+                }
+            }
+        }
+
+        let new_len = length * 0.70;
+        let spread = 0.38 + sway * (1.0 / (depth as f32 + 1.0));
+        stack.push((ex, ey, angle - spread, new_len, depth - 1));
+        stack.push((ex, ey, angle + spread + sway * 0.5, new_len, depth - 1));
+    }
+
+    DynamicImage::ImageRgb8(img)
+}
+
+// ── Bubble Rise ───────────────────────────────────────────────────────────────
+pub fn render_bubble_rise() -> DynamicImage {
+    struct Bubble {
+        x: f32, y: f32, vy: f32, r: f32,
+        wobble_phase: f32, wobble_speed: f32,
+        hue: f32, alive: bool,
+    }
+    static BUBBLE_STATE: std::sync::OnceLock<std::sync::Mutex<(Vec<Bubble>, u32, u64)>> =
+        std::sync::OnceLock::new();
+
+    let mut guard = BUBBLE_STATE.get_or_init(|| std::sync::Mutex::new((Vec::new(), 0xBBB1_E5EDu32, 0u64))).lock().unwrap();
+    let (ref mut bubbles, ref mut seed, ref mut tick) = *guard;
+    *tick += 1;
+    let tf = *tick as f32;
+
+    let mut s = *seed;
+    let mut rng = || -> f32 {
+        s = s.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+        (s as f32) / (u32::MAX as f32)
+    };
+
+    // Spawn new bubbles
+    if *tick % 4 == 0 && bubbles.len() < 55 {
+        bubbles.push(Bubble {
+            x: rng() * 440.0 + 20.0,
+            y: 490.0,
+            vy: -(0.8 + rng() * 1.4),
+            r: 8.0 + rng() * 18.0,
+            wobble_phase: rng() * std::f32::consts::TAU,
+            wobble_speed: 0.04 + rng() * 0.05,
+            hue: rng(),
+            alive: true,
+        });
+    }
+
+    // Update
+    for b in bubbles.iter_mut() {
+        b.y += b.vy;
+        b.wobble_phase += b.wobble_speed;
+        b.x += b.wobble_phase.sin() * 0.5;
+        if b.y + b.r < 0.0 { b.alive = false; }
+    }
+    bubbles.retain(|b| b.alive);
+    *seed = s;
+
+    let mut img = RgbImage::new(480, 480);
+
+    // Deep ocean gradient
+    for py in 0..480u32 {
+        let t = py as f32 / 480.0;
+        let r = (8.0 + t * 5.0) as u8;
+        let g = (20.0 + t * 30.0) as u8;
+        let b = (60.0 + t * 80.0) as u8;
+        for px in 0..480u32 {
+            img.put_pixel(px, py, Rgb([r, g, b]));
+        }
+    }
+
+    // Caustic light rays
+    for py in 0..480u32 {
+        let t = py as f32 / 480.0;
+        for px in (0..480u32).step_by(3) {
+            let wave = ((px as f32 * 0.025 + tf * 0.02).sin() +
+                        (px as f32 * 0.04 - tf * 0.015).cos()) * 0.5;
+            if wave > 0.3 {
+                let intensity = (wave - 0.3) * 0.06 * (1.0 - t);
+                let p = img.get_pixel(px, py);
+                img.put_pixel(px, py, Rgb([
+                    (p[0] as f32 + intensity * 30.0).min(255.0) as u8,
+                    (p[1] as f32 + intensity * 60.0).min(255.0) as u8,
+                    (p[2] as f32 + intensity * 80.0).min(255.0) as u8,
+                ]));
+            }
+        }
+    }
+
+    // Draw bubbles
+    for b in bubbles.iter() {
+        // Convert hue to RGB
+        let h6 = b.hue * 6.0;
+        let hi = h6 as u32 % 6;
+        let f = h6.fract();
+        let v = 0.7f32; let s_v = 0.4f32;
+        let (br, bg, bb) = match hi {
+            0 => (v, v*(1.0-s_v*(1.0-f)), v*(1.0-s_v)),
+            1 => (v*(1.0-s_v*f), v, v*(1.0-s_v)),
+            2 => (v*(1.0-s_v), v, v*(1.0-s_v*(1.0-f))),
+            3 => (v*(1.0-s_v), v*(1.0-s_v*f), v),
+            4 => (v*(1.0-s_v*(1.0-f)), v*(1.0-s_v), v),
+            _ => (v, v*(1.0-s_v), v*(1.0-s_v*f)),
+        };
+
+        let ir = b.r as i32 + 2;
+        let bx = b.x as i32;
+        let by = b.y as i32;
+        for dy in -ir..=ir {
+            for dx in -ir..=ir {
+                let dist = ((dx * dx + dy * dy) as f32).sqrt();
+                let px = bx + dx;
+                let py = by + dy;
+                if px < 0 || px >= 480 || py < 0 || py >= 480 { continue; }
+                if dist <= b.r {
+                    // Bubble ring: only draw rim and highlight
+                    let rim = (dist - (b.r - 2.0)).max(0.0) / 2.0;
+                    let inner_glow = ((b.r * 0.45 - dist) / (b.r * 0.45)).max(0.0);
+                    if rim > 0.0 || inner_glow > 0.0 {
+                        let alpha = (rim * 0.7 + inner_glow * 0.15).min(1.0);
+                        let p = img.get_pixel(px as u32, py as u32);
+                        img.put_pixel(px as u32, py as u32, Rgb([
+                            (p[0] as f32 * (1.0-alpha) + br * 255.0 * alpha).min(255.0) as u8,
+                            (p[1] as f32 * (1.0-alpha) + bg * 255.0 * alpha).min(255.0) as u8,
+                            (p[2] as f32 * (1.0-alpha) + bb * 255.0 * alpha).min(255.0) as u8,
+                        ]));
+                    }
+                }
+            }
+        }
+
+        // Specular highlight (upper-left)
+        let hx = (b.x - b.r * 0.35) as i32;
+        let hy = (b.y - b.r * 0.35) as i32;
+        let hr = (b.r * 0.25) as i32;
+        for dy in -hr..=hr {
+            for dx in -hr..=hr {
+                let dist = ((dx*dx + dy*dy) as f32).sqrt();
+                if dist <= hr as f32 {
+                    let px = hx + dx;
+                    let py = hy + dy;
+                    if px >= 0 && px < 480 && py >= 0 && py < 480 {
+                        let alpha = (1.0 - dist / hr as f32) * 0.5;
+                        let p = img.get_pixel(px as u32, py as u32);
+                        img.put_pixel(px as u32, py as u32, Rgb([
+                            (p[0] as f32 + (255.0-p[0] as f32)*alpha).min(255.0) as u8,
+                            (p[1] as f32 + (255.0-p[1] as f32)*alpha).min(255.0) as u8,
+                            (p[2] as f32 + (255.0-p[2] as f32)*alpha).min(255.0) as u8,
+                        ]));
+                    }
+                }
+            }
+        }
+    }
+
+    let _ = tf;
+    DynamicImage::ImageRgb8(img)
+}
+
+// ── Sand Waterfall ────────────────────────────────────────────────────────────
+// Falling sand particle simulation — particles fall from a slit at top and
+// pile up, creating a shifting heap.
+pub fn render_sand_waterfall() -> DynamicImage {
+    const W: usize = 120;
+    const H: usize = 120;
+    const CELL: usize = 4; // each cell = 4×4 pixels
+    static SAND_STATE: std::sync::OnceLock<std::sync::Mutex<(Vec<u8>, u32, u64)>> =
+        std::sync::OnceLock::new();
+
+    let mut guard = SAND_STATE.get_or_init(|| {
+        std::sync::Mutex::new((vec![0u8; W * H], 0xCAFE_D00Du32, 0u64))
+    }).lock().unwrap();
+    let (ref mut grid, ref mut seed, ref mut tick) = *guard;
+    *tick += 1;
+
+    let mut s = *seed;
+    let mut rng = || -> f32 {
+        s = s.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+        (s as f32) / (u32::MAX as f32)
+    };
+
+    // Spawn particles from a slit near top center
+    let slit_w = 4usize;
+    let slit_x = W / 2 - slit_w / 2;
+    if *tick % 2 == 0 {
+        for sx in slit_x..slit_x + slit_w {
+            if grid[sx] == 0 {
+                // Random sand color: 1-8 (different sand shades)
+                grid[sx] = 1 + (rng() * 7.0) as u8;
+            }
+        }
+    }
+
+    // Update from bottom to top (so falling works correctly)
+    for y in (0..H - 1).rev() {
+        for x in 0..W {
+            let v = grid[y * W + x];
+            if v == 0 { continue; }
+            // Try to fall straight down
+            if grid[(y + 1) * W + x] == 0 {
+                grid[(y + 1) * W + x] = v;
+                grid[y * W + x] = 0;
+            } else {
+                // Try diagonal (random left or right bias)
+                let left = x > 0 && grid[(y + 1) * W + x - 1] == 0;
+                let right = x + 1 < W && grid[(y + 1) * W + x + 1] == 0;
+                if left && right {
+                    if rng() < 0.5 {
+                        grid[(y + 1) * W + x - 1] = v;
+                    } else {
+                        grid[(y + 1) * W + x + 1] = v;
+                    }
+                    grid[y * W + x] = 0;
+                } else if left {
+                    grid[(y + 1) * W + x - 1] = v;
+                    grid[y * W + x] = 0;
+                } else if right {
+                    grid[(y + 1) * W + x + 1] = v;
+                    grid[y * W + x] = 0;
+                }
+            }
+        }
+    }
+    *seed = s;
+
+    // Sand color palette (warm sandy tones)
+    let palette: [[u8; 3]; 8] = [
+        [210, 180, 100], // light sand
+        [195, 165, 80],  // medium sand
+        [220, 190, 110], // bright sand
+        [175, 145, 65],  // dark sand
+        [230, 195, 120], // pale gold
+        [205, 170, 90],  // amber
+        [185, 155, 75],  // tan
+        [215, 185, 105], // cream sand
+    ];
+
+    let mut img = RgbImage::new(480, 480);
+    // Dark background
+    for p in img.pixels_mut() { *p = Rgb([18u8, 12, 8]); }
+
+    // Draw sand grid
+    for y in 0..H {
+        for x in 0..W {
+            let v = grid[y * W + x];
+            if v > 0 {
+                let col = palette[(v - 1) as usize % 8];
+                let px0 = x * CELL;
+                let py0 = y * CELL;
+                for dy in 0..CELL {
+                    for dx in 0..CELL {
+                        // Slight shading: top of cell is lighter
+                        let shade = if dy == 0 { 1.1f32 } else if dy == CELL - 1 { 0.85 } else { 1.0 };
+                        img.put_pixel((px0 + dx) as u32, (py0 + dy) as u32, Rgb([
+                            (col[0] as f32 * shade).min(255.0) as u8,
+                            (col[1] as f32 * shade).min(255.0) as u8,
+                            (col[2] as f32 * shade).min(255.0) as u8,
+                        ]));
+                    }
+                }
+            }
+        }
+    }
+
+    DynamicImage::ImageRgb8(img)
+}
+
+// ── Magnetic Field Lines ──────────────────────────────────────────────────────
+// Two magnetic poles orbiting each other, field lines rendered as streamlines.
+pub fn render_magnetic_field() -> DynamicImage {
+    static MAG_TICK: std::sync::OnceLock<std::sync::Mutex<u64>> =
+        std::sync::OnceLock::new();
+    let tick = {
+        let mut g = MAG_TICK.get_or_init(|| std::sync::Mutex::new(0)).lock().unwrap();
+        *g += 1; *g
+    };
+    let tf = tick as f32;
+
+    let mut img = RgbImage::new(480, 480);
+    let bg = Rgb([10u8, 10, 20]);
+    for p in img.pixels_mut() { *p = bg; }
+
+    // Two poles rotating
+    let angle = tf * 0.018;
+    let orbit_r = 100.0f32;
+    let pole1 = (240.0f32 + angle.cos() * orbit_r, 240.0f32 + angle.sin() * orbit_r);
+    let pole2 = (240.0f32 - angle.cos() * orbit_r, 240.0f32 - angle.sin() * orbit_r);
+    let charge1 = 1.0f32;
+    let charge2 = -1.0f32;
+
+    // Field sampling function: sum of dipole contributions
+    let field = |x: f32, y: f32| -> (f32, f32) {
+        let dx1 = x - pole1.0; let dy1 = y - pole1.1;
+        let r1sq = (dx1*dx1 + dy1*dy1).max(1.0);
+        let r1 = r1sq.sqrt();
+        let ex1 = charge1 * dx1 / (r1 * r1sq);
+        let ey1 = charge1 * dy1 / (r1 * r1sq);
+        let dx2 = x - pole2.0; let dy2 = y - pole2.1;
+        let r2sq = (dx2*dx2 + dy2*dy2).max(1.0);
+        let r2 = r2sq.sqrt();
+        let ex2 = charge2 * dx2 / (r2 * r2sq);
+        let ey2 = charge2 * dy2 / (r2 * r2sq);
+        (ex1 + ex2, ey1 + ey2)
+    };
+
+    // Draw field lines: start from ring around positive pole, trace streamlines
+    let n_lines = 20usize;
+    for li in 0..n_lines {
+        let start_angle = li as f32 / n_lines as f32 * std::f32::consts::TAU;
+        let start_r = 18.0f32;
+        let mut sx = pole1.0 + start_angle.cos() * start_r;
+        let mut sy = pole1.1 + start_angle.sin() * start_r;
+
+        let hue = li as f32 / n_lines as f32;
+        let h6 = hue * 6.0;
+        let hi = h6 as u32 % 6;
+        let f = h6.fract();
+        let (lr, lg, lb) = match hi {
+            0 => (1.0f32, f, 0.0f32),
+            1 => (1.0-f, 1.0, 0.0),
+            2 => (0.0, 1.0, f),
+            3 => (0.0, 1.0-f, 1.0),
+            4 => (f, 0.0, 1.0),
+            _ => (1.0, 0.0, 1.0-f),
+        };
+
+        let step = 3.0f32;
+        let max_steps = 200;
+        for si in 0..max_steps {
+            if sx < 0.0 || sx >= 480.0 || sy < 0.0 || sy >= 480.0 { break; }
+            let (fx, fy) = field(sx, sy);
+            let fmag = (fx*fx + fy*fy).sqrt().max(1e-6);
+            let fxn = fx / fmag;
+            let fyn = fy / fmag;
+
+            let alpha = (0.8 - si as f32 / max_steps as f32 * 0.6).max(0.1);
+            let px = sx as u32;
+            let py = sy as u32;
+            let p = img.get_pixel(px, py);
+            img.put_pixel(px, py, Rgb([
+                (p[0] as f32 + lr * 180.0 * alpha).min(255.0) as u8,
+                (p[1] as f32 + lg * 180.0 * alpha).min(255.0) as u8,
+                (p[2] as f32 + lb * 180.0 * alpha).min(255.0) as u8,
+            ]));
+
+            sx += fxn * step;
+            sy += fyn * step;
+
+            // Stop when reaching negative pole
+            let to_neg = ((sx - pole2.0).powi(2) + (sy - pole2.1).powi(2)).sqrt();
+            if to_neg < 15.0 { break; }
+        }
+    }
+
+    // Draw pole markers
+    for (pole, is_pos) in &[(pole1, true), (pole2, false)] {
+        let (pr, pg, pb) = if *is_pos { (255u8, 80, 80) } else { (80u8, 80, 255) };
+        let pr_size = 8i32;
+        for dy in -pr_size..=pr_size {
+            for dx in -pr_size..=pr_size {
+                if dx*dx + dy*dy <= pr_size*pr_size {
+                    let px = pole.0 as i32 + dx;
+                    let py = pole.1 as i32 + dy;
+                    if px >= 0 && px < 480 && py >= 0 && py < 480 {
+                        img.put_pixel(px as u32, py as u32, Rgb([pr, pg, pb]));
+                    }
+                }
+            }
+        }
+        // Label + / -
+        let sym_x = pole.0 as i32;
+        let sym_y = pole.1 as i32;
+        if sym_x > 0 && sym_x < 479 && sym_y > 0 && sym_y < 479 {
+            img.put_pixel(sym_x as u32, sym_y as u32, Rgb([255, 255, 255]));
+        }
+    }
+
+    DynamicImage::ImageRgb8(img)
+}
+
+// ── Smoke Plume ───────────────────────────────────────────────────────────────
+// A wispy smoke column rising from a heat source at the bottom-center.
+pub fn render_smoke_plume() -> DynamicImage {
+    const W: usize = 80;
+    const H: usize = 120;
+    const CELL: usize = 4; // scaled
+    static SMOKE_STATE: std::sync::OnceLock<std::sync::Mutex<(Vec<f32>, Vec<f32>, u32, u64)>> =
+        std::sync::OnceLock::new();
+
+    let mut guard = SMOKE_STATE.get_or_init(|| {
+        std::sync::Mutex::new((vec![0.0f32; W * H], vec![0.0f32; W * H], 0xBABE_F00Du32, 0u64))
+    }).lock().unwrap();
+    let (ref mut density, ref mut vel_y, ref mut seed, ref mut tick) = *guard;
+    *tick += 1;
+
+    let mut s = *seed;
+    let mut rng = || -> f32 {
+        s = s.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+        (s as f32) / (u32::MAX as f32)
+    };
+
+    // Source: add density and upward velocity at bottom
+    let cx = W / 2;
+    for x in (cx.saturating_sub(3))..(cx + 4).min(W) {
+        density[x + (H - 1) * W] = (density[x + (H - 1) * W] + 1.5).min(4.0);
+        vel_y[x + (H - 1) * W] = -2.5;
+    }
+
+    // Advect density upward and diffuse
+    let mut new_d = vec![0.0f32; W * H];
+    let mut new_v = vec![0.0f32; W * H];
+    for y in 0..H {
+        for x in 0..W {
+            let v = vel_y[y * W + x];
+            // Advect upward
+            let src_y = y as f32 - v;
+            let src_yi = src_y as i32;
+            let frac = src_y.fract();
+            let d = if src_yi >= 0 && src_yi < H as i32 {
+                density[src_yi as usize * W + x] * (1.0 - frac) +
+                if src_yi + 1 < H as i32 { density[(src_yi + 1) as usize * W + x] * frac } else { 0.0 }
+            } else { 0.0 };
+
+            // Add turbulent drift
+            let wobble = (rng() - 0.5) * 0.15;
+            let src_xi = (x as f32 + wobble * 2.0).round() as i32;
+            let dd = if src_xi >= 0 && src_xi < W as i32 && y > 0 {
+                density[(y - 1) * W + src_xi as usize]
+            } else { 0.0 };
+            new_d[y * W + x] = (d * 0.7 + dd * 0.25).max(0.0);
+            new_v[y * W + x] = v * 0.96;
+        }
+    }
+
+    // Diffuse density horizontally (blur)
+    for y in 0..H {
+        for x in 1..W - 1 {
+            new_d[y * W + x] = new_d[y * W + x] * 0.85
+                + new_d[y * W + x - 1] * 0.075
+                + new_d[y * W + x + 1] * 0.075;
+        }
+    }
+
+    *density = new_d;
+    *vel_y = new_v;
+    *seed = s;
+
+    let mut img = RgbImage::new(480, 480);
+    // Dark warm background
+    for py in 0..480u32 {
+        let t = py as f32 / 480.0;
+        img.put_pixel(0, py, Rgb([0u8, 0, 0])); // placeholder
+        let r = (8.0 + t * 12.0) as u8;
+        let g = (8.0 + t * 8.0) as u8;
+        let b = (8.0 + t * 5.0) as u8;
+        for px in 0..480u32 {
+            img.put_pixel(px, py, Rgb([r, g, b]));
+        }
+    }
+
+    // Render smoke (density → grey-white with blue tint at top)
+    let offset_x = (480 - W * CELL) / 2;
+    let offset_y = 480 - H * CELL;
+    for y in 0..H {
+        for x in 0..W {
+            let d = density[y * W + x].min(1.5);
+            if d < 0.01 { continue; }
+            let height_frac = (H - 1 - y) as f32 / H as f32;
+            let alpha = (d / 1.5).min(0.85);
+            let base_v = 180.0 + height_frac * 60.0;
+            // Smoke colour: warm grey near source, cool white/blue near top
+            let (cr, cg, cb) = (
+                base_v * (1.0 - height_frac * 0.2),
+                base_v * (1.0 - height_frac * 0.05),
+                base_v * (1.0 + height_frac * 0.1),
+            );
+            let px0 = offset_x + x * CELL;
+            let py0 = offset_y + y * CELL;
+            for dy in 0..CELL {
+                for dx in 0..CELL {
+                    let px = px0 + dx;
+                    let py2 = py0 + dy;
+                    if px < 480 && py2 < 480 {
+                        let p = img.get_pixel(px as u32, py2 as u32);
+                        img.put_pixel(px as u32, py2 as u32, Rgb([
+                            (p[0] as f32 * (1.0 - alpha) + cr * alpha).min(255.0) as u8,
+                            (p[1] as f32 * (1.0 - alpha) + cg * alpha).min(255.0) as u8,
+                            (p[2] as f32 * (1.0 - alpha) + cb * alpha).min(255.0) as u8,
+                        ]));
+                    }
+                }
+            }
+        }
+    }
+
+    // Heat source glow at bottom
+    for dy in -8i32..=8 {
+        for dx in -20i32..=20 {
+            let dist = ((dx*dx) as f32 * 0.5 + (dy*dy) as f32).sqrt();
+            let heat = (1.0 - dist / 14.0).max(0.0);
+            if heat > 0.0 {
+                let px = (240 + dx) as u32;
+                let py = (479 + dy) as u32;
+                if px < 480 && py < 480 {
+                    let p = img.get_pixel(px, py);
+                    img.put_pixel(px, py, Rgb([
+                        (p[0] as f32 + 200.0 * heat).min(255.0) as u8,
+                        (p[1] as f32 + 80.0 * heat).min(255.0) as u8,
+                        (p[2] as f32 + 10.0 * heat).min(255.0) as u8,
+                    ]));
+                }
+            }
+        }
+    }
+
+    DynamicImage::ImageRgb8(img)
+}
+
+// ── Color Mosaic ──────────────────────────────────────────────────────────────
+// A dynamic tile mosaic where each tile cycles through a unique hue with wave
+// patterns propagating across the grid.
+pub fn render_color_mosaic() -> DynamicImage {
+    static MOSAIC_TICK: std::sync::OnceLock<std::sync::Mutex<u64>> =
+        std::sync::OnceLock::new();
+    let tick = {
+        let mut g = MOSAIC_TICK.get_or_init(|| std::sync::Mutex::new(0)).lock().unwrap();
+        *g += 1; *g
+    };
+    let tf = tick as f32;
+
+    let tile_w = 24u32;
+    let tile_h = 24u32;
+    let cols = 480 / tile_w;
+    let rows = 480 / tile_h;
+
+    let mut img = RgbImage::new(480, 480);
+
+    for row in 0..rows {
+        for col in 0..cols {
+            let cx = col as f32 + 0.5;
+            let cy = row as f32 + 0.5;
+            let dist_center = ((cx - cols as f32 / 2.0).powi(2) + (cy - rows as f32 / 2.0).powi(2)).sqrt();
+
+            // Multiple wave sources create interference
+            let wave1 = (dist_center * 0.4 - tf * 0.04).cos();
+            let wave2 = (cx * 0.6 - tf * 0.05).sin();
+            let wave3 = (cy * 0.5 + tf * 0.03).cos();
+            let combined = (wave1 + wave2 + wave3) / 3.0;
+
+            let hue = ((cx * 0.07 + cy * 0.05 + combined * 0.5 + tf * 0.008).fract() + 1.0) % 1.0;
+            let lightness = 0.45 + combined * 0.15;
+            let sat = 0.75 + wave3 * 0.15;
+
+            let tile_col = hsl_to_rgb(hue, sat.clamp(0.5, 0.9), lightness.clamp(0.25, 0.65));
+            let (r, g, b) = (tile_col[0], tile_col[1], tile_col[2]);
+
+            // Tile fill with 1px dark border
+            let px0 = col * tile_w;
+            let py0 = row * tile_h;
+            for dy in 0..tile_h {
+                for dx in 0..tile_w {
+                    let (tr, tg, tb) = if dx == 0 || dy == 0 {
+                        (8u8, 8, 8)  // border
+                    } else if dx == tile_w - 1 || dy == tile_h - 1 {
+                        ((r as f32 * 0.6) as u8, (g as f32 * 0.6) as u8, (b as f32 * 0.6) as u8)
+                    } else {
+                        (r, g, b)
+                    };
+                    img.put_pixel(px0 + dx, py0 + dy, Rgb([tr, tg, tb]));
+                }
+            }
+        }
+    }
+
+    DynamicImage::ImageRgb8(img)
+}
+
+// ── Neural Network Visualization ─────────────────────────────────────────────
+// Animated network of nodes and weighted connections with a signal pulse.
+pub fn render_neural_net() -> DynamicImage {
+    static NN_TICK: std::sync::OnceLock<std::sync::Mutex<u64>> =
+        std::sync::OnceLock::new();
+    let tick = {
+        let mut g = NN_TICK.get_or_init(|| std::sync::Mutex::new(0)).lock().unwrap();
+        *g += 1; *g
+    };
+    let tf = tick as f32;
+
+    let mut img = RgbImage::new(480, 480);
+    let bg = Rgb([15u8, 12, 22]);
+    for p in img.pixels_mut() { *p = bg; }
+
+    // Network layout: 4 layers with varying node counts
+    let layers: &[usize] = &[4, 7, 7, 3];
+    let layer_x = [70.0f32, 185.0, 295.0, 410.0];
+
+    // Collect all node positions
+    let mut nodes: Vec<(f32, f32, usize, usize)> = Vec::new(); // (x, y, layer, idx)
+    for (li, &count) in layers.iter().enumerate() {
+        let spacing = 380.0 / (count + 1) as f32;
+        for ni in 0..count {
+            let nx = layer_x[li];
+            let ny = spacing * (ni + 1) as f32 + 50.0;
+            nodes.push((nx, ny, li, ni));
+        }
+    }
+
+    // Draw connections between adjacent layers
+    let signal_speed = 0.025f32;
+    let signal_phase = tf * signal_speed;
+
+    // For each connection, compute "excitement" based on signal phase
+    let mut layer_start = [0usize; 5];
+    let mut cum = 0;
+    for (i, &n) in layers.iter().enumerate() {
+        layer_start[i] = cum;
+        cum += n;
+    }
+
+    // Seed-based weights (deterministic)
+    let mut ws: u32 = 0xDEAD_BEEFu32;
+    for li in 0..(layers.len() - 1) {
+        let src_start = layer_start[li];
+        let dst_start = layer_start[li + 1];
+        for si in 0..layers[li] {
+            for di in 0..layers[li + 1] {
+                ws = ws.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                let weight = (ws as f32 / u32::MAX as f32) * 2.0 - 1.0; // -1..1
+                let (sx, sy, _, _) = nodes[src_start + si];
+                let (dx, dy, _, _) = nodes[dst_start + di];
+
+                // Signal pulse travelling along this connection
+                let conn_phase = (li as f32 * 0.4 + si as f32 * 0.15 + di as f32 * 0.09 + signal_phase).fract();
+                let pulse = if conn_phase < 0.15 {
+                    let t = conn_phase / 0.15;
+                    (t * std::f32::consts::PI).sin()
+                } else { 0.0 };
+
+                let excite = weight.abs() * 0.5 + pulse * 0.5;
+                let r_val = if weight > 0.0 { (80.0 + excite * 120.0) as u8 } else { 30 };
+                let g_val = if weight > 0.0 { (50.0 + excite * 80.0) as u8 } else { (30.0 + excite * 100.0) as u8 };
+                let b_val = if weight < 0.0 { (80.0 + excite * 120.0) as u8 } else { 60 };
+
+                // Draw line
+                let steps = 60i32;
+                for step in 0..=steps {
+                    let t = step as f32 / steps as f32;
+                    let px = (sx + (dx - sx) * t) as i32;
+                    let py = (sy + (dy - sy) * t) as i32;
+                    if px >= 0 && px < 480 && py >= 0 && py < 480 {
+                        let p = img.get_pixel(px as u32, py as u32);
+                        let alpha = (excite * 0.4 + 0.06).min(1.0);
+                        img.put_pixel(px as u32, py as u32, Rgb([
+                            (p[0] as f32 * (1.0-alpha) + r_val as f32 * alpha).min(255.0) as u8,
+                            (p[1] as f32 * (1.0-alpha) + g_val as f32 * alpha).min(255.0) as u8,
+                            (p[2] as f32 * (1.0-alpha) + b_val as f32 * alpha).min(255.0) as u8,
+                        ]));
+                    }
+                }
+
+                // Draw pulse dot
+                if pulse > 0.05 {
+                    let px = (sx + (dx - sx) * conn_phase / 0.15) as i32;
+                    let py = (sy + (dy - sy) * conn_phase / 0.15) as i32;
+                    for dy2 in -2i32..=2 {
+                        for dx2 in -2i32..=2 {
+                            let bx = px + dx2;
+                            let by = py + dy2;
+                            if bx >= 0 && bx < 480 && by >= 0 && by < 480 {
+                                let p = img.get_pixel(bx as u32, by as u32);
+                                img.put_pixel(bx as u32, by as u32, Rgb([
+                                    (p[0] as f32 + 180.0 * pulse).min(255.0) as u8,
+                                    (p[1] as f32 + 180.0 * pulse).min(255.0) as u8,
+                                    (p[2] as f32 + 220.0 * pulse).min(255.0) as u8,
+                                ]));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Draw nodes
+    for (nx, ny, li, ni) in &nodes {
+        // Node activation based on time
+        let activation = ((tf * 0.07 + *li as f32 * 1.2 + *ni as f32 * 0.7).sin() * 0.5 + 0.5).powi(2);
+        let node_r = 12i32;
+        for dy in -node_r..=node_r {
+            for dx in -node_r..=node_r {
+                let dist = ((dx*dx + dy*dy) as f32).sqrt();
+                if dist <= node_r as f32 {
+                    let bx = *nx as i32 + dx;
+                    let by = *ny as i32 + dy;
+                    if bx >= 0 && bx < 480 && by >= 0 && by < 480 {
+                        let rim = (dist - (node_r as f32 - 2.5)).max(0.0) / 2.5;
+                        let inner = (1.0 - dist / node_r as f32) * 0.5;
+                        let alpha = rim * 0.8 + inner * activation * 0.7;
+                        let layer_hue = *li as f32 / (layers.len() - 1) as f32;
+                        let (lr, lg, lb) = (
+                            (100.0 + layer_hue * 80.0 + activation * 100.0).min(255.0),
+                            (80.0 + (1.0 - layer_hue) * 80.0 + activation * 120.0).min(255.0),
+                            (160.0 + activation * 95.0).min(255.0),
+                        );
+                        let p = img.get_pixel(bx as u32, by as u32);
+                        img.put_pixel(bx as u32, by as u32, Rgb([
+                            (p[0] as f32 * (1.0-alpha) + lr * alpha).min(255.0) as u8,
+                            (p[1] as f32 * (1.0-alpha) + lg * alpha).min(255.0) as u8,
+                            (p[2] as f32 * (1.0-alpha) + lb * alpha).min(255.0) as u8,
+                        ]));
+                    }
+                }
+            }
+        }
+    }
+
+    DynamicImage::ImageRgb8(img)
+}
+
+// ── Ribbon Dance ──────────────────────────────────────────────────────────────
+// Colourful flowing ribbons that undulate and twist across the display.
+pub fn render_ribbon_dance() -> DynamicImage {
+    static RIBBON_TICK: std::sync::OnceLock<std::sync::Mutex<u64>> =
+        std::sync::OnceLock::new();
+    let tick = {
+        let mut g = RIBBON_TICK.get_or_init(|| std::sync::Mutex::new(0)).lock().unwrap();
+        *g += 1; *g
+    };
+    let tf = tick as f32;
+
+    let mut img = RgbImage::new(480, 480);
+    let bg = Rgb([16u8, 12, 18]);
+    for p in img.pixels_mut() { *p = bg; }
+
+    // 7 ribbons with different parameters
+    let ribbons: &[(f32, f32, f32, f32, f32, [u8;3])] = &[
+        (0.0,   0.8,  2.3, 0.0,  0.012, [137, 180, 250]), // blue
+        (0.14,  0.9,  3.1, 0.7,  0.015, [203, 166, 247]), // mauve
+        (0.28,  0.7,  2.7, 1.4,  0.010, [166, 227, 161]), // green
+        (0.42,  1.0,  3.5, 2.1,  0.013, [250, 179, 135]), // peach
+        (0.57,  0.85, 2.9, 2.8,  0.011, [249, 226, 175]), // yellow
+        (0.71,  0.75, 3.3, 3.5,  0.014, [243, 139, 168]), // red
+        (0.85,  0.95, 2.5, 4.2,  0.016, [148, 226, 213]), // teal
+    ];
+
+    let n_pts = 200usize;
+    let ribbon_half_width = 12.0f32;
+
+    for &(hue_base, amp, freq, phase, speed, col) in ribbons {
+        let _ = hue_base;
+        // Compute spine points
+        let mut spine: Vec<(f32, f32)> = Vec::with_capacity(n_pts + 1);
+        for i in 0..=n_pts {
+            let t = i as f32 / n_pts as f32;
+            let x = t * 520.0 - 20.0;
+            // Multiple harmonics for complex shape
+            let y = 240.0
+                + amp * 90.0 * (freq * t * std::f32::consts::TAU + phase + tf * speed).sin()
+                + amp * 30.0 * (freq * 1.7 * t * std::f32::consts::TAU - phase * 0.8 + tf * speed * 1.3).cos()
+                + amp * 15.0 * (freq * 3.1 * t * std::f32::consts::TAU + phase * 1.5 - tf * speed * 0.7).sin();
+            spine.push((x, y));
+        }
+
+        // Draw ribbon as thick strokes
+        for i in 0..n_pts {
+            let (x1, y1) = spine[i];
+            let (x2, y2) = spine[i + 1];
+            let dx = x2 - x1;
+            let dy = y2 - y1;
+            let seg_len = (dx*dx + dy*dy).sqrt().max(0.001);
+            let nx = -dy / seg_len;
+            let ny =  dx / seg_len;
+
+            // Alpha variation (fade at edges, twist shimmer)
+            let twist = (i as f32 * 0.05 + tf * 0.02 + phase).sin();
+            let ribbon_w = ribbon_half_width * (0.7 + twist.abs() * 0.3);
+            let alpha_center = 0.75 + twist * 0.15;
+
+            let steps = (seg_len.ceil() as i32).max(1);
+            for si in 0..=steps {
+                let st = si as f32 / steps as f32;
+                let mx = x1 + dx * st;
+                let my = y1 + dy * st;
+
+                // Draw across the ribbon width
+                let w_steps = 8i32;
+                for wi in -w_steps..=w_steps {
+                    let wt = wi as f32 / w_steps as f32; // -1..1
+                    let wdist = wt.abs();
+                    let alpha = alpha_center * (1.0 - wdist * wdist);
+                    if alpha < 0.02 { continue; }
+
+                    let rpx = (mx + nx * wt * ribbon_w) as i32;
+                    let rpy = (my + ny * wt * ribbon_w) as i32;
+                    if rpx < 0 || rpx >= 480 || rpy < 0 || rpy >= 480 { continue; }
+
+                    // Highlight at center of ribbon
+                    let highlight = (1.0 - wdist * 2.0).max(0.0) * 0.4;
+                    let p = img.get_pixel(rpx as u32, rpy as u32);
+                    img.put_pixel(rpx as u32, rpy as u32, Rgb([
+                        (p[0] as f32 * (1.0-alpha) + (col[0] as f32 + highlight * 80.0).min(255.0) * alpha).min(255.0) as u8,
+                        (p[1] as f32 * (1.0-alpha) + (col[1] as f32 + highlight * 80.0).min(255.0) * alpha).min(255.0) as u8,
+                        (p[2] as f32 * (1.0-alpha) + (col[2] as f32 + highlight * 80.0).min(255.0) * alpha).min(255.0) as u8,
+                    ]));
+                }
+            }
+        }
+    }
+
+    DynamicImage::ImageRgb8(img)
+}
+
+// ── Hex Plasma ────────────────────────────────────────────────────────────────
+// Hexagonal grid with each cell independently pulsing via plasma functions.
+pub fn render_hex_plasma() -> DynamicImage {
+    static HEX_PLASMA_TICK: std::sync::OnceLock<std::sync::Mutex<u64>> =
+        std::sync::OnceLock::new();
+    let tick = {
+        let mut g = HEX_PLASMA_TICK.get_or_init(|| std::sync::Mutex::new(0)).lock().unwrap();
+        *g += 1; *g
+    };
+    let tf = tick as f32;
+
+    let mut img = RgbImage::new(480, 480);
+
+    // Hex grid parameters
+    let hex_r = 28.0f32; // circumradius
+    let hex_h = hex_r * 1.732_050_8; // sqrt(3) * r = row height
+    let hex_w = hex_r * 2.0;
+
+    // Fill the whole image
+    for py in 0..480u32 {
+        for px in 0..480u32 {
+            let x = px as f32;
+            let y = py as f32;
+
+            // Find which hex cell this pixel belongs to
+            // Axial coordinates
+            let col_f = x / (hex_w * 0.75);
+            let col_i = col_f as i32;
+            let row_offset = if col_i % 2 != 0 { hex_h * 0.5 } else { 0.0 };
+            let row_f = (y - row_offset) / hex_h;
+            let row_i = row_f as i32;
+
+            // Centre of this hex
+            let cx = col_i as f32 * hex_w * 0.75 + hex_r;
+            let cy = row_i as f32 * hex_h + row_offset + hex_h * 0.5;
+
+            // Distance to hex center for plasma value
+            let dist = ((x - cx).powi(2) + (y - cy).powi(2)).sqrt();
+            let hex_dist = dist / hex_r; // 0..1 within hex
+
+            // Plasma value from multiple waves
+            let v1 = (cx * 0.015 + tf * 0.04).sin();
+            let v2 = (cy * 0.012 - tf * 0.03).cos();
+            let v3 = ((cx - 240.0).powi(2) + (cy - 240.0).powi(2)).sqrt() * 0.008 - tf * 0.025;
+            let plasma = (v1 + v2 + v3.cos()) / 3.0; // -1..1
+
+            let hue = ((plasma * 0.5 + 0.5 + tf * 0.005) % 1.0 + 1.0) % 1.0;
+            let sat = 0.8 + hex_dist * 0.1;
+            let lit = 0.35 + (1.0 - hex_dist.min(1.0)) * 0.25;
+
+            // Border: dim near hex edges
+            let border = if hex_dist > 0.88 { (1.0 - hex_dist) / 0.12 } else { 1.0 };
+
+            let col = hsl_to_rgb(hue, sat.clamp(0.5, 1.0), (lit * border).clamp(0.05, 0.65));
+            img.put_pixel(px, py, col);
+        }
+    }
+
+    DynamicImage::ImageRgb8(img)
+}
+
+// ── Wave Interference ─────────────────────────────────────────────────────────
+// Two-source wave interference pattern that animates the source positions.
+pub fn render_wave_interference() -> DynamicImage {
+    static WAVE_TICK: std::sync::OnceLock<std::sync::Mutex<u64>> =
+        std::sync::OnceLock::new();
+    let tick = {
+        let mut g = WAVE_TICK.get_or_init(|| std::sync::Mutex::new(0)).lock().unwrap();
+        *g += 1; *g
+    };
+    let tf = tick as f32;
+
+    let mut img = RgbImage::new(480, 480);
+
+    // Two wave sources that slowly orbit around the centre
+    let orbit = 110.0f32;
+    let s1 = (240.0 + (tf * 0.018).cos() * orbit, 240.0 + (tf * 0.018).sin() * orbit);
+    let s2 = (240.0 - (tf * 0.018).cos() * orbit, 240.0 - (tf * 0.018).sin() * orbit);
+    // Third subtle source
+    let s3 = (240.0 + (tf * 0.011 + 1.2).cos() * 60.0, 240.0 + (tf * 0.011 + 1.2).sin() * 60.0);
+
+    let wave_k  = 0.065f32; // wave number
+    let omega_t = tf * 0.085;
+
+    for py in 0..480u32 {
+        for px in 0..480u32 {
+            let x = px as f32;
+            let y = py as f32;
+
+            let r1 = ((x - s1.0).powi(2) + (y - s1.1).powi(2)).sqrt();
+            let r2 = ((x - s2.0).powi(2) + (y - s2.1).powi(2)).sqrt();
+            let r3 = ((x - s3.0).powi(2) + (y - s3.1).powi(2)).sqrt();
+
+            // Superposed amplitude (with 1/sqrt(r) decay)
+            let amp1 = (wave_k * r1 - omega_t).cos() / (r1.sqrt() * 0.12 + 1.0);
+            let amp2 = (wave_k * r2 - omega_t).cos() / (r2.sqrt() * 0.12 + 1.0);
+            let amp3 = (wave_k * r3 - omega_t * 0.7).cos() * 0.4 / (r3.sqrt() * 0.15 + 1.0);
+            let combined = amp1 + amp2 + amp3;
+
+            // Map amplitude to colour (use HSL)
+            let hue = ((combined * 0.3 + 0.55 + tf * 0.003) % 1.0 + 1.0) % 1.0;
+            let lit = (combined * 0.35 + 0.42).clamp(0.1, 0.75);
+            let sat = 0.85 + combined.abs() * 0.1;
+
+            img.put_pixel(px, py, hsl_to_rgb(hue, sat.clamp(0.5, 1.0), lit));
+        }
+    }
+
+    DynamicImage::ImageRgb8(img)
+}
+
+// ── Clifford Strange Attractor ────────────────────────────────────────────────
+// de Jong / Clifford attractor with slowly morphing parameters.
+pub fn render_clifford_attractor() -> DynamicImage {
+    static CLIFF_TICK: std::sync::OnceLock<std::sync::Mutex<u64>> =
+        std::sync::OnceLock::new();
+    let tick = {
+        let mut g = CLIFF_TICK.get_or_init(|| std::sync::Mutex::new(0)).lock().unwrap();
+        *g += 1; *g
+    };
+    let tf = tick as f32;
+
+    let mut img = RgbImage::new(480, 480);
+    let bg = Rgb([12u8, 10, 18]);
+    for p in img.pixels_mut() { *p = bg; }
+
+    // Slowly morph parameters through interesting regions
+    let a = 1.7 + (tf * 0.003).sin() * 0.6;
+    let b = 1.7 + (tf * 0.0023 + 1.0).cos() * 0.6;
+    let c = 0.6 + (tf * 0.0017 + 2.0).sin() * 0.4;
+    let d = 1.2 + (tf * 0.0021 + 3.0).cos() * 0.4;
+
+    // Run iterator from warm-up state
+    let mut x = 0.1f32;
+    let mut y = 0.1f32;
+
+    // Warm up (skip transient)
+    for _ in 0..200 {
+        let nx = (a * y).sin() + c * (a * x).cos();
+        let ny = (b * x).sin() + d * (b * y).cos();
+        x = nx; y = ny;
+    }
+
+    // Accumulate density
+    let n_pts = 40_000usize;
+    // Accumulate in a brightness buffer (u16 per pixel)
+    let mut bright = vec![0u32; 480 * 480];
+
+    // Scale: attractor lives roughly in [-3, 3] × [-3, 3]
+    let scale = 65.0f32;
+    let cx = 240.0f32;
+    let cy = 240.0f32;
+
+    for _ in 0..n_pts {
+        let nx = (a * y).sin() + c * (a * x).cos();
+        let ny = (b * x).sin() + d * (b * y).cos();
+        x = nx; y = ny;
+        let px = (cx + x * scale) as i32;
+        let py = (cy + y * scale) as i32;
+        if px >= 0 && px < 480 && py >= 0 && py < 480 {
+            bright[py as usize * 480 + px as usize] += 1;
+        }
+    }
+
+    // Find max density for normalisation
+    let max_b = *bright.iter().max().unwrap_or(&1) as f32;
+    if max_b < 0.1 {
+        return DynamicImage::ImageRgb8(img);
+    }
+
+    // Colour: hue based on x/y position, brightness from density
+    for py in 0..480u32 {
+        for px in 0..480u32 {
+            let b_val = bright[py as usize * 480 + px as usize];
+            if b_val == 0 { continue; }
+            let t = (b_val as f32 / max_b).powf(0.4);
+            // Position-based hue drift with time
+            let hue = ((px as f32 / 480.0 * 0.6 + py as f32 / 480.0 * 0.4 + tf * 0.004) % 1.0 + 1.0) % 1.0;
+            let col = hsl_to_rgb(hue, 0.85, (0.1 + t * 0.65).min(0.8));
+            img.put_pixel(px, py, col);
+        }
+    }
+
+    DynamicImage::ImageRgb8(img)
+}
+
+// ── Rotating Icosahedron ──────────────────────────────────────────────────────
+// Wireframe 3D icosahedron rotating on all three axes.
+pub fn render_icosahedron() -> DynamicImage {
+    static ICO_TICK: std::sync::OnceLock<std::sync::Mutex<u64>> =
+        std::sync::OnceLock::new();
+    let tick = {
+        let mut g = ICO_TICK.get_or_init(|| std::sync::Mutex::new(0)).lock().unwrap();
+        *g += 1; *g
+    };
+    let tf = tick as f32;
+
+    let mut img = RgbImage::new(480, 480);
+    let bg = Rgb([18u8, 14, 24]);
+    for p in img.pixels_mut() { *p = bg; }
+
+    // Icosahedron vertices (circumradius 1)
+    let phi = (1.0f32 + 5.0f32.sqrt()) / 2.0; // golden ratio ≈ 1.618
+    let norm = (1.0 + phi * phi).sqrt();
+    let a = 1.0 / norm;
+    let b = phi / norm;
+    let verts_raw: &[(f32, f32, f32)] = &[
+        (0.0,  a,  b), (0.0, -a,  b), (0.0,  a, -b), (0.0, -a, -b),
+        ( a,  b, 0.0), (-a,  b, 0.0), ( a, -b, 0.0), (-a, -b, 0.0),
+        ( b, 0.0,  a), (-b, 0.0,  a), ( b, 0.0, -a), (-b, 0.0, -a),
+    ];
+
+    // Icosahedron edges (30 edges total)
+    let edges: &[(usize, usize)] = &[
+        (0,1),(0,4),(0,5),(0,8),(0,9),
+        (1,6),(1,7),(1,8),(1,9),
+        (2,3),(2,4),(2,5),(2,10),(2,11),
+        (3,6),(3,7),(3,10),(3,11),
+        (4,8),(4,10),(5,9),(5,11),
+        (6,8),(6,10),(7,9),(7,11),
+        (8,9),(10,11),(4,5),(6,7),
+    ];
+
+    // Rotation angles
+    let rx = tf * 0.013;
+    let ry = tf * 0.019;
+    let rz = tf * 0.007;
+
+    // Rotation matrices (Rx * Ry * Rz)
+    let (srx, crx) = rx.sin_cos();
+    let (sry, cry) = ry.sin_cos();
+    let (srz, crz) = rz.sin_cos();
+
+    let rotate = |(x, y, z): (f32, f32, f32)| -> (f32, f32, f32) {
+        // Rz
+        let (x1, y1, z1) = (x * crz - y * srz, x * srz + y * crz, z);
+        // Ry
+        let (x2, y2, z2) = (x1 * cry + z1 * sry, y1, -x1 * sry + z1 * cry);
+        // Rx
+        let (x3, y3, z3) = (x2, y2 * crx - z2 * srx, y2 * srx + z2 * crx);
+        (x3, y3, z3)
+    };
+
+    let scale = 185.0f32;
+    let cx = 240.0f32;
+    let cy = 240.0f32;
+
+    // Project vertices
+    let projected: Vec<(f32, f32, f32)> = verts_raw.iter()
+        .map(|&v| rotate(v))
+        .collect();
+
+    // Draw edges
+    for &(i, j) in edges {
+        let (x1, y1, z1) = projected[i];
+        let (x2, y2, z2) = projected[j];
+
+        // Back-face dimming: average z of endpoints
+        let avg_z = (z1 + z2) / 2.0;
+        let brightness = 0.35 + avg_z * 0.65;
+        let alpha = brightness.clamp(0.1, 1.0);
+
+        let px1 = cx + x1 * scale;
+        let py1 = cy - y1 * scale; // y flipped
+        let px2 = cx + x2 * scale;
+        let py2 = cy - y2 * scale;
+
+        let dx = (px2 - px1).abs() as i32;
+        let dy = (py2 - py1).abs() as i32;
+        let steps = dx.max(dy).max(1);
+
+        // Edge colour: cyan-to-purple gradient along z
+        let hue = (z1 * 0.5 + 0.5) * 0.5 + 0.5; // 0.5..1.0 → blue to magenta
+
+        for si in 0..=steps {
+            let t = si as f32 / steps as f32;
+            let epx = (px1 + (px2 - px1) * t) as i32;
+            let epy = (py1 + (py2 - py1) * t) as i32;
+            if epx >= 0 && epx < 480 && epy >= 0 && epy < 480 {
+                let ecol = hsl_to_rgb(hue % 1.0, 0.9, 0.55 * alpha);
+                let p = img.get_pixel(epx as u32, epy as u32);
+                img.put_pixel(epx as u32, epy as u32, Rgb([
+                    (p[0] as f32 + (ecol[0] as f32 - p[0] as f32) * alpha * 0.85).min(255.0) as u8,
+                    (p[1] as f32 + (ecol[1] as f32 - p[1] as f32) * alpha * 0.85).min(255.0) as u8,
+                    (p[2] as f32 + (ecol[2] as f32 - p[2] as f32) * alpha * 0.85).min(255.0) as u8,
+                ]));
+            }
+        }
+    }
+
+    // Draw vertex dots
+    for (i, &(x, y, z)) in projected.iter().enumerate() {
+        let _ = i;
+        let vbright = (z + 1.0) / 2.0;
+        let vx = (cx + x * scale) as i32;
+        let vy = (cy - y * scale) as i32;
+        if vx < 2 || vx >= 478 || vy < 2 || vy >= 478 { continue; }
+        let col = hsl_to_rgb((z * 0.5 + 0.5) * 0.5 + 0.5, 0.9, (0.3 + vbright * 0.4).clamp(0.2, 0.8));
+        for dy in -2i32..=2 {
+            for dx in -2i32..=2 {
+                if dx*dx + dy*dy <= 4 {
+                    img.put_pixel((vx + dx) as u32, (vy + dy) as u32, col);
+                }
+            }
+        }
+    }
+
+    DynamicImage::ImageRgb8(img)
+}
+
+// ── Mandala ───────────────────────────────────────────────────────────────────
+// An animated mandala with N-fold rotational symmetry built from layered curves.
+pub fn render_mandala() -> DynamicImage {
+    static MANDALA_TICK: std::sync::OnceLock<std::sync::Mutex<u64>> =
+        std::sync::OnceLock::new();
+    let tick = {
+        let mut g = MANDALA_TICK.get_or_init(|| std::sync::Mutex::new(0)).lock().unwrap();
+        *g += 1; *g
+    };
+    let tf = tick as f32;
+
+    let mut img = RgbImage::new(480, 480);
+    let bg = Rgb([22u8, 18, 28]);
+    for p in img.pixels_mut() { *p = bg; }
+
+    let cx = 240.0f32;
+    let cy = 240.0f32;
+    let symmetry = 8u32; // 8-fold
+    let sym_angle = std::f32::consts::TAU / symmetry as f32;
+
+    // Layer 1: outer ring petals
+    {
+        let layer_r = 180.0f32;
+        let n_petals = 16u32;
+        let petal_r = 40.0f32;
+        let layer_rot = tf * 0.008;
+        for pi in 0..n_petals {
+            let base_a = pi as f32 / n_petals as f32 * std::f32::consts::TAU + layer_rot;
+            let cx2 = cx + base_a.cos() * layer_r;
+            let cy2 = cy + base_a.sin() * layer_r;
+            let hue = (pi as f32 / n_petals as f32 + tf * 0.003) % 1.0;
+            // Draw petal: ellipse with major axis pointing toward centre
+            for dy in -(petal_r as i32)..=(petal_r as i32) {
+                for dx in -(petal_r as i32)..=(petal_r as i32) {
+                    // Rotate into petal frame
+                    let ca = base_a.cos();
+                    let sa = base_a.sin();
+                    let lx =  ca * dx as f32 + sa * dy as f32;
+                    let ly = -sa * dx as f32 + ca * dy as f32;
+                    let inside = (lx / petal_r).powi(2) + (ly / (petal_r * 0.45)).powi(2);
+                    if inside <= 1.0 {
+                        let alpha = (1.0 - inside) * 0.6;
+                        let bx = cx2 as i32 + dx;
+                        let by = cy2 as i32 + dy;
+                        if bx >= 0 && bx < 480 && by >= 0 && by < 480 {
+                            let p = img.get_pixel(bx as u32, by as u32);
+                            let col = hsl_to_rgb(hue, 0.85, 0.5 + inside * 0.1);
+                            img.put_pixel(bx as u32, by as u32, Rgb([
+                                (p[0] as f32 * (1.0-alpha) + col[0] as f32 * alpha).min(255.0) as u8,
+                                (p[1] as f32 * (1.0-alpha) + col[1] as f32 * alpha).min(255.0) as u8,
+                                (p[2] as f32 * (1.0-alpha) + col[2] as f32 * alpha).min(255.0) as u8,
+                            ]));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Layer 2: symmetric spiraling arms
+    {
+        let arm_rot = tf * -0.012;
+        let n_arms = symmetry;
+        let steps = 250usize;
+        for arm in 0..n_arms {
+            let arm_base = arm as f32 * sym_angle + arm_rot;
+            let hue = (arm as f32 / n_arms as f32 + tf * 0.004) % 1.0;
+            for si in 0..steps {
+                let t = si as f32 / steps as f32;
+                let r = t * 170.0;
+                // Spiral outward
+                let angle = arm_base + t * std::f32::consts::TAU * 1.5
+                    + (tf * 0.015 + t * 4.0).sin() * 0.2;
+                let px = cx + angle.cos() * r;
+                let py = cy + angle.sin() * r;
+                let alpha = (0.7 - t * 0.4).max(0.1);
+                let lit = 0.4 + t * 0.25;
+                let col = hsl_to_rgb(hue, 0.9, lit);
+                let bx = px as i32;
+                let by = py as i32;
+                if bx >= 0 && bx < 480 && by >= 0 && by < 480 {
+                    let p = img.get_pixel(bx as u32, by as u32);
+                    img.put_pixel(bx as u32, by as u32, Rgb([
+                        (p[0] as f32 * (1.0-alpha) + col[0] as f32 * alpha).min(255.0) as u8,
+                        (p[1] as f32 * (1.0-alpha) + col[1] as f32 * alpha).min(255.0) as u8,
+                        (p[2] as f32 * (1.0-alpha) + col[2] as f32 * alpha).min(255.0) as u8,
+                    ]));
+                }
+            }
+        }
+    }
+
+    // Layer 3: inner rings
+    {
+        let ring_rot = tf * 0.02;
+        for ri in 0..5u32 {
+            let r_base = 25.0 + ri as f32 * 22.0;
+            let n_dots = (8 + ri * 4) as usize;
+            let hue = (ri as f32 * 0.12 + tf * 0.006) % 1.0;
+            for di in 0..n_dots {
+                let a = di as f32 / n_dots as f32 * std::f32::consts::TAU + ring_rot + ri as f32 * 0.3;
+                let r = r_base + (a * 3.0 + tf * 0.05).sin() * 8.0;
+                let px = (cx + a.cos() * r) as i32;
+                let py = (cy + a.sin() * r) as i32;
+                if px >= 1 && px < 479 && py >= 1 && py < 479 {
+                    let col = hsl_to_rgb(hue, 0.9, 0.65);
+                    for dy in -2i32..=2 {
+                        for dx in -2i32..=2 {
+                            if dx*dx + dy*dy <= 4 {
+                                img.put_pixel((px+dx) as u32, (py+dy) as u32, col);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Centre glow
+    for dy in -20i32..=20 {
+        for dx in -20i32..=20 {
+            let d = (dx*dx + dy*dy) as f32;
+            if d <= 400.0 {
+                let t = 1.0 - d / 400.0;
+                let hue = (tf * 0.01) % 1.0;
+                let col = hsl_to_rgb(hue, 1.0, 0.7 * t);
+                let bx = cx as i32 + dx;
+                let by = cy as i32 + dy;
+                let p = img.get_pixel(bx as u32, by as u32);
+                img.put_pixel(bx as u32, by as u32, Rgb([
+                    (p[0] as f32 + (col[0] as f32 - p[0] as f32) * t * 0.8).min(255.0) as u8,
+                    (p[1] as f32 + (col[1] as f32 - p[1] as f32) * t * 0.8).min(255.0) as u8,
+                    (p[2] as f32 + (col[2] as f32 - p[2] as f32) * t * 0.8).min(255.0) as u8,
+                ]));
+            }
+        }
+    }
+
+    DynamicImage::ImageRgb8(img)
+}
+
+// ── Flow Field ────────────────────────────────────────────────────────────────
+// Hundreds of particles flowing through a hash-noise vector field.
+pub fn render_flow_field() -> DynamicImage {
+    struct FlowParticle { x: f32, y: f32, age: u32, hue: f32 }
+    static FF_STATE: std::sync::OnceLock<std::sync::Mutex<(Vec<FlowParticle>, Vec<[u8;3]>, u32, u64)>> =
+        std::sync::OnceLock::new();
+
+    let mut guard = FF_STATE.get_or_init(|| {
+        std::sync::Mutex::new((Vec::new(), vec![[8u8,8,10]; 480*480], 0xF10F_1E1Du32, 0u64))
+    }).lock().unwrap();
+    let (ref mut particles, ref mut trail_buf, ref mut seed, ref mut tick) = *guard;
+    *tick += 1;
+    let tf = *tick as f32;
+
+    let mut s = *seed;
+    let mut rng = || -> f32 {
+        s = s.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+        (s as f32) / (u32::MAX as f32)
+    };
+
+    // Hash-based noise angle at position
+    let noise_angle = |x: f32, y: f32, t: f32| -> f32 {
+        let ix = (x * 0.02 + t * 0.002) as i32;
+        let iy = (y * 0.02) as i32;
+        let h = ix.wrapping_mul(73856093i32).wrapping_add(iy.wrapping_mul(19349663i32)) as u32;
+        let h2 = h.wrapping_mul(2_654_435_761).wrapping_add(ix as u32);
+        let base = (h2 as f32 / u32::MAX as f32) * std::f32::consts::TAU;
+        // Second harmonic for more complex flow
+        let ix2 = (x * 0.006) as i32;
+        let iy2 = (y * 0.006 + t * 0.003) as i32;
+        let h3 = (ix2 ^ iy2).wrapping_mul(2_246_822_519u32 as i32) as u32;
+        base + (h3 as f32 / u32::MAX as f32) * 1.5
+    };
+
+    // Spawn new particles
+    while particles.len() < 320 {
+        particles.push(FlowParticle {
+            x: rng() * 480.0,
+            y: rng() * 480.0,
+            age: 0,
+            hue: rng(),
+        });
+    }
+
+    // Fade trail buffer
+    for px in trail_buf.iter_mut() {
+        px[0] = (px[0] as f32 * 0.965 + 8.0 * 0.035) as u8;
+        px[1] = (px[1] as f32 * 0.965 + 8.0 * 0.035) as u8;
+        px[2] = (px[2] as f32 * 0.965 + 10.0 * 0.035) as u8;
+    }
+
+    // Update particles
+    for p in particles.iter_mut() {
+        p.age += 1;
+        let angle = noise_angle(p.x, p.y, tf);
+        let speed = 1.8f32;
+        p.x += angle.cos() * speed;
+        p.y += angle.sin() * speed;
+
+        // Wrap around
+        p.x = ((p.x % 480.0) + 480.0) % 480.0;
+        p.y = ((p.y % 480.0) + 480.0) % 480.0;
+
+        // Die at max age and respawn
+        if p.age > 180 {
+            p.x = rng() * 480.0;
+            p.y = rng() * 480.0;
+            p.age = 0;
+            p.hue = rng();
+        }
+
+        // Write to trail buffer
+        let px_int = p.x as usize;
+        let py_int = p.y as usize;
+        if px_int < 480 && py_int < 480 {
+            let alpha = if p.age < 10 { p.age as f32 / 10.0 * 0.8 }
+                        else if p.age > 160 { (180 - p.age) as f32 / 20.0 * 0.8 }
+                        else { 0.8 };
+            let col = hsl_to_rgb(p.hue, 0.9, 0.55);
+            let idx = py_int * 480 + px_int;
+            trail_buf[idx][0] = (trail_buf[idx][0] as f32 * (1.0-alpha) + col[0] as f32 * alpha).min(255.0) as u8;
+            trail_buf[idx][1] = (trail_buf[idx][1] as f32 * (1.0-alpha) + col[1] as f32 * alpha).min(255.0) as u8;
+            trail_buf[idx][2] = (trail_buf[idx][2] as f32 * (1.0-alpha) + col[2] as f32 * alpha).min(255.0) as u8;
+        }
+    }
+    *seed = s;
+
+    // Build image from trail buffer
+    let mut img = RgbImage::new(480, 480);
+    for py in 0..480u32 {
+        for px in 0..480u32 {
+            let tb = &trail_buf[py as usize * 480 + px as usize];
+            img.put_pixel(px, py, Rgb([tb[0], tb[1], tb[2]]));
+        }
+    }
+
+    let _ = tf;
+    DynamicImage::ImageRgb8(img)
+}
+
+// ── Glitch Art ────────────────────────────────────────────────────────────────
+// RGB channel displacement and scan-line corruption effects.
+pub fn render_glitch_art() -> DynamicImage {
+    static GLITCH_TICK: std::sync::OnceLock<std::sync::Mutex<(u64, u32)>> =
+        std::sync::OnceLock::new();
+    let (tick, glitch_seed) = {
+        let mut g = GLITCH_TICK.get_or_init(|| std::sync::Mutex::new((0u64, 0xA1B2_C3D4u32))).lock().unwrap();
+        g.0 += 1;
+        // New glitch pattern every ~20 frames
+        if g.0 % 22 == 0 {
+            g.1 = (g.0 as u32).wrapping_mul(2_654_435_761);
+        }
+        (g.0, g.1)
+    };
+    let tf = tick as f32;
+
+    let mut img = RgbImage::new(480, 480);
+
+    // Base layer: time-varying gradient with geometric shapes
+    for py in 0..480u32 {
+        for px in 0..480u32 {
+            let x = px as f32 / 480.0;
+            let y = py as f32 / 480.0;
+            // Moving plasma base
+            let v1 = (x * 8.0 + tf * 0.03).sin();
+            let v2 = (y * 6.0 - tf * 0.025).cos();
+            let v3 = ((x + y) * 4.0 + tf * 0.02).sin();
+            let plasma = (v1 + v2 + v3) / 3.0;
+            let hue = ((plasma * 0.4 + tf * 0.004) % 1.0 + 1.0) % 1.0;
+            img.put_pixel(px, py, hsl_to_rgb(hue, 0.7, 0.25 + plasma * 0.1));
+        }
+    }
+
+    // Glitch: horizontal scan-line shifts
+    let mut gs = glitch_seed;
+    let n_glitch_bands = 15u32;
+    for _ in 0..n_glitch_bands {
+        gs = gs.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+        let band_y = (gs >> 23) % 480;
+        gs = gs.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+        let band_h = 2 + (gs >> 28) % 12;
+        gs = gs.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+        let shift = ((gs as i32 % 80) - 40) as i32; // -40..40
+
+        for by in band_y..(band_y + band_h).min(480) {
+            let row_pixels: Vec<Rgb<u8>> = (0..480u32).map(|x| {
+                let src_x = ((x as i32 + shift).rem_euclid(480)) as u32;
+                *img.get_pixel(src_x, by)
+            }).collect();
+            for (bx, col) in row_pixels.into_iter().enumerate() {
+                img.put_pixel(bx as u32, by, col);
+            }
+        }
+    }
+
+    // RGB channel separation
+    gs = gs.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+    let r_shift = ((gs as i32 % 20) - 10) as i32;
+    gs = gs.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+    let b_shift = -((gs as i32 % 20) - 10) as i32;
+
+    // Separate channels with slight horizontal offset
+    let channels: Vec<(u8, u8, u8)> = (0..480*480)
+        .map(|i| {
+            let px = i % 480;
+            let py = i / 480;
+            let p = img.get_pixel(px as u32, py as u32);
+            (p[0], p[1], p[2])
+        }).collect();
+
+    let _ = (r_shift, b_shift, channels);
+
+    // Simpler approach: per-row R/B offset
+    for py in 0..480u32 {
+        let row: Vec<Rgb<u8>> = (0..480u32).map(|px| *img.get_pixel(px, py)).collect();
+        for px in 0..480u32 {
+            let r = row[(px as i32 + r_shift).rem_euclid(480) as usize][0];
+            let g = row[px as usize][1];
+            let b = row[(px as i32 + b_shift).rem_euclid(480) as usize][2];
+            img.put_pixel(px, py, Rgb([r, g, b]));
+        }
+    }
+
+    // Scan lines (CRT effect): every 3 rows, slightly darken
+    for py in (0..480u32).step_by(3) {
+        for px in 0..480u32 {
+            let p = img.get_pixel(px, py);
+            img.put_pixel(px, py, Rgb([
+                (p[0] as f32 * 0.7) as u8,
+                (p[1] as f32 * 0.7) as u8,
+                (p[2] as f32 * 0.7) as u8,
+            ]));
+        }
+    }
+
+    // Noise pixels (random salt/pepper for digital corruption feel)
+    let mut ns = glitch_seed ^ 0xFACE_CAFE;
+    for _ in 0..80u32 {
+        ns = ns.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+        let nx = ns % 480;
+        ns = ns.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+        let ny = (ns >> 16) % 480;
+        img.put_pixel(nx, ny, Rgb([255, 255, 255]));
+    }
+
+    let _ = tf;
+    DynamicImage::ImageRgb8(img)
+}
+
+// ── Double Pendulum ───────────────────────────────────────────────────────────
+// Chaotic double pendulum with a colourful traced trail.
+pub fn render_double_pendulum() -> DynamicImage {
+    struct DPState {
+        th1: f32, th2: f32,
+        dth1: f32, dth2: f32,
+        trail: std::collections::VecDeque<(f32, f32, u64)>,
+        tick: u64,
+    }
+    static DP_STATE: std::sync::OnceLock<std::sync::Mutex<DPState>> =
+        std::sync::OnceLock::new();
+
+    let mut guard = DP_STATE.get_or_init(|| std::sync::Mutex::new(DPState {
+        th1: std::f32::consts::FRAC_PI_2 + 0.3,
+        th2: std::f32::consts::PI - 0.5,
+        dth1: 0.0,
+        dth2: 0.0,
+        trail: std::collections::VecDeque::with_capacity(500),
+        tick: 0,
+    })).lock().unwrap();
+
+    guard.tick += 1;
+    let tick = guard.tick;
+
+    let l1 = 1.0f32; let l2 = 1.0f32;
+    let m1 = 1.0f32; let m2 = 1.0f32;
+    let g  = 9.81f32;
+    let dt = 0.04f32;
+
+    // Runge-Kutta 4 step
+    let dp_deriv = |th1: f32, th2: f32, dth1: f32, dth2: f32| -> (f32, f32, f32, f32) {
+        let delta = th2 - th1;
+        let cos_d = delta.cos();
+        let sin_d = delta.sin();
+        let denom1 = (m1 + m2) * l1 - m2 * l1 * cos_d * cos_d;
+        let denom2 = (l2 / l1) * denom1;
+        let ddth1 = (m2 * l1 * dth1 * dth1 * sin_d * cos_d
+                  + m2 * g  * th2.sin() * cos_d
+                  + m2 * l2 * dth2 * dth2 * sin_d
+                  - (m1 + m2) * g * th1.sin()) / denom1;
+        let ddth2 = (-(l1 / l2) * (m1 + m2) * dth1 * dth1 * sin_d * cos_d
+                  + (m1 + m2) * g * th1.sin() * cos_d
+                  - (m1 + m2) * g * th2.sin()
+                  - m2 * l2 * dth2 * dth2 * sin_d * cos_d)
+                  / denom2 * 0.0
+                  + (-m2 * l2 * dth2 * dth2 * sin_d
+                  - (m1 + m2) * g * th2.sin()
+                  + m2 * l1 * dth1 * dth1 * sin_d
+                  + (m1 + m2) * g * th1.sin() * cos_d)
+                  / (l2 * (m1 + m2 - m2 * cos_d * cos_d));
+        (dth1, dth2, ddth1, ddth2)
+    };
+
+    // Several sub-steps per frame for accuracy
+    for _ in 0..3 {
+        let (k1a, k1b, k1c, k1d) = dp_deriv(guard.th1, guard.th2, guard.dth1, guard.dth2);
+        let (k2a, k2b, k2c, k2d) = dp_deriv(
+            guard.th1 + k1a*dt/2.0, guard.th2 + k1b*dt/2.0,
+            guard.dth1 + k1c*dt/2.0, guard.dth2 + k1d*dt/2.0);
+        let (k3a, k3b, k3c, k3d) = dp_deriv(
+            guard.th1 + k2a*dt/2.0, guard.th2 + k2b*dt/2.0,
+            guard.dth1 + k2c*dt/2.0, guard.dth2 + k2d*dt/2.0);
+        let (k4a, k4b, k4c, k4d) = dp_deriv(
+            guard.th1 + k3a*dt, guard.th2 + k3b*dt,
+            guard.dth1 + k3c*dt, guard.dth2 + k3d*dt);
+
+        guard.th1  += dt/6.0 * (k1a + 2.0*k2a + 2.0*k3a + k4a);
+        guard.th2  += dt/6.0 * (k1b + 2.0*k2b + 2.0*k3b + k4b);
+        guard.dth1 += dt/6.0 * (k1c + 2.0*k2c + 2.0*k3c + k4c);
+        guard.dth2 += dt/6.0 * (k1d + 2.0*k2d + 2.0*k3d + k4d);
+    }
+
+    let scale = 100.0f32;
+    let ox = 240.0f32; let oy = 160.0f32;
+    let x1 = ox + guard.th1.sin() * scale * l1;
+    let y1 = oy + guard.th1.cos() * scale * l1;
+    let x2 = x1 + guard.th2.sin() * scale * l2;
+    let y2 = y1 + guard.th2.cos() * scale * l2;
+
+    guard.trail.push_back((x2, y2, tick));
+    while guard.trail.len() > 480 { guard.trail.pop_front(); }
+
+    let trail_snapshot: Vec<(f32, f32, u64)> = guard.trail.iter().cloned().collect();
+    let (x1s, y1s) = (x1, y1);
+    let (x2s, y2s) = (x2, y2);
+    let th1s = guard.th1;
+    let th2s = guard.th2;
+    drop(guard);
+
+    let mut img = RgbImage::new(480, 480);
+    let bg = Rgb([16u8, 12, 20]);
+    for p in img.pixels_mut() { *p = bg; }
+
+    // Draw trail
+    let trail_len = trail_snapshot.len();
+    for (i, &(tx, ty, _)) in trail_snapshot.iter().enumerate() {
+        let t = i as f32 / trail_len as f32;
+        let hue = (t * 0.7 + tick as f32 * 0.003) % 1.0;
+        let lit = 0.25 + t * 0.35;
+        let col = hsl_to_rgb(hue, 0.9, lit);
+        let tpx = tx as i32;
+        let tpy = ty as i32;
+        if tpx >= 0 && tpx < 480 && tpy >= 0 && tpy < 480 {
+            img.put_pixel(tpx as u32, tpy as u32, col);
+        }
+    }
+
+    // Draw pendulum arms
+    let draw_line = |img: &mut RgbImage, ax: f32, ay: f32, bx: f32, by: f32, col: Rgb<u8>| {
+        let dx = (bx - ax).abs() as i32;
+        let dy = (by - ay).abs() as i32;
+        let steps = dx.max(dy).max(1);
+        for si in 0..=steps {
+            let t = si as f32 / steps as f32;
+            let px = (ax + (bx - ax) * t) as i32;
+            let py = (ay + (by - ay) * t) as i32;
+            if px >= 0 && px < 480 && py >= 0 && py < 480 {
+                img.put_pixel(px as u32, py as u32, col);
+            }
+        }
+    };
+    let _ = (th1s, th2s);
+
+    draw_line(&mut img, ox, oy, x1s, y1s, Rgb([180u8, 180, 200]));
+    draw_line(&mut img, x1s, y1s, x2s, y2s, Rgb([200u8, 180, 200]));
+
+    // Draw bobs
+    for (bx, by, br) in &[(ox as i32, oy as i32, 5i32), (x1s as i32, y1s as i32, 7), (x2s as i32, y2s as i32, 8)] {
+        for dy in -br..=*br {
+            for dx in -br..=*br {
+                if dx*dx + dy*dy <= br*br {
+                    let px = bx + dx;
+                    let py = by + dy;
+                    if px >= 0 && px < 480 && py >= 0 && py < 480 {
+                        img.put_pixel(px as u32, py as u32, Rgb([220u8, 200, 240]));
+                    }
+                }
+            }
+        }
+    }
+
+    DynamicImage::ImageRgb8(img)
+}
+
+// ── Rose Curve ────────────────────────────────────────────────────────────────
+// Animated parametric rose curve r = cos(k * theta) with rotating petals.
+pub fn render_rose_curve() -> DynamicImage {
+    static ROSE_TICK: std::sync::OnceLock<std::sync::Mutex<u64>> =
+        std::sync::OnceLock::new();
+    let tick = {
+        let mut g = ROSE_TICK.get_or_init(|| std::sync::Mutex::new(0)).lock().unwrap();
+        *g += 1; *g
+    };
+    let tf = tick as f32;
+
+    let mut img = RgbImage::new(480, 480);
+    let bg = Rgb([16u8, 12, 24]);
+    for p in img.pixels_mut() { *p = bg; }
+
+    let cx = 240.0f32;
+    let cy = 240.0f32;
+    let scale = 200.0f32;
+
+    // Draw several overlapping rose curves with different k values
+    // k slowly evolves through non-integer values for complex petals
+    let k_base = 2.0 + (tf * 0.002).sin() * 1.5;
+
+    let curves: &[(f32, f32, f32, [u8;3])] = &[
+        (k_base,          0.0,  1.0, [137, 180, 250]),
+        (k_base * 1.5,    0.3,  0.7, [203, 166, 247]),
+        (k_base + 0.5,    1.0,  0.8, [166, 227, 161]),
+        (k_base * 0.7,    2.1,  0.6, [249, 226, 175]),
+    ];
+
+    let steps = 3600usize;
+    for &(k, phase, amp, col) in curves {
+        // For non-integer k, need to go around far enough for full pattern
+        let periods = if k.fract() < 0.01 { 1.0 } else { (k * 2.0).ceil() / 2.0 };
+        let theta_max = std::f32::consts::TAU * periods;
+        let rot = tf * 0.008 + phase;
+
+        for si in 0..=steps {
+            let theta = si as f32 / steps as f32 * theta_max;
+            let r = scale * amp * (k * theta).cos();
+            let x = cx + r * (theta + rot).cos();
+            let y = cy + r * (theta + rot).sin();
+            let px = x as i32;
+            let py = y as i32;
+            if px >= 1 && px < 479 && py >= 1 && py < 479 {
+                // Colour varies along curve
+                let hue = ((theta / theta_max + tf * 0.004 + phase * 0.1) % 1.0 + 1.0) % 1.0;
+                let rcol = hsl_to_rgb(hue, 0.9, 0.55);
+                let _ = col;
+                for dy in -1i32..=1 {
+                    for dx in -1i32..=1 {
+                        let bx = px + dx;
+                        let by = py + dy;
+                        if bx >= 0 && bx < 480 && by >= 0 && by < 480 {
+                            let p = img.get_pixel(bx as u32, by as u32);
+                            img.put_pixel(bx as u32, by as u32, Rgb([
+                                ((p[0] as u32 + rcol[0] as u32) / 2).min(255) as u8,
+                                ((p[1] as u32 + rcol[1] as u32) / 2).min(255) as u8,
+                                ((p[2] as u32 + rcol[2] as u32) / 2).min(255) as u8,
+                            ]));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Centre glow
+    for dy in -8i32..=8 {
+        for dx in -8i32..=8 {
+            if dx*dx + dy*dy <= 64 {
+                let bx = cx as i32 + dx;
+                let by = cy as i32 + dy;
+                if bx >= 0 && bx < 480 && by >= 0 && by < 480 {
+                    img.put_pixel(bx as u32, by as u32, Rgb([240, 230, 255]));
+                }
+            }
+        }
+    }
+
+    DynamicImage::ImageRgb8(img)
+}
+
+// ── Truchet Tiles ─────────────────────────────────────────────────────────────
+// Animated Truchet tile pattern — each tile is a quarter circle, orientation
+// chosen by a hash, creating flowing curved lines.
+pub fn render_truchet() -> DynamicImage {
+    static TRUCHET_TICK: std::sync::OnceLock<std::sync::Mutex<u64>> =
+        std::sync::OnceLock::new();
+    let tick = {
+        let mut g = TRUCHET_TICK.get_or_init(|| std::sync::Mutex::new(0)).lock().unwrap();
+        *g += 1; *g
+    };
+    let tf = tick as f32;
+
+    let tile_size = 40u32;
+    let cols = (480 + tile_size - 1) / tile_size;
+    let rows = (480 + tile_size - 1) / tile_size;
+
+    let mut img = RgbImage::new(480, 480);
+
+    // Background: dark
+    let bg = Rgb([20u8, 16, 28]);
+    for p in img.pixels_mut() { *p = bg; }
+
+    let stroke_w = 5.0f32;
+
+    // Every few seconds, flip a random subset of tiles
+    let era = (tick / 45) as u32;
+
+    for row in 0..rows {
+        for col in 0..cols {
+            // Tile orientation from hash (with era for slow mutation)
+            let mut h = col.wrapping_mul(31337u32).wrapping_add(row.wrapping_mul(73856093u32));
+            h = h.wrapping_add(era.wrapping_mul(2_246_822_519u32));
+            h = h.wrapping_mul(2_654_435_761);
+            let flip = (h >> 31) == 0; // orientation bit
+
+            // Tile colour: hue from position + time
+            let hue = ((col as f32 * 0.08 + row as f32 * 0.06 + tf * 0.005) % 1.0 + 1.0) % 1.0;
+            let col_rgb = hsl_to_rgb(hue, 0.8, 0.55);
+
+            let ox = (col * tile_size) as f32;
+            let oy = (row * tile_size) as f32;
+            let ts = tile_size as f32;
+
+            // Draw two quarter-circle arcs
+            // flip=false: arcs at (0,0)→(ts,0) and (0,ts)→(ts,ts)
+            //             i.e., top-right and bottom-left corners
+            // flip=true:  arcs at (0,0)→(0,ts) and (ts,0)→(ts,ts)
+            //             i.e., top-left and bottom-right corners
+
+            let r = ts / 2.0;
+            let arc_steps = 40usize;
+            let draw_arc = |img: &mut RgbImage, arc_cx: f32, arc_cy: f32, start_a: f32, end_a: f32, col: Rgb<u8>| {
+                for si in 0..=arc_steps {
+                    let t = si as f32 / arc_steps as f32;
+                    let a = start_a + (end_a - start_a) * t;
+                    let ax = ox + arc_cx + a.cos() * r;
+                    let ay = oy + arc_cy + a.sin() * r;
+                    // Draw thick point
+                    let sw = stroke_w as i32;
+                    for dy in -sw..=sw {
+                        for dx in -sw..=sw {
+                            let d = (dx*dx + dy*dy) as f32;
+                            if d <= stroke_w * stroke_w {
+                                let bx = ax as i32 + dx;
+                                let by = ay as i32 + dy;
+                                if bx >= 0 && bx < 480 && by >= 0 && by < 480 {
+                                    img.put_pixel(bx as u32, by as u32, col);
+                                }
+                            }
+                        }
+                    }
+                }
+            };
+
+            if !flip {
+                // Top-right corner arc: centre at (ts, 0), from 180° to 270°
+                draw_arc(&mut img, ts, 0.0,
+                    std::f32::consts::PI,
+                    std::f32::consts::PI + std::f32::consts::FRAC_PI_2,
+                    col_rgb);
+                // Bottom-left corner arc: centre at (0, ts), from 0° to 90°
+                draw_arc(&mut img, 0.0, ts,
+                    0.0,
+                    std::f32::consts::FRAC_PI_2,
+                    col_rgb);
+            } else {
+                // Top-left corner arc: centre at (0, 0), from 0° to 90° (→ 270° to 360°)
+                draw_arc(&mut img, 0.0, 0.0,
+                    -std::f32::consts::FRAC_PI_2,
+                    0.0,
+                    col_rgb);
+                // Bottom-right corner arc: centre at (ts, ts), from 90° to 180°
+                draw_arc(&mut img, ts, ts,
+                    std::f32::consts::FRAC_PI_2,
+                    std::f32::consts::PI,
+                    col_rgb);
+            }
+        }
+    }
+
+    let _ = tf;
+    DynamicImage::ImageRgb8(img)
+}
+
+// ── Fourier Epicycles ─────────────────────────────────────────────────────────
+// A chain of Fourier epicycles (rotating circles) that together trace a figure.
+pub fn render_fourier_epicycles() -> DynamicImage {
+    static FOURIER_TICK: std::sync::OnceLock<std::sync::Mutex<u64>> =
+        std::sync::OnceLock::new();
+    let tick = {
+        let mut g = FOURIER_TICK.get_or_init(|| std::sync::Mutex::new(0)).lock().unwrap();
+        *g += 1; *g
+    };
+    let tf = tick as f32;
+
+    let mut img = RgbImage::new(480, 480);
+    let bg = Rgb([14u8, 12, 20]);
+    for p in img.pixels_mut() { *p = bg; }
+
+    let cx = 240.0f32;
+    let cy = 200.0f32;
+
+    // Fourier components: (freq_multiplier, amplitude, initial_phase)
+    // These approximate a square wave
+    let components: &[(f32, f32, f32)] = &[
+        (1.0,  80.0, 0.0),
+        (3.0,  26.67, 0.0),
+        (5.0,  16.0, 0.0),
+        (7.0,  11.43, 0.0),
+        (9.0,  8.89, 0.0),
+        (11.0, 7.27, 0.0),
+        (13.0, 6.15, 0.0),
+    ];
+
+    let base_freq = tf * 0.02;
+    let n_trace = 600usize;
+
+    // Trace the full path for the last N_TRACE steps
+    let mut path: Vec<(f32, f32)> = Vec::with_capacity(n_trace);
+    for ti in 0..=n_trace {
+        let t = base_freq - ti as f32 * 0.02;
+        let mut x = cx; #[allow(unused_mut)]
+        let mut y = cy;
+        for &(freq, amp, phase) in components {
+            let angle = freq * t + phase;
+            x += angle.cos() * amp;
+            y += angle.sin() * amp;
+        }
+        path.push((x, y));
+    }
+
+    // Draw traced path
+    for (i, &(px, py)) in path.iter().enumerate() {
+        let age = n_trace - i;
+        let alpha = (1.0 - age as f32 / n_trace as f32).powi(2);
+        let hue = (age as f32 / n_trace as f32 * 0.7 + tf * 0.003) % 1.0;
+        let col = hsl_to_rgb(hue, 0.9, 0.5 + alpha * 0.2);
+        let bx = px as i32;
+        let by = py as i32;
+        if bx >= 0 && bx < 480 && by >= 0 && by < 480 {
+            let p = img.get_pixel(bx as u32, by as u32);
+            img.put_pixel(bx as u32, by as u32, Rgb([
+                (p[0] as f32 * (1.0-alpha) + col[0] as f32 * alpha).min(255.0) as u8,
+                (p[1] as f32 * (1.0-alpha) + col[1] as f32 * alpha).min(255.0) as u8,
+                (p[2] as f32 * (1.0-alpha) + col[2] as f32 * alpha).min(255.0) as u8,
+            ]));
+        }
+    }
+
+    // Draw live epicycles
+    let mut x = cx;
+    let mut y = cy;
+    for &(freq, amp, phase) in components {
+        let angle = freq * base_freq + phase;
+        let nx = x + angle.cos() * amp;
+        let ny = y + angle.sin() * amp;
+
+        // Draw circle
+        let circle_steps = 80usize;
+        for ci in 0..=circle_steps {
+            let ca = ci as f32 / circle_steps as f32 * std::f32::consts::TAU;
+            let cpx = (x + ca.cos() * amp) as i32;
+            let cpy = (y + ca.sin() * amp) as i32;
+            if cpx >= 0 && cpx < 480 && cpy >= 0 && cpy < 480 {
+                let p = img.get_pixel(cpx as u32, cpy as u32);
+                img.put_pixel(cpx as u32, cpy as u32, Rgb([
+                    (p[0] as f32 * 0.6 + 40.0).min(255.0) as u8,
+                    (p[1] as f32 * 0.6 + 40.0).min(255.0) as u8,
+                    (p[2] as f32 * 0.6 + 60.0).min(255.0) as u8,
+                ]));
+            }
+        }
+
+        // Draw radius arm
+        let dx = (nx - x).abs() as i32;
+        let dy_abs = (ny - y).abs() as i32;
+        let steps = dx.max(dy_abs).max(1);
+        for si in 0..=steps {
+            let t = si as f32 / steps as f32;
+            let apx = (x + (nx - x) * t) as i32;
+            let apy = (y + (ny - y) * t) as i32;
+            if apx >= 0 && apx < 480 && apy >= 0 && apy < 480 {
+                img.put_pixel(apx as u32, apy as u32, Rgb([120, 120, 160]));
+            }
+        }
+
+        x = nx;
+        y = ny;
+    }
+
+    // Draw tip dot
+    let tip_x = x as i32;
+    let tip_y = y as i32;
+    for dy in -3i32..=3 {
+        for dx in -3i32..=3 {
+            if dx*dx + dy*dy <= 9 {
+                let bx = tip_x + dx;
+                let by = tip_y + dy;
+                if bx >= 0 && bx < 480 && by >= 0 && by < 480 {
+                    img.put_pixel(bx as u32, by as u32, Rgb([255, 240, 200]));
+                }
+            }
+        }
+    }
+
+    DynamicImage::ImageRgb8(img)
+}
+
+// ── Rule 30 ───────────────────────────────────────────────────────────────────
+// 1D cellular automaton using Wolfram Rule 30 (or Rule 90 by era), scrolling
+// downward, colour-coded by cell history.
+pub fn render_rule_30() -> DynamicImage {
+    const W: usize = 240; // cells wide (each cell = 2px)
+    const H: usize = 240; // rows visible
+    static RULE30_STATE: std::sync::OnceLock<std::sync::Mutex<(Vec<Vec<u8>>, u64)>> =
+        std::sync::OnceLock::new();
+
+    let mut guard = RULE30_STATE.get_or_init(|| {
+        let mut rows = vec![vec![0u8; W]; H];
+        // Seed: single 1 at center
+        rows[0][W / 2] = 1;
+        std::sync::Mutex::new((rows, 0u64))
+    }).lock().unwrap();
+    let (ref mut rows, ref mut tick) = *guard;
+    *tick += 1;
+
+    // Evolve one new row (append at bottom, drop top)
+    let last = &rows[H - 1].clone();
+    let mut new_row = vec![0u8; W];
+    // Alternate between Rule 30 (era 0) and Rule 90 (era 1) every 120 ticks
+    let era = (*tick / 120) % 2;
+    let rule: u8 = if era == 0 { 30 } else { 90 };
+    for x in 0..W {
+        let left  = if x > 0 { last[x-1] } else { last[W-1] };
+        let center = last[x];
+        let right = if x + 1 < W { last[x+1] } else { last[0] };
+        let pattern = (left << 2) | (center << 1) | right;
+        new_row[x] = (rule >> pattern) & 1;
+    }
+    rows.remove(0);
+    rows.push(new_row);
+
+    let tf = *tick as f32;
+
+    let mut img = RgbImage::new(480, 480);
+    let bg = Rgb([12u8, 10, 16]);
+    for p in img.pixels_mut() { *p = bg; }
+
+    // Render: each cell is 2×2 px, drawn in a 480×480 region with 2px border
+    for ry in 0..H {
+        for rx in 0..W {
+            if rows[ry][rx] == 0 { continue; }
+            let px0 = rx * 2;
+            let py0 = ry * 2;
+            // Colour: hue based on position and time
+            let hue = ((rx as f32 / W as f32 * 0.5 + ry as f32 / H as f32 * 0.5 + tf * 0.005) % 1.0 + 1.0) % 1.0;
+            let col = hsl_to_rgb(hue, 0.85, 0.55);
+            for dy in 0..2usize {
+                for dx in 0..2usize {
+                    let bx = px0 + dx;
+                    let by = py0 + dy;
+                    if bx < 480 && by < 480 {
+                        img.put_pixel(bx as u32, by as u32, col);
+                    }
+                }
+            }
+        }
+    }
+
+    // Label current rule
+    let rule_label = if era == 0 { "Rule 30" } else { "Rule 90" };
+    let _ = rule_label;
+
+    DynamicImage::ImageRgb8(img)
+}
+
+// ── N-Body Gravity ────────────────────────────────────────────────────────────
+// 4 bodies orbiting under mutual gravitational attraction with trails.
+pub fn render_nbody_gravity() -> DynamicImage {
+    struct Body { x: f32, y: f32, vx: f32, vy: f32, mass: f32, hue: f32 }
+    static NBODY_STATE: std::sync::OnceLock<std::sync::Mutex<(Vec<Body>, Vec<std::collections::VecDeque<(f32,f32)>>, u64)>> =
+        std::sync::OnceLock::new();
+
+    let mut guard = NBODY_STATE.get_or_init(|| {
+        let bodies = vec![
+            Body { x: 240.0, y: 160.0, vx:  1.2, vy:  0.3, mass: 3.0, hue: 0.0  },
+            Body { x: 300.0, y: 280.0, vx: -0.8, vy:  1.1, mass: 2.0, hue: 0.25 },
+            Body { x: 160.0, y: 300.0, vx:  0.5, vy: -1.4, mass: 2.5, hue: 0.55 },
+            Body { x: 280.0, y: 380.0, vx: -1.0, vy: -0.2, mass: 1.5, hue: 0.75 },
+        ];
+        let trails = vec![
+            std::collections::VecDeque::with_capacity(300),
+            std::collections::VecDeque::with_capacity(300),
+            std::collections::VecDeque::with_capacity(300),
+            std::collections::VecDeque::with_capacity(300),
+        ];
+        std::sync::Mutex::new((bodies, trails, 0u64))
+    }).lock().unwrap();
+    let (ref mut bodies, ref mut trails, ref mut tick) = *guard;
+    *tick += 1;
+
+    let g = 800.0f32;
+    let dt = 0.15f32;
+    let softening = 18.0f32; // softening radius to avoid singularity
+
+    // Compute forces
+    let n = bodies.len();
+    let mut forces: Vec<(f32, f32)> = vec![(0.0, 0.0); n];
+    for i in 0..n {
+        for j in (i+1)..n {
+            let dx = bodies[j].x - bodies[i].x;
+            let dy = bodies[j].y - bodies[i].y;
+            let dist = (dx*dx + dy*dy + softening*softening).sqrt();
+            let force = g * bodies[i].mass * bodies[j].mass / (dist * dist);
+            let fx = force * dx / dist;
+            let fy = force * dy / dist;
+            forces[i].0 += fx; forces[i].1 += fy;
+            forces[j].0 -= fx; forces[j].1 -= fy;
+        }
+    }
+
+    // Integrate
+    for (i, body) in bodies.iter_mut().enumerate() {
+        body.vx += forces[i].0 / body.mass * dt;
+        body.vy += forces[i].1 / body.mass * dt;
+        body.x  += body.vx * dt;
+        body.y  += body.vy * dt;
+        // Soft boundary bounce
+        if body.x < 20.0  { body.vx =  body.vx.abs() * 0.9; body.x = 20.0; }
+        if body.x > 460.0 { body.vx = -body.vx.abs() * 0.9; body.x = 460.0; }
+        if body.y < 20.0  { body.vy =  body.vy.abs() * 0.9; body.y = 20.0; }
+        if body.y > 460.0 { body.vy = -body.vy.abs() * 0.9; body.y = 460.0; }
+        // Add to trail
+        trails[i].push_back((body.x, body.y));
+        if trails[i].len() > 300 { trails[i].pop_front(); }
+    }
+
+    let mut img = RgbImage::new(480, 480);
+    let bg = Rgb([8u8, 6, 14]);
+    for p in img.pixels_mut() { *p = bg; }
+
+    // Background stars (static)
+    {
+        let mut s: u32 = 0xBA5E_BA11u32;
+        for _ in 0..150u32 {
+            s = s.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            let sx = s % 480;
+            s = s.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            let sy = (s >> 16) % 480;
+            s = s.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            let b = 60 + (s >> 26) as u8;
+            img.put_pixel(sx, sy, Rgb([b, b, b]));
+        }
+    }
+
+    // Draw trails
+    for (i, trail) in trails.iter().enumerate() {
+        let hue = bodies[i].hue;
+        let tlen = trail.len();
+        for (ti, &(tx, ty)) in trail.iter().enumerate() {
+            let age_frac = ti as f32 / tlen as f32;
+            let alpha = age_frac.powi(2) * 0.8;
+            let lit = 0.3 + age_frac * 0.25;
+            let col = hsl_to_rgb(hue, 0.9, lit);
+            let bx = tx as i32;
+            let by = ty as i32;
+            if bx >= 0 && bx < 480 && by >= 0 && by < 480 {
+                let p = img.get_pixel(bx as u32, by as u32);
+                img.put_pixel(bx as u32, by as u32, Rgb([
+                    (p[0] as f32 * (1.0-alpha) + col[0] as f32 * alpha).min(255.0) as u8,
+                    (p[1] as f32 * (1.0-alpha) + col[1] as f32 * alpha).min(255.0) as u8,
+                    (p[2] as f32 * (1.0-alpha) + col[2] as f32 * alpha).min(255.0) as u8,
+                ]));
+            }
+        }
+    }
+
+    // Draw bodies
+    for body in bodies.iter() {
+        let br = (3.0 + body.mass * 2.5) as i32;
+        let bx = body.x as i32;
+        let by = body.y as i32;
+        for dy in -br..=br {
+            for dx in -br..=br {
+                if dx*dx + dy*dy <= br*br {
+                    let px = bx + dx;
+                    let py = by + dy;
+                    if px >= 0 && px < 480 && py >= 0 && py < 480 {
+                        // Sphere shading
+                        let nx = dx as f32 / br as f32;
+                        let ny = dy as f32 / br as f32;
+                        let nz = (1.0 - nx*nx - ny*ny).max(0.0).sqrt();
+                        let diff = (-0.6*nx - 0.5*ny + 0.6*nz).max(0.0);
+                        let light = 0.4 + 0.6 * diff;
+                        let col = hsl_to_rgb(body.hue, 0.9, (0.55 * light).clamp(0.2, 0.8));
+                        img.put_pixel(px as u32, py as u32, col);
+                    }
+                }
+            }
+        }
+    }
+
+    DynamicImage::ImageRgb8(img)
+}
+
+// ── Torus (Donut) ─────────────────────────────────────────────────────────────
+// A rotating 3D torus rendered with depth and normal-based shading.
+pub fn render_torus() -> DynamicImage {
+    static TORUS_TICK: std::sync::OnceLock<std::sync::Mutex<u64>> =
+        std::sync::OnceLock::new();
+    let tick = {
+        let mut g = TORUS_TICK.get_or_init(|| std::sync::Mutex::new(0)).lock().unwrap();
+        *g += 1; *g
+    };
+    let tf = tick as f32;
+
+    let mut img = RgbImage::new(480, 480);
+    let bg = Rgb([10u8, 8, 16]);
+    for p in img.pixels_mut() { *p = bg; }
+
+    // Z-buffer for depth sorting
+    let mut zbuf = vec![f32::NEG_INFINITY; 480 * 480];
+
+    let cx = 240.0f32;
+    let cy = 240.0f32;
+    let scale = 95.0f32;
+
+    let big_r = 1.6f32; // major radius
+    let small_r = 0.75f32; // tube radius
+
+    // Two rotation angles
+    let a = tf * 0.025;  // rotation around Y
+    let b = tf * 0.035;  // rotation around Z
+
+    let (sa, ca) = a.sin_cos();
+    let (sb, cb) = b.sin_cos();
+
+    // Sample torus surface
+    let n_theta = 120usize;
+    let n_phi   = 60usize;
+
+    for ti in 0..n_theta {
+        let theta = ti as f32 / n_theta as f32 * std::f32::consts::TAU;
+        for pi in 0..n_phi {
+            let phi = pi as f32 / n_phi as f32 * std::f32::consts::TAU;
+
+            // Torus position before rotation
+            let x0 = (big_r + small_r * phi.cos()) * theta.cos();
+            let y0 = (big_r + small_r * phi.cos()) * theta.sin();
+            let z0 = small_r * phi.sin();
+
+            // Rotate around Y axis by `a`
+            let x1 =  x0 * ca + z0 * sa;
+            let z1 = -x0 * sa + z0 * ca;
+            let y1 = y0;
+
+            // Rotate around Z axis by `b`
+            let x2 = x1 * cb - y1 * sb;
+            let y2 = x1 * sb + y1 * cb;
+            let z2 = z1;
+
+            // Perspective projection
+            let persp = 1.0 / (z2 + 4.0);
+            let px = (cx + x2 * scale * persp) as i32;
+            let py = (cy - y2 * scale * persp) as i32;
+            if px < 0 || px >= 480 || py < 0 || py >= 480 { continue; }
+
+            let depth = z2;
+            let idx = py as usize * 480 + px as usize;
+            if depth > zbuf[idx] {
+                zbuf[idx] = depth;
+
+                // Normal: derivative of torus surface (phi component)
+                let nx0 = phi.cos() * theta.cos();
+                let ny0 = phi.cos() * theta.sin();
+                let nz0 = phi.sin();
+
+                // Rotate normal same way
+                let nx1 =  nx0 * ca + nz0 * sa;
+                let nz1 = -nx0 * sa + nz0 * ca;
+                let ny1 = ny0;
+                let nx2 = nx1 * cb - ny1 * sb;
+                let ny2 = nx1 * sb + ny1 * cb;
+                let nz2 = nz1;
+
+                // Lighting: key from upper-left-front
+                let dot = (-0.6 * nx2 - 0.4 * ny2 + 0.7 * nz2).max(0.0);
+                let ambient = 0.2f32;
+                let light = ambient + (1.0 - ambient) * dot;
+
+                // Colour: hue from theta angle, brightness from light
+                let hue = (theta / std::f32::consts::TAU + tf * 0.005) % 1.0;
+                let col = hsl_to_rgb(hue, 0.85, (light * 0.65).clamp(0.1, 0.75));
+                img.put_pixel(px as u32, py as u32, col);
+            }
+        }
+    }
+
+    DynamicImage::ImageRgb8(img)
+}
+
+// ── Lemniscate of Bernoulli ──────────────────────────────────────────────────
+// The figure-eight / infinity symbol drawn as an animated parametric curve with
+// evolving parameters.
+pub fn render_lemniscate() -> DynamicImage {
+    static LEMN_TICK: std::sync::OnceLock<std::sync::Mutex<u64>> =
+        std::sync::OnceLock::new();
+    let tick = {
+        let mut g = LEMN_TICK.get_or_init(|| std::sync::Mutex::new(0)).lock().unwrap();
+        *g += 1; *g
+    };
+    let tf = tick as f32;
+
+    let mut img = RgbImage::new(480, 480);
+    let bg = Rgb([14u8, 10, 20]);
+    for p in img.pixels_mut() { *p = bg; }
+
+    let cx = 240.0f32;
+    let cy = 240.0f32;
+
+    // Draw several lemniscate/Cassini variants
+    // General: r^2 = a^2 * cos(2*theta) or r^2 = 2*a^2 * cos(2*theta - phi)
+    let curves: &[(f32, f32, f32, f32, f32)] = &[
+        (200.0, 1.0,  0.0, 0.0,   0.0  ),
+        (175.0, 0.95, 0.5, 1.05,  0.4  ),
+        (160.0, 1.05, 1.0, 2.10,  0.8  ),
+        (140.0, 0.9,  1.5, 3.15,  1.2  ),
+    ];
+
+    for &(a_base, a_vary, phase, hue_off, phase2) in curves {
+        let a = a_base * (1.0 + a_vary * 0.05 * (tf * 0.01 + phase2).sin());
+        let rot = tf * 0.007 + phase;
+        let steps = 3600usize;
+        for si in 0..=steps {
+            let theta = si as f32 / steps as f32 * std::f32::consts::TAU;
+            let r2_val = a * a * (2.0 * theta).cos();
+            if r2_val < 0.0 { continue; }
+            let r = r2_val.sqrt();
+            let x = cx + r * (theta + rot).cos();
+            let y = cy + r * (theta + rot).sin();
+            let px = x as i32;
+            let py = y as i32;
+            if px >= 1 && px < 479 && py >= 1 && py < 479 {
+                let hue = ((theta / std::f32::consts::TAU + hue_off * 0.2 + tf * 0.004) % 1.0 + 1.0) % 1.0;
+                let col = hsl_to_rgb(hue, 0.9, 0.55);
+                for dy in -1i32..=1 {
+                    for dx in -1i32..=1 {
+                        let bx = px + dx;
+                        let by = py + dy;
+                        if bx >= 0 && bx < 480 && by >= 0 && by < 480 {
+                            let p = img.get_pixel(bx as u32, by as u32);
+                            img.put_pixel(bx as u32, by as u32, Rgb([
+                                ((p[0] as u32 + col[0] as u32 * 2) / 3).min(255) as u8,
+                                ((p[1] as u32 + col[1] as u32 * 2) / 3).min(255) as u8,
+                                ((p[2] as u32 + col[2] as u32 * 2) / 3).min(255) as u8,
+                            ]));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Centre dot
+    for dy in -5i32..=5 {
+        for dx in -5i32..=5 {
+            if dx*dx + dy*dy <= 25 {
+                img.put_pixel((cx as i32+dx) as u32, (cy as i32+dy) as u32, Rgb([250,240,255]));
+            }
+        }
+    }
+
+    DynamicImage::ImageRgb8(img)
+}
+
+// ── System Art ────────────────────────────────────────────────────────────────
+// CPU, memory, and load usage rendered as artistic circular gauges.
+pub fn render_system_art() -> DynamicImage {
+    use sysinfo::{System, CpuRefreshKind, RefreshKind};
+
+    let cpu_pct = {
+        let mut sys = System::new_with_specifics(RefreshKind::nothing().with_cpu(CpuRefreshKind::everything()));
+        sys.refresh_cpu_usage();
+        // Small sleep to get accurate reading would need async context; use cached value
+        sys.global_cpu_usage()
+    };
+    let (mem_pct, load_1) = {
+        let mut sys = System::new_all();
+        sys.refresh_memory();
+        let mem = if sys.total_memory() > 0 {
+            sys.used_memory() as f32 / sys.total_memory() as f32 * 100.0
+        } else { 0.0 };
+        let load = System::load_average();
+        (mem, load.one as f32)
+    };
+
+    let mut img = RgbImage::new(480, 480);
+    let bg = Rgb([14u8, 12, 20]);
+    for p in img.pixels_mut() { *p = bg; }
+
+    // Draw circular gauge helper
+    let draw_ring = |img: &mut RgbImage, cx: f32, cy: f32, r: f32, fill: f32, hue: f32, label: &str| {
+        let _ = label;
+        let arc_steps = 400usize;
+        let full_angle = std::f32::consts::TAU;
+        let filled_angle = full_angle * fill.clamp(0.0, 1.0);
+        let start_a = -std::f32::consts::FRAC_PI_2;
+
+        // Background ring (dim)
+        for si in 0..arc_steps {
+            let a = start_a + si as f32 / arc_steps as f32 * full_angle;
+            for ri in -4i32..=4 {
+                let r2 = r + ri as f32;
+                let bx = (cx + a.cos() * r2) as i32;
+                let by = (cy + a.sin() * r2) as i32;
+                if bx >= 0 && bx < 480 && by >= 0 && by < 480 {
+                    let p = img.get_pixel(bx as u32, by as u32);
+                    img.put_pixel(bx as u32, by as u32, Rgb([
+                        (p[0] as f32 + 20.0).min(255.0) as u8,
+                        (p[1] as f32 + 20.0).min(255.0) as u8,
+                        (p[2] as f32 + 25.0).min(255.0) as u8,
+                    ]));
+                }
+            }
+        }
+
+        // Filled arc
+        let filled_steps = (arc_steps as f32 * fill.clamp(0.0, 1.0)) as usize;
+        for si in 0..filled_steps {
+            let a = start_a + si as f32 / arc_steps as f32 * filled_angle / fill.max(0.001);
+            let t = si as f32 / filled_steps.max(1) as f32;
+            let lit = 0.45 + t * 0.2;
+            let col = hsl_to_rgb((hue + t * 0.15) % 1.0, 0.9, lit);
+            for ri in -4i32..=4 {
+                let r2 = r + ri as f32;
+                let bx = (cx + a.cos() * r2) as i32;
+                let by = (cy + a.sin() * r2) as i32;
+                if bx >= 0 && bx < 480 && by >= 0 && by < 480 {
+                    img.put_pixel(bx as u32, by as u32, col);
+                }
+            }
+        }
+    };
+
+    // Three gauges: CPU (left), MEM (right), Load (bottom)
+    draw_ring(&mut img, 160.0, 180.0, 90.0, cpu_pct / 100.0, 0.0, "CPU");
+    draw_ring(&mut img, 320.0, 180.0, 90.0, mem_pct / 100.0, 0.3, "MEM");
+    draw_ring(&mut img, 240.0, 360.0, 80.0, (load_1 / 4.0).min(1.0), 0.55, "LOAD");
+
+    // Labels using draw_text_mut
+    use imageproc::drawing::draw_text_mut;
+    let font  = font_bold();
+    let scale_sm = ab_glyph::PxScale { x: 18.0, y: 18.0 };
+    let scale_val = ab_glyph::PxScale { x: 22.0, y: 22.0 };
+
+    let white = Rgb([220u8, 215, 235]);
+    let grey  = Rgb([130u8, 125, 150]);
+
+    // CPU
+    draw_text_mut(&mut img, grey,  130, 160, scale_sm,  &font, "CPU");
+    draw_text_mut(&mut img, white, 128, 178, scale_val, &font, &format!("{:.0}%", cpu_pct));
+
+    // MEM
+    draw_text_mut(&mut img, grey,  293, 160, scale_sm,  &font, "MEM");
+    draw_text_mut(&mut img, white, 288, 178, scale_val, &font, &format!("{:.0}%", mem_pct));
+
+    // LOAD
+    draw_text_mut(&mut img, grey,  212, 345, scale_sm,  &font, "LOAD");
+    draw_text_mut(&mut img, white, 208, 363, scale_val, &font, &format!("{:.2}", load_1));
+
+    DynamicImage::ImageRgb8(img)
+}

@@ -4200,6 +4200,106 @@ async function fetchScreensaverStatus() {
   });
 })();
 
+
+// ─── Demo start / stop buttons ────────────────────────────────────────────────
+(function initDemoButtons() {
+  const startBtn = document.getElementById('demo-start-btn');
+  const stopBtn  = document.getElementById('demo-stop-btn');
+  const quickStatus = document.getElementById('quick-status');
+
+  if (startBtn) {
+    startBtn.addEventListener('click', async () => {
+      try {
+        startBtn.disabled = true;
+        startBtn.textContent = '⏳ Starting…';
+        const data = await apiJson('POST', '/api/demo', { interval: 8 });
+        log(`Demo started: ${data.message || 'ok'}`);
+        setStatusMsg(quickStatus, `🎬 ${data.message || 'Demo started'}`, true);
+        fetchStatus();
+      } catch (e) {
+        log(`Demo start failed: ${e.message}`, 'err');
+        setStatusMsg(quickStatus, `Demo error: ${e.message}`, false);
+      } finally {
+        startBtn.disabled = false;
+        startBtn.textContent = '🎬 Demo';
+      }
+    });
+  }
+
+  if (stopBtn) {
+    stopBtn.addEventListener('click', async () => {
+      try {
+        stopBtn.disabled = true;
+        stopBtn.textContent = '⏳ Stopping…';
+        await apiJson('DELETE', '/api/demo');
+        log('Demo stopped');
+        setStatusMsg(quickStatus, '⏹ Demo stopped', true);
+        fetchStatus();
+      } catch (e) {
+        log(`Demo stop failed: ${e.message}`, 'err');
+        setStatusMsg(quickStatus, `Demo stop error: ${e.message}`, false);
+      } finally {
+        stopBtn.disabled = false;
+        stopBtn.textContent = '⏹ Stop Demo';
+      }
+    });
+  }
+})();
+
+
+// ─── Benchmark button ────────────────────────────────────────────────────────────
+(function initBenchmark() {
+  const btn = document.getElementById('benchmark-btn');
+  const quickStatus = document.getElementById('quick-status');
+  if (!btn) return;
+
+  btn.addEventListener('click', async () => {
+    btn.disabled = true;
+    btn.textContent = '⏳ Running…';
+    setStatusMsg(quickStatus, '⏱ Running benchmark (may take ~10s)…', true);
+    try {
+      const data = await apiJson('GET', '/api/benchmark');
+      const topSlow = data.modes.slice(0, 3).map(m => `${m.name}:${m.ms}ms`).join(', ');
+      const msg = `✓ ${data.count} modes, avg ${data.avg_ms}ms, total ${data.total_ms}ms | Slowest: ${topSlow}`;
+      log(`Benchmark: ${msg}`);
+      setStatusMsg(quickStatus, msg, true);
+      // Also show in a toast
+      showToast(`⏱ Benchmark: avg ${data.avg_ms}ms/frame over ${data.count} modes`, 'ok', 6000);
+    } catch(e) {
+      log(`Benchmark error: ${e.message}`, 'err');
+      setStatusMsg(quickStatus, `Benchmark failed: ${e.message}`, false);
+    } finally {
+      btn.disabled = false;
+      btn.textContent = '⏱ Bench';
+    }
+  });
+})();
+
+// ─── Category count badges ─────────────────────────────────────────────────────
+(function initCategoryBadges() {
+  // Count modes per category and display as superscript badges on cat-btns
+  const modeBtns = document.querySelectorAll('.mode-btn[data-mode]');
+  const counts = {};
+  let total = 0;
+  modeBtns.forEach(btn => {
+    const cat = btn.dataset.cat || 'other';
+    counts[cat] = (counts[cat] || 0) + 1;
+    total++;
+  });
+  counts['all'] = total;
+
+  document.querySelectorAll('.cat-btn[data-cat]').forEach(btn => {
+    const cat = btn.dataset.cat;
+    const n = counts[cat] || 0;
+    if (n > 0) {
+      const badge = document.createElement('sup');
+      badge.className = 'cat-count-badge';
+      badge.textContent = n;
+      btn.appendChild(badge);
+    }
+  });
+})();
+
 // ─── Boot ─────────────────────────────────────────────────────────────────────
 initSSE();
 startPolling();

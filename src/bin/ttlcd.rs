@@ -101,6 +101,21 @@ use ttlcd::{
         render_spectrum, render_doom_fire, render_boids, render_tunnel, render_aurora, render_metaballs, render_sand, render_gravity,
         render_voronoi, render_reaction_diffusion, render_snowfall, render_hex_grid, render_bubble_chart,
         render_conway_colors, render_julia_set, render_confetti, render_cpu_3d_bars, render_system_health, render_neon_grid, render_ripple, render_hypno,
+        render_lorenz, render_mandelbrot, render_kaleidoscope, render_dna_helix, render_rain_glass,
+        render_perlin_terrain, render_fire_text, render_disco_floor, render_heartbeat, render_clock_faces,
+        render_waveform_bars, render_city_skyline, render_neon_sign, render_gradient_clock,
+        render_galaxy, render_ocean_waves, render_warp_speed, render_morphing_blobs, render_clock_matrix,
+        render_sierpinski, render_lava_lamp, render_pendulum_wave,
+        render_fiber_optic, render_network_globe,
+        render_torus, render_lemniscate, render_system_art,
+    render_fourier_epicycles, render_rule_30, render_nbody_gravity,
+    render_double_pendulum, render_rose_curve, render_truchet,
+    render_mandala, render_flow_field, render_glitch_art,
+    render_wave_interference, render_clifford_attractor, render_icosahedron,
+    render_neural_net, render_ribbon_dance, render_hex_plasma,
+    render_sand_waterfall, render_magnetic_field, render_smoke_plume, render_color_mosaic,
+    render_solar_system, render_lightning_storm, render_spirograph, render_fractal_tree, render_bubble_rise,
+        render_plasma_ball, render_moss_growth, render_asteroid_field,
         read_docker_containers,
         read_user_sessions,
         HttpMonitorResult,
@@ -852,6 +867,60 @@ enum DisplayMode {
     NeonGrid,
     Ripple,
     Hypno,
+    Lorenz,
+    Mandelbrot,
+    Kaleidoscope,
+    DnaHelix,
+    RainGlass,
+    PerlinTerrain,
+    FireText,
+    DiscoFloor,
+    Heartbeat,
+    ClockFaces,
+    WaveformBars,
+    CitySkyline,
+    NeonSign,
+    GradientClock,
+    Galaxy,
+    OceanWaves,
+    WarpSpeed,
+    MorphingBlobs,
+    ClockMatrix,
+    Sierpinski,
+    LavaLamp,
+    PendulumWave,
+    FiberOptic,
+    NetworkGlobe,
+    PlasmaBall,
+    MossGrowth,
+    Torus,
+    Lemniscate,
+    SystemArt,
+    FourierEpicycles,
+    Rule30,
+    NbodyGravity,
+    DoublePendulum,
+    RoseCurve,
+    Truchet,
+    Mandala,
+    FlowField,
+    GlitchArt,
+    WaveInterference,
+    CliffordAttractor,
+    Icosahedron,
+    NeuralNet,
+    RibbonDance,
+    HexPlasma,
+    SandWaterfall,
+    MagneticField,
+    SmokePlume,
+    ColorMosaic,
+    SolarSystem,
+    LightningStorm,
+    Spirograph,
+    FractalTree,
+    BubbleRise,
+    AsteroidField,
     Idle,
     CustomImage,
     CustomText,
@@ -861,7 +930,7 @@ enum DisplayMode {
 impl DisplayMode {
     const ALL_NAMES: &'static [&'static str] = &[
         "clock", "big_clock", "clock_sysinfo", "sysinfo", "cpu_detail",
-        "network", "disk_usage", "process_top", "temperature", "memory_detail", "countdown", "cpu_graph", "net_graph", "recent_alerts", "process_memory", "disk_io", "calendar", "stopwatch", "metrics", "weather", "notes", "qr_code", "pomodoro", "battery", "world_clock", "ticker", "http_status", "shell_cmd", "ping_monitor", "dashboard", "log_tail", "cpu_freq", "hostname_ip", "rss_feed", "service_status", "net_connections", "uptime_fancy", "os_info", "docker_status", "logged_in_users", "load_graph", "mem_graph", "progress", "matrix_rain", "temp_graph", "disk_io_graph", "graphs_overview", "analog_clock", "ping_graph", "status_overview", "game_of_life", "led_clock", "bounce_ball", "net_speed_graph", "cpu_core_bars", "speedometer_gauge", "disk_pie", "thermal_dashboard", "plasma", "fireworks", "cpu_heatmap", "starfield", "pulse", "minimal_clock", "particle_clock", "snake", "cube_3d", "dvd_bounce", "binary_clock", "radar", "oscilloscope", "lissajous", "pong", "neon_clock", "net_heatmap", "word_clock", "breakout", "spectrum", "doom_fire", "boids", "tunnel", "aurora", "metaballs", "sand", "gravity", "voronoi", "reaction_diffusion", "snowfall", "hex_grid", "bubble_chart", "conway_colors", "julia_set", "confetti", "cpu_3d_bars", "system_health", "neon_grid", "ripple", "hypno", "idle",
+        "network", "disk_usage", "process_top", "temperature", "memory_detail", "countdown", "cpu_graph", "net_graph", "recent_alerts", "process_memory", "disk_io", "calendar", "stopwatch", "metrics", "weather", "notes", "qr_code", "pomodoro", "battery", "world_clock", "ticker", "http_status", "shell_cmd", "ping_monitor", "dashboard", "log_tail", "cpu_freq", "hostname_ip", "rss_feed", "service_status", "net_connections", "uptime_fancy", "os_info", "docker_status", "logged_in_users", "load_graph", "mem_graph", "progress", "matrix_rain", "temp_graph", "disk_io_graph", "graphs_overview", "analog_clock", "ping_graph", "status_overview", "game_of_life", "led_clock", "bounce_ball", "net_speed_graph", "cpu_core_bars", "speedometer_gauge", "disk_pie", "thermal_dashboard", "plasma", "fireworks", "cpu_heatmap", "starfield", "pulse", "minimal_clock", "particle_clock", "snake", "cube_3d", "dvd_bounce", "binary_clock", "radar", "oscilloscope", "lissajous", "pong", "neon_clock", "net_heatmap", "word_clock", "breakout", "spectrum", "doom_fire", "boids", "tunnel", "aurora", "metaballs", "sand", "gravity", "voronoi", "reaction_diffusion", "snowfall", "hex_grid", "bubble_chart", "conway_colors", "julia_set", "confetti", "cpu_3d_bars", "system_health", "neon_grid", "ripple", "hypno", "lorenz", "mandelbrot", "kaleidoscope", "dna_helix", "rain_glass", "perlin_terrain", "fire_text", "disco_floor", "heartbeat", "clock_faces", "waveform_bars", "city_skyline", "neon_sign", "gradient_clock", "galaxy", "ocean_waves", "warp_speed", "morphing_blobs", "clock_matrix", "sierpinski", "lava_lamp", "pendulum_wave", "fiber_optic", "network_globe", "plasma_ball", "moss_growth", "torus", "lemniscate", "system_art", "torus", "lemniscate", "fourier_epicycles", "rule_30", "nbody_gravity", "fourier_epicycles", "rule_30", "nbody_gravity", "double_pendulum", "rose_curve", "truchet", "double_pendulum", "rose_curve", "truchet", "mandala", "flow_field", "glitch_art", "mandala", "flow_field", "glitch_art", "wave_interference", "clifford_attractor", "icosahedron", "wave_interference", "clifford_attractor", "icosahedron", "neural_net", "ribbon_dance", "hex_plasma", "neural_net", "ribbon_dance", "hex_plasma", "sand_waterfall", "magnetic_field", "smoke_plume", "color_mosaic", "sand_waterfall", "magnetic_field", "smoke_plume", "color_mosaic", "solar_system", "lightning_storm", "spirograph", "fractal_tree", "bubble_rise", "asteroid_field", "idle",
     ];
 
     fn from_str_name(s: &str) -> Option<Self> {
@@ -961,6 +1030,60 @@ impl DisplayMode {
             "neon_grid"            => Some(DisplayMode::NeonGrid),
             "ripple"               => Some(DisplayMode::Ripple),
             "hypno"                => Some(DisplayMode::Hypno),
+            "lorenz"           => Some(DisplayMode::Lorenz),
+            "mandelbrot"       => Some(DisplayMode::Mandelbrot),
+            "kaleidoscope"     => Some(DisplayMode::Kaleidoscope),
+            "dna_helix"        => Some(DisplayMode::DnaHelix),
+            "rain_glass"       => Some(DisplayMode::RainGlass),
+            "perlin_terrain"   => Some(DisplayMode::PerlinTerrain),
+            "fire_text"        => Some(DisplayMode::FireText),
+            "disco_floor"      => Some(DisplayMode::DiscoFloor),
+            "heartbeat"        => Some(DisplayMode::Heartbeat),
+            "clock_faces"      => Some(DisplayMode::ClockFaces),
+            "waveform_bars"    => Some(DisplayMode::WaveformBars),
+            "city_skyline"     => Some(DisplayMode::CitySkyline),
+            "neon_sign"        => Some(DisplayMode::NeonSign),
+            "gradient_clock"   => Some(DisplayMode::GradientClock),
+            "galaxy"           => Some(DisplayMode::Galaxy),
+            "ocean_waves"      => Some(DisplayMode::OceanWaves),
+            "warp_speed"       => Some(DisplayMode::WarpSpeed),
+            "morphing_blobs"   => Some(DisplayMode::MorphingBlobs),
+            "clock_matrix"     => Some(DisplayMode::ClockMatrix),
+            "sierpinski"       => Some(DisplayMode::Sierpinski),
+            "lava_lamp"        => Some(DisplayMode::LavaLamp),
+            "pendulum_wave"    => Some(DisplayMode::PendulumWave),
+            "fiber_optic"      => Some(DisplayMode::FiberOptic),
+            "network_globe"    => Some(DisplayMode::NetworkGlobe),
+            "plasma_ball"     => Some(DisplayMode::PlasmaBall),
+            "moss_growth"      => Some(DisplayMode::MossGrowth),
+            "torus"   => Some(DisplayMode::Torus),
+            "lemniscate"   => Some(DisplayMode::Lemniscate),
+            "system_art"   => Some(DisplayMode::SystemArt),
+            "fourier_epicycles"   => Some(DisplayMode::FourierEpicycles),
+            "rule_30"   => Some(DisplayMode::Rule30),
+            "nbody_gravity"   => Some(DisplayMode::NbodyGravity),
+            "double_pendulum"   => Some(DisplayMode::DoublePendulum),
+            "rose_curve"   => Some(DisplayMode::RoseCurve),
+            "truchet"   => Some(DisplayMode::Truchet),
+            "mandala"   => Some(DisplayMode::Mandala),
+            "flow_field"   => Some(DisplayMode::FlowField),
+            "glitch_art"   => Some(DisplayMode::GlitchArt),
+            "wave_interference"   => Some(DisplayMode::WaveInterference),
+            "clifford_attractor"   => Some(DisplayMode::CliffordAttractor),
+            "icosahedron"   => Some(DisplayMode::Icosahedron),
+            "neural_net"   => Some(DisplayMode::NeuralNet),
+            "ribbon_dance"   => Some(DisplayMode::RibbonDance),
+            "hex_plasma"   => Some(DisplayMode::HexPlasma),
+            "sand_waterfall"   => Some(DisplayMode::SandWaterfall),
+            "magnetic_field"   => Some(DisplayMode::MagneticField),
+            "smoke_plume"   => Some(DisplayMode::SmokePlume),
+            "color_mosaic"   => Some(DisplayMode::ColorMosaic),
+            "solar_system"   => Some(DisplayMode::SolarSystem),
+            "lightning_storm"   => Some(DisplayMode::LightningStorm),
+            "spirograph"   => Some(DisplayMode::Spirograph),
+            "fractal_tree"   => Some(DisplayMode::FractalTree),
+            "bubble_rise"   => Some(DisplayMode::BubbleRise),
+            "asteroid_field"   => Some(DisplayMode::AsteroidField),
             "idle"             => Some(DisplayMode::Idle),
             "custom_text"   => Some(DisplayMode::CustomText),
             "slideshow"     => Some(DisplayMode::Slideshow),
@@ -1068,6 +1191,60 @@ impl DisplayMode {
     DisplayMode::NeonGrid      => "neon_grid",
     DisplayMode::Ripple        => "ripple",
     DisplayMode::Hypno         => "hypno",
+            DisplayMode::Lorenz        => "lorenz",
+            DisplayMode::Mandelbrot    => "mandelbrot",
+            DisplayMode::Kaleidoscope  => "kaleidoscope",
+            DisplayMode::DnaHelix      => "dna_helix",
+            DisplayMode::RainGlass     => "rain_glass",
+            DisplayMode::PerlinTerrain => "perlin_terrain",
+            DisplayMode::FireText      => "fire_text",
+            DisplayMode::DiscoFloor    => "disco_floor",
+            DisplayMode::Heartbeat     => "heartbeat",
+            DisplayMode::ClockFaces    => "clock_faces",
+            DisplayMode::WaveformBars  => "waveform_bars",
+            DisplayMode::CitySkyline   => "city_skyline",
+            DisplayMode::NeonSign      => "neon_sign",
+            DisplayMode::GradientClock => "gradient_clock",
+            DisplayMode::Galaxy       => "galaxy",
+            DisplayMode::OceanWaves   => "ocean_waves",
+            DisplayMode::WarpSpeed    => "warp_speed",
+            DisplayMode::MorphingBlobs => "morphing_blobs",
+            DisplayMode::ClockMatrix  => "clock_matrix",
+            DisplayMode::Sierpinski    => "sierpinski",
+            DisplayMode::LavaLamp      => "lava_lamp",
+            DisplayMode::PendulumWave  => "pendulum_wave",
+            DisplayMode::FiberOptic    => "fiber_optic",
+            DisplayMode::NetworkGlobe  => "network_globe",
+            DisplayMode::PlasmaBall  => "plasma_ball",
+            DisplayMode::MossGrowth    => "moss_growth",
+            DisplayMode::Torus  => "torus",
+            DisplayMode::Lemniscate  => "lemniscate",
+            DisplayMode::SystemArt  => "system_art",
+            DisplayMode::FourierEpicycles  => "fourier_epicycles",
+            DisplayMode::Rule30  => "rule_30",
+            DisplayMode::NbodyGravity  => "nbody_gravity",
+            DisplayMode::DoublePendulum  => "double_pendulum",
+            DisplayMode::RoseCurve  => "rose_curve",
+            DisplayMode::Truchet  => "truchet",
+            DisplayMode::Mandala  => "mandala",
+            DisplayMode::FlowField  => "flow_field",
+            DisplayMode::GlitchArt  => "glitch_art",
+            DisplayMode::WaveInterference  => "wave_interference",
+            DisplayMode::CliffordAttractor  => "clifford_attractor",
+            DisplayMode::Icosahedron  => "icosahedron",
+            DisplayMode::NeuralNet  => "neural_net",
+            DisplayMode::RibbonDance  => "ribbon_dance",
+            DisplayMode::HexPlasma  => "hex_plasma",
+            DisplayMode::SandWaterfall  => "sand_waterfall",
+            DisplayMode::MagneticField  => "magnetic_field",
+            DisplayMode::SmokePlume  => "smoke_plume",
+            DisplayMode::ColorMosaic  => "color_mosaic",
+            DisplayMode::SolarSystem  => "solar_system",
+            DisplayMode::LightningStorm  => "lightning_storm",
+            DisplayMode::Spirograph  => "spirograph",
+            DisplayMode::FractalTree  => "fractal_tree",
+            DisplayMode::BubbleRise  => "bubble_rise",
+            DisplayMode::AsteroidField => "asteroid_field",
             DisplayMode::Idle           => "idle",
             DisplayMode::CustomImage  => "image",
             DisplayMode::CustomText   => "custom_text",
@@ -2045,6 +2222,7 @@ async fn run_daemon(
             .route("/api/presets/import",   web::post().to(api_presets_import))
             // Alert shorthand & screenshot download
             .route("/api/alert",          web::post().to(api_alert))
+            .route("/api/canvas",         web::post().to(api_canvas))
             .route("/api/screenshot",     web::get().to(api_screenshot))
             // Mode listing and navigation
             .route("/api/modes",          web::get().to(api_modes_list))
@@ -2059,6 +2237,7 @@ async fn run_daemon(
             .route("/api/orient",         web::post().to(api_set_orient))
             // Health check, blank, countdown
             .route("/health",             web::get().to(api_health))
+            .route("/api/benchmark",      web::get().to(api_benchmark))
             .route("/ping",               web::get().to(api_ping))
             .route("/api/ping",           web::get().to(api_ping))
             .route("/api/blank",          web::post().to(api_blank))
@@ -2073,6 +2252,8 @@ async fn run_daemon(
             .route("/api/slideshow/next", web::post().to(api_slideshow_next))
             .route("/api/slideshow/prev", web::post().to(api_slideshow_prev))
             .route("/api/rotation",       web::post().to(api_rotation))
+            .route("/api/demo",            web::post().to(api_start_demo))
+            .route("/api/demo",            web::delete().to(api_stop_demo))
             // Convenience endpoints
             .route("/api/notify",         web::post().to(api_notify))
             .route("/api/webhook",        web::post().to(api_webhook))
@@ -2768,6 +2949,60 @@ fn display_loop(panel: Arc<Mutex<Option<Panel>>>, state: DaemonState) {
                 DisplayMode::NeonGrid      => (render_neon_grid(), 0),
                 DisplayMode::Ripple        => (render_ripple(), 0),
                 DisplayMode::Hypno         => (render_hypno(), 0),
+                DisplayMode::Lorenz        => (render_lorenz(), 0),
+                DisplayMode::Mandelbrot    => (render_mandelbrot(), 0),
+                DisplayMode::Kaleidoscope  => (render_kaleidoscope(), 0),
+                DisplayMode::DnaHelix      => (render_dna_helix(), 0),
+                DisplayMode::RainGlass     => (render_rain_glass(), 0),
+                DisplayMode::PerlinTerrain => (render_perlin_terrain(), 0),
+                DisplayMode::FireText      => (render_fire_text(), 0),
+                DisplayMode::DiscoFloor    => (render_disco_floor(), 0),
+                DisplayMode::Heartbeat     => (render_heartbeat(), 0),
+                DisplayMode::ClockFaces    => (render_clock_faces(), 0),
+                DisplayMode::WaveformBars  => (render_waveform_bars(), 0),
+                DisplayMode::CitySkyline   => (render_city_skyline(), 0),
+                DisplayMode::NeonSign      => (render_neon_sign(), 0),
+                DisplayMode::GradientClock => (render_gradient_clock(), 0),
+                DisplayMode::Galaxy        => (render_galaxy(), 0),
+                DisplayMode::OceanWaves    => (render_ocean_waves(), 0),
+                DisplayMode::WarpSpeed     => (render_warp_speed(), 0),
+                DisplayMode::MorphingBlobs => (render_morphing_blobs(), 0),
+                DisplayMode::ClockMatrix   => (render_clock_matrix(), 0),
+                DisplayMode::Sierpinski    => (render_sierpinski(), 0),
+                DisplayMode::LavaLamp      => (render_lava_lamp(), 0),
+                DisplayMode::PendulumWave  => (render_pendulum_wave(), 0),
+                DisplayMode::FiberOptic    => (render_fiber_optic(), 0),
+                DisplayMode::NetworkGlobe  => (render_network_globe(), 0),
+                DisplayMode::PlasmaBall  => (render_plasma_ball(), 0),
+                DisplayMode::MossGrowth    => (render_moss_growth(), 0),
+                DisplayMode::Torus  => (render_torus(), 0),
+                DisplayMode::Lemniscate  => (render_lemniscate(), 0),
+                DisplayMode::SystemArt  => (render_system_art(), 0),
+                DisplayMode::FourierEpicycles  => (render_fourier_epicycles(), 0),
+                DisplayMode::Rule30  => (render_rule_30(), 0),
+                DisplayMode::NbodyGravity  => (render_nbody_gravity(), 0),
+                DisplayMode::DoublePendulum  => (render_double_pendulum(), 0),
+                DisplayMode::RoseCurve  => (render_rose_curve(), 0),
+                DisplayMode::Truchet  => (render_truchet(), 0),
+                DisplayMode::Mandala  => (render_mandala(), 0),
+                DisplayMode::FlowField  => (render_flow_field(), 0),
+                DisplayMode::GlitchArt  => (render_glitch_art(), 0),
+                DisplayMode::WaveInterference  => (render_wave_interference(), 0),
+                DisplayMode::CliffordAttractor  => (render_clifford_attractor(), 0),
+                DisplayMode::Icosahedron  => (render_icosahedron(), 0),
+                DisplayMode::NeuralNet  => (render_neural_net(), 0),
+                DisplayMode::RibbonDance  => (render_ribbon_dance(), 0),
+                DisplayMode::HexPlasma  => (render_hex_plasma(), 0),
+                DisplayMode::SandWaterfall  => (render_sand_waterfall(), 0),
+                DisplayMode::MagneticField  => (render_magnetic_field(), 0),
+                DisplayMode::SmokePlume  => (render_smoke_plume(), 0),
+                DisplayMode::ColorMosaic  => (render_color_mosaic(), 0),
+                DisplayMode::SolarSystem  => (render_solar_system(), 0),
+                DisplayMode::LightningStorm  => (render_lightning_storm(), 0),
+                DisplayMode::Spirograph  => (render_spirograph(), 0),
+                DisplayMode::FractalTree  => (render_fractal_tree(), 0),
+                DisplayMode::BubbleRise  => (render_bubble_rise(), 0),
+                DisplayMode::AsteroidField => (render_asteroid_field(), 0),
                 DisplayMode::MatrixRain => (render_matrix_rain(), 0),
                 DisplayMode::Idle
                 | DisplayMode::CustomImage
@@ -4225,6 +4460,60 @@ async fn api_modes_list() -> impl Responder {
         ModeInfo { name: "neon_grid",        description: "Tron-inspired neon grid — glowing lines, pulsing nodes, travelling colour pulses" },
         ModeInfo { name: "ripple",           description: "Water ripple simulation — stones dropped at random intervals create circular waves" },
         ModeInfo { name: "hypno",            description: "Hypnotic spiral — overlaid sine patterns modulated by time for a mesmerising effect" },
+        ModeInfo { name: "lorenz",          description: "Lorenz attractor — classic chaotic system traced as a 3D trail with rotating view" },
+        ModeInfo { name: "mandelbrot",      description: "Mandelbrot zoom — animated fractal zoom into the Seahorse Valley with smooth colouring" },
+        ModeInfo { name: "kaleidoscope",    description: "Kaleidoscope — 6-fold symmetry plasma with shifting hues and evolving patterns" },
+        ModeInfo { name: "dna_helix",       description: "DNA Helix — double helix animation with coloured base pairs scrolling upward" },
+        ModeInfo { name: "rain_glass",      description: "Rain on glass — realistic raindrops with trails running down a dark pane" },
+        ModeInfo { name: "perlin_terrain", description: "Procedural terrain — scrolling heightmap with water, beach, grass, rock and snow zones" },
+        ModeInfo { name: "fire_text",      description: "Fire text — the word 'ttlcd' burning in Doom-style fire simulation" },
+        ModeInfo { name: "disco_floor",    description: "Disco floor — pulsing coloured tiles like a mirror ball dance floor" },
+        ModeInfo { name: "heartbeat",      description: "Heartbeat ECG — green ECG waveform with spike height driven by CPU load" },
+        ModeInfo { name: "clock_faces",    description: "Clock faces — three analog clock faces showing Local, UTC+5 and UTC-8 time" },
+        ModeInfo { name: "waveform_bars",   description: "Waveform bars — per-CPU-core usage displayed as audio-visualiser style bars" },
+        ModeInfo { name: "city_skyline",    description: "City skyline — night city silhouette with twinkling windows, moon and stars" },
+        ModeInfo { name: "neon_sign",       description: "Neon sign — flickering neon 'ttlcd' letters on a dark brick wall with ground reflection" },
+        ModeInfo { name: "gradient_clock",  description: "Gradient clock — large time display on an animated colour-cycling background" },
+        ModeInfo { name: "galaxy",          description: "Galaxy — animated spiral galaxy with stellar arms, core glow and orbiting stars" },
+        ModeInfo { name: "ocean_waves",     description: "Ocean waves — rolling sine waves with foam crests, sky gradient and caustics" },
+        ModeInfo { name: "warp_speed",      description: "Warp speed — hyperspace streaks radiating from centre with acceleration" },
+        ModeInfo { name: "morphing_blobs",  description: "Morphing blobs — five metaball orbs with colour mixing orbiting the centre" },
+        ModeInfo { name: "clock_matrix",    description: "Clock Matrix — Matrix-style falling digits with the current time revealed in the middle" },
+        ModeInfo { name: "sierpinski",      description: "Sierpiński fractal — chaos-game triangle with slow rotation and colour cycling" },
+        ModeInfo { name: "lava_lamp",       description: "Lava lamp — warm-coloured metaball blobs slowly rising and falling in a dark bottle" },
+        ModeInfo { name: "pendulum_wave",   description: "Pendulum wave — 16 pendulums with varying lengths creating mesmerising wave patterns" },
+        ModeInfo { name: "fiber_optic",     description: "Fiber optic — glowing fiber strands with travelling light pulses radiating from centre" },
+        ModeInfo { name: "network_globe",   description: "Network globe — wireframe rotating Earth with animated network connection arcs" },
+        ModeInfo { name: "plasma_ball",    description: "Plasma ball — swirling electric tendrils inside a glowing sphere with rim lighting" },
+        ModeInfo { name: "moss_growth",    description: "Moss growth — organic cellular automaton simulating slow-growing moss or lichen" },
+        ModeInfo { name: "torus", description: "Torus — rotating 3D donut rendered with depth buffer and diffuse lighting" },
+        ModeInfo { name: "lemniscate", description: "Lemniscate — animated lemniscate of Bernoulli / figure-eight curves" },
+        ModeInfo { name: "system_art", description: "System art — CPU, memory, and load as artistic circular ring gauges" },
+        ModeInfo { name: "fourier_epicycles", description: "Fourier epicycles — chain of rotating circles tracing a Fourier series approximation" },
+        ModeInfo { name: "rule_30", description: "Rule 30 — Wolfram elementary 1D cellular automaton scrolling downward with colour coding" },
+        ModeInfo { name: "nbody_gravity", description: "N-body gravity — 4 bodies under mutual gravitational attraction with trail rendering" },
+        ModeInfo { name: "double_pendulum", description: "Double pendulum — chaotic double pendulum simulation with colour-traced trail" },
+        ModeInfo { name: "rose_curve", description: "Rose curve — animated parametric rose r=cos(k*theta) with evolving petal count" },
+        ModeInfo { name: "truchet", description: "Truchet tiles — hash-based quarter-circle tile pattern with flowing curves" },
+        ModeInfo { name: "mandala", description: "Mandala — animated 8-fold symmetric mandala with layered petals and spirals" },
+        ModeInfo { name: "flow_field", description: "Flow field — hundreds of particles streaming through a hash-noise vector field" },
+        ModeInfo { name: "glitch_art", description: "Glitch art — RGB channel separation and scan-line corruption effects" },
+        ModeInfo { name: "wave_interference", description: "Wave interference — two-source wave superposition with animated source positions" },
+        ModeInfo { name: "clifford_attractor", description: "Clifford attractor — de Jong strange attractor with slowly morphing parameters" },
+        ModeInfo { name: "icosahedron", description: "Icosahedron — wireframe rotating icosahedron with z-depth brightness" },
+        ModeInfo { name: "neural_net", description: "Neural network — animated 4-layer perceptron with signal pulses flowing between nodes" },
+        ModeInfo { name: "ribbon_dance", description: "Ribbon dance — seven colourful flowing ribbons undulating with sinusoidal harmonics" },
+        ModeInfo { name: "hex_plasma", description: "Hex plasma — hexagonal grid with independently pulsing plasma-coloured cells" },
+        ModeInfo { name: "sand_waterfall", description: "Sand waterfall — falling sand particle simulation, particles pile up in heaps" },
+        ModeInfo { name: "magnetic_field", description: "Magnetic field — two orbiting magnetic poles with visualised field lines" },
+        ModeInfo { name: "smoke_plume", description: "Smoke plume — wispy smoke rising from a heat source with advection simulation" },
+        ModeInfo { name: "color_mosaic", description: "Color mosaic — tiled colour grid with wave interference hue patterns" },
+        ModeInfo { name: "solar_system", description: "Solar system — animated orrery with 6 planets, orbits, and Lambertian shading" },
+        ModeInfo { name: "lightning_storm", description: "Lightning storm — recursive branching lightning bolts with stormy atmosphere" },
+        ModeInfo { name: "spirograph", description: "Spirograph — five rotating hypotrochoid curves in Catppuccin colours" },
+        ModeInfo { name: "fractal_tree", description: "Fractal tree — iterative fractal tree with wind sway animation" },
+        ModeInfo { name: "bubble_rise", description: "Bubble rise — physics-based coloured bubbles with specular highlights rising in water" },
+        ModeInfo { name: "asteroid_field", description: "Asteroid field — tumbling rocky asteroids drifting through a star field" },
         ModeInfo { name: "idle",           description: "Keepalive — no display update, prevents blank" },
     ];
     HttpResponse::Ok().json(modes)
@@ -4337,6 +4626,65 @@ async fn api_alert(state: web::Data<DaemonState>, body: web::Json<AlertRequest>)
 
 // ─── Screenshot download ──────────────────────────────────────────────────────
 
+
+// ─── Canvas push (raw pixel injection) ────────────────────────────────────────
+
+/// POST /api/canvas — push any image directly to the panel display.
+///
+/// Send the image bytes as the request body (JPEG, PNG, BMP, GIF, WEBP, etc.).
+/// Content-Type header should be set to the appropriate image MIME type.
+/// The image is resized to 480×480 and displayed immediately.
+/// It stays until the next mode change or `POST /api/clear`.
+///
+/// Example:
+///   curl -X POST http://localhost:7171/api/canvas \
+///        --data-binary @photo.jpg -H "Content-Type: image/jpeg"
+async fn api_canvas(
+    state: web::Data<DaemonState>,
+    body: web::Bytes,
+) -> impl Responder {
+    if body.is_empty() {
+        return HttpResponse::BadRequest().body("empty body — send image bytes");
+    }
+    apply_canvas_bytes(state, &body)
+}
+
+fn apply_canvas_bytes(state: web::Data<DaemonState>, bytes: &[u8]) -> HttpResponse {
+    use image::ImageReader;
+    use std::io::Cursor;
+
+    let img = match ImageReader::new(Cursor::new(bytes))
+        .with_guessed_format()
+        .and_then(|r| r.decode().map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e)))
+    {
+        Ok(i) => i,
+        Err(e) => return HttpResponse::BadRequest().body(format!("image decode error: {e}")),
+    };
+
+    let rgb = img.resize_exact(480, 480, image::imageops::FilterType::Lanczos3).into_rgb8();
+
+    // Encode as JPEG and push as pending frame
+    let mut buf = Vec::new();
+    let mut encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut buf, *state.quality.lock().unwrap());
+    if let Err(e) = encoder.encode_image(&image::DynamicImage::ImageRgb8(rgb)) {
+        return HttpResponse::InternalServerError().body(format!("encode error: {e}"));
+    }
+
+    *state.pending_jpeg.lock().unwrap() = Some(buf.clone());
+    *state.last_frame.lock().unwrap() = Some(buf);
+    *state.mode.lock().unwrap() = DisplayMode::CustomImage;
+    {
+        let mut seq = state.frame_seq.lock().unwrap();
+        *seq = seq.wrapping_add(1);
+    }
+    push_history(&state, HistoryKind::System, "canvas frame pushed".to_string());
+
+    HttpResponse::Ok().json(serde_json::json!({
+        "ok": true,
+        "message": "canvas frame applied (480×480, CustomImage mode)"
+    }))
+}
+
 /// GET /api/screenshot — like /api/preview but forces a file download.
 async fn api_screenshot(state: web::Data<DaemonState>) -> impl Responder {
     let guard = state.last_frame.lock().unwrap();
@@ -4436,6 +4784,130 @@ async fn api_ping() -> impl Responder {
     HttpResponse::Ok()
         .content_type("text/plain; charset=utf-8")
         .body("pong")
+}
+
+// ─── GET /api/benchmark — render all visual modes once and report timing ──────
+
+/// GET /api/benchmark — measure render time for a curated set of visual modes.
+/// Returns JSON: { "modes": [{"name": "...", "ms": 12.3}], "total_ms": 456.7 }
+/// Only non-blocking (non-system) modes are benchmarked.
+async fn api_benchmark(state: web::Data<DaemonState>) -> impl Responder {
+    let quality  = *state.quality.lock().unwrap();
+    let rotate   = *state.rotate_deg.lock().unwrap();
+
+    let benchmark_modes = [
+        "matrix_rain", "plasma", "fireworks", "starfield", "game_of_life",
+        "doom_fire", "boids", "tunnel", "aurora", "metaballs", "sand",
+        "voronoi", "reaction_diffusion", "julia_set", "confetti",
+        "neon_grid", "ripple", "hypno", "lorenz", "mandelbrot",
+        "kaleidoscope", "dna_helix", "rain_glass", "perlin_terrain",
+        "city_skyline", "galaxy", "ocean_waves", "warp_speed", "sierpinski",
+        "lava_lamp", "pendulum_wave", "fiber_optic", "network_globe",
+        "plasma_ball", "moss_growth", "asteroid_field", "solar_system",
+        "lightning_storm", "spirograph", "fractal_tree", "bubble_rise",
+        "sand_waterfall", "magnetic_field", "smoke_plume", "color_mosaic",
+        "neural_net", "ribbon_dance", "hex_plasma",
+        "wave_interference", "clifford_attractor", "icosahedron",
+        "mandala", "flow_field", "glitch_art",
+        "double_pendulum", "rose_curve", "truchet",
+        "fourier_epicycles", "rule_30", "nbody_gravity",
+    ];
+
+    let mut results: Vec<serde_json::Value> = Vec::new();
+    let mut total_ms = 0.0f64;
+
+    for &name in &benchmark_modes {
+        if let Some(mode) = DisplayMode::from_str_name(name) {
+            let start = std::time::Instant::now();
+            let img = match mode {
+                DisplayMode::MatrixRain      => render_matrix_rain(),
+                DisplayMode::Plasma          => render_plasma(),
+                DisplayMode::Fireworks       => render_fireworks(),
+                DisplayMode::Starfield       => render_starfield(),
+                DisplayMode::GameOfLife      => render_game_of_life(),
+                DisplayMode::DoomFire        => render_doom_fire(),
+                DisplayMode::Boids           => render_boids(),
+                DisplayMode::Tunnel          => render_tunnel(),
+                DisplayMode::Aurora          => render_aurora(),
+                DisplayMode::Metaballs       => render_metaballs(),
+                DisplayMode::Sand            => render_sand(),
+                DisplayMode::Voronoi         => render_voronoi(),
+                DisplayMode::ReactionDiffusion => render_reaction_diffusion(),
+                DisplayMode::JuliaSet        => render_julia_set(),
+                DisplayMode::Confetti        => render_confetti(),
+                DisplayMode::NeonGrid        => render_neon_grid(),
+                DisplayMode::Ripple          => render_ripple(),
+                DisplayMode::Hypno           => render_hypno(),
+                DisplayMode::Lorenz          => render_lorenz(),
+                DisplayMode::Mandelbrot      => render_mandelbrot(),
+                DisplayMode::Kaleidoscope    => render_kaleidoscope(),
+                DisplayMode::DnaHelix        => render_dna_helix(),
+                DisplayMode::RainGlass       => render_rain_glass(),
+                DisplayMode::PerlinTerrain   => render_perlin_terrain(),
+                DisplayMode::CitySkyline     => render_city_skyline(),
+                DisplayMode::Galaxy          => render_galaxy(),
+                DisplayMode::OceanWaves      => render_ocean_waves(),
+                DisplayMode::WarpSpeed       => render_warp_speed(),
+                DisplayMode::Sierpinski      => render_sierpinski(),
+                DisplayMode::LavaLamp        => render_lava_lamp(),
+                DisplayMode::PendulumWave    => render_pendulum_wave(),
+                DisplayMode::FiberOptic      => render_fiber_optic(),
+                DisplayMode::NetworkGlobe    => render_network_globe(),
+                DisplayMode::PlasmaBall      => render_plasma_ball(),
+                DisplayMode::MossGrowth      => render_moss_growth(),
+                DisplayMode::AsteroidField   => render_asteroid_field(),
+                DisplayMode::SolarSystem     => render_solar_system(),
+                DisplayMode::LightningStorm  => render_lightning_storm(),
+                DisplayMode::Spirograph      => render_spirograph(),
+                DisplayMode::FractalTree     => render_fractal_tree(),
+                DisplayMode::BubbleRise      => render_bubble_rise(),
+                DisplayMode::SandWaterfall   => render_sand_waterfall(),
+                DisplayMode::MagneticField   => render_magnetic_field(),
+                DisplayMode::SmokePlume      => render_smoke_plume(),
+                DisplayMode::ColorMosaic     => render_color_mosaic(),
+                DisplayMode::NeuralNet       => render_neural_net(),
+                DisplayMode::RibbonDance     => render_ribbon_dance(),
+                DisplayMode::HexPlasma       => render_hex_plasma(),
+                DisplayMode::WaveInterference   => render_wave_interference(),
+                DisplayMode::CliffordAttractor  => render_clifford_attractor(),
+                DisplayMode::Icosahedron     => render_icosahedron(),
+                DisplayMode::Mandala         => render_mandala(),
+                DisplayMode::FlowField       => render_flow_field(),
+                DisplayMode::GlitchArt       => render_glitch_art(),
+                DisplayMode::DoublePendulum  => render_double_pendulum(),
+                DisplayMode::RoseCurve       => render_rose_curve(),
+                DisplayMode::Truchet         => render_truchet(),
+                DisplayMode::FourierEpicycles => render_fourier_epicycles(),
+                DisplayMode::Rule30          => render_rule_30(),
+                DisplayMode::NbodyGravity    => render_nbody_gravity(),
+                _ => continue,
+            };
+            // Also encode to JPEG to measure full pipeline cost
+            let img = apply_rotation(img, rotate);
+            let img = apply_brightness(img, *state.dim_factor.lock().unwrap());
+            let _ = encode_for_panel(&img, quality);
+            let elapsed = start.elapsed().as_secs_f64() * 1000.0;
+            total_ms += elapsed;
+            results.push(serde_json::json!({
+                "name": name,
+                "ms": (elapsed * 10.0).round() / 10.0,
+            }));
+        }
+    }
+
+    // Sort by descending render time for easy identification of slow modes
+    results.sort_by(|a, b| {
+        let ta = a["ms"].as_f64().unwrap_or(0.0);
+        let tb = b["ms"].as_f64().unwrap_or(0.0);
+        tb.partial_cmp(&ta).unwrap_or(std::cmp::Ordering::Equal)
+    });
+
+    HttpResponse::Ok().json(serde_json::json!({
+        "count": results.len(),
+        "total_ms": (total_ms * 10.0).round() / 10.0,
+        "avg_ms": (total_ms / results.len().max(1) as f64 * 10.0).round() / 10.0,
+        "modes": results,
+    }))
 }
 
 // ─── Blank frame ──────────────────────────────────────────────────────────────
@@ -5220,6 +5692,57 @@ struct RotationRequest {
     modes:    Vec<String>,
     /// Seconds between advances. 0 = stop rotation.
     interval: u64,
+}
+
+
+// ─── Demo mode (cycle all screensaver modes) ──────────────────────────────────
+
+/// POST /api/demo — start auto-rotation through all "fun" screensaver modes.
+/// Optional body: { "interval": 8 }   (default 8 seconds per mode)
+/// DELETE /api/demo — stop demo (clears rotation).
+async fn api_start_demo(
+    state: web::Data<DaemonState>,
+    body:  web::Json<serde_json::Value>,
+) -> impl Responder {
+    let interval = body.get("interval")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(8)
+        .max(2);
+
+    // Collect all "fun" screensaver modes
+    let screensaver_names = [
+        "game_of_life","matrix_rain","plasma","fireworks","starfield","bounce_ball",
+        "snake","cube_3d","dvd_bounce","lissajous","pong","breakout","radar",
+        "oscilloscope","doom_fire","boids","tunnel","aurora","metaballs","sand",
+        "gravity","voronoi","reaction_diffusion","snowfall","conway_colors","julia_set",
+        "confetti","neon_grid","ripple","hypno","lorenz","mandelbrot",
+        "kaleidoscope","dna_helix","rain_glass","perlin_terrain","fire_text",
+        "disco_floor","city_skyline","neon_sign","gradient_clock","particle_clock","pulse",
+        "galaxy","ocean_waves","warp_speed","morphing_blobs","clock_matrix","sierpinski",
+        "lava_lamp","pendulum_wave","fiber_optic","network_globe","plasma_ball","moss_growth",
+        "asteroid_field","solar_system","lightning_storm","spirograph","fractal_tree","bubble_rise",
+        "heartbeat","waveform_bars","lorenz","mandelbrot","aurora","voronoi",
+    ];
+    let modes: Vec<DisplayMode> = screensaver_names.iter()
+        .filter_map(|&name| DisplayMode::from_str_name(name))
+        .collect();
+    let count = modes.len();
+    *state.rotation_modes.lock().unwrap()   = modes;
+    *state.rotation_interval.lock().unwrap() = interval;
+    push_history(&state, HistoryKind::System, format!("demo started: {} modes, {}s", count, interval));
+    HttpResponse::Ok().json(serde_json::json!({
+        "ok": true,
+        "message": format!("demo rotation started: {count} modes, {interval}s each"),
+        "mode_count": count,
+        "interval": interval,
+    }))
+}
+
+async fn api_stop_demo(state: web::Data<DaemonState>) -> impl Responder {
+    *state.rotation_modes.lock().unwrap()   = vec![];
+    *state.rotation_interval.lock().unwrap() = 0;
+    push_history(&state, HistoryKind::System, "demo stopped".to_string());
+    HttpResponse::Ok().json(serde_json::json!({ "ok": true, "message": "demo stopped" }))
 }
 
 async fn api_rotation(state: web::Data<DaemonState>, body: web::Json<RotationRequest>) -> impl Responder {
@@ -6288,6 +6811,60 @@ async fn api_status_badge(state: web::Data<DaemonState>) -> impl Responder {
         "neon_grid"                            => "#74c7ec",  // sapphire/cyan
         "ripple"                               => "#89dceb",  // sky
         "hypno"                                => "#cba6f7",  // mauve
+        "lorenz"                               => "#cba6f7",  // mauve
+        "mandelbrot"                           => "#89b4fa",  // blue
+        "kaleidoscope"                         => "#f38ba8",  // red (rainbow)
+        "dna_helix"                            => "#94e2d5",  // teal
+        "rain_glass"                           => "#89dceb",  // sky
+        "perlin_terrain"                       => "#a6e3a1",  // green
+        "fire_text"                            => "#f38ba8",  // red
+        "disco_floor"                          => "#cba6f7",  // mauve
+        "heartbeat"                            => "#a6e3a1",  // green
+        "clock_faces"                          => "#89b4fa",  // blue
+        "waveform_bars"                        => "#cba6f7",  // mauve
+        "city_skyline"                         => "#89b4fa",  // blue
+        "neon_sign"                            => "#f38ba8",  // red
+        "gradient_clock"                       => "#cba6f7",  // mauve
+        "galaxy"                               => "#89b4fa",  // blue
+        "ocean_waves"                          => "#74c7ec",  // sapphire
+        "warp_speed"                           => "#cdd6f4",  // text/white
+        "morphing_blobs"                       => "#cba6f7",  // mauve
+        "clock_matrix"                         => "#a6e3a1",  // green
+        "sierpinski"                           => "#cba6f7",  // mauve
+        "lava_lamp"                            => "#f38ba8",  // red/warm
+        "pendulum_wave"                        => "#89b4fa",  // blue
+        "fiber_optic"                          => "#94e2d5",  // teal
+        "network_globe"                        => "#89b4fa",  // blue
+        "plasma_ball"                          => "#cba6f7",  // mauve
+        "moss_growth"                          => "#a6e3a1",  // green
+        "torus"                          => "#f38ba8",
+        "lemniscate"                          => "#f5c2e7",
+        "system_art"                          => "#89dceb",
+        "fourier_epicycles"                          => "#cba6f7",
+        "rule_30"                          => "#a6e3a1",
+        "nbody_gravity"                          => "#89dceb",
+        "double_pendulum"                          => "#89b4fa",
+        "rose_curve"                          => "#f5c2e7",
+        "truchet"                          => "#a6e3a1",
+        "mandala"                          => "#f9e2af",
+        "flow_field"                          => "#89b4fa",
+        "glitch_art"                          => "#f38ba8",
+        "wave_interference"                          => "#89b4fa",
+        "clifford_attractor"                          => "#cba6f7",
+        "icosahedron"                          => "#a6e3a1",
+        "neural_net"                          => "#89dceb",
+        "ribbon_dance"                          => "#f38ba8",
+        "hex_plasma"                          => "#f9e2af",
+        "sand_waterfall"                          => "#f9e2af",
+        "magnetic_field"                          => "#89dceb",
+        "smoke_plume"                          => "#a6adc8",
+        "color_mosaic"                          => "#cba6f7",
+        "solar_system"                          => "#89dceb",
+        "lightning_storm"                          => "#cdd6f4",
+        "spirograph"                          => "#cba6f7",
+        "fractal_tree"                          => "#a6e3a1",
+        "bubble_rise"                          => "#89dceb",
+        "asteroid_field"                       => "#f9e2af",  // yellow
         "status_overview"                      => "#89dceb",  // sky
         "analog_clock"                         => "#cba6f7",  // mauve
         "net_speed_graph"                      => "#a6e3a1",  // green
@@ -6594,8 +7171,19 @@ async fn api_modes_catalog(_state: web::Data<DaemonState>) -> impl Responder {
             "matrix_rain"|"game_of_life"|"bounce_ball"|"plasma"|"fireworks"|"starfield"|
             "snake"|"cube_3d"|"dvd_bounce"|"lissajous"|"pong"|"breakout"|"doom_fire"|"boids"|"tunnel"|"aurora"|"metaballs"|"sand"|"gravity"|"voronoi"|"reaction_diffusion"|"snowfall" => "fun",
             "hex_grid"|"bubble_chart" => "system",
-            "conway_colors"|"julia_set"|"confetti"|"neon_grid"|"ripple"|"hypno" => "fun",
-            "cpu_3d_bars"|"system_health" => "system",
+            "conway_colors"|"julia_set"|"confetti"|"neon_grid"|"ripple"|"hypno"|
+            "lorenz"|"mandelbrot"|"kaleidoscope"|"dna_helix"|"rain_glass"|
+            "perlin_terrain"|"fire_text"|"disco_floor" => "fun",
+            "heartbeat"|"waveform_bars" => "system",
+            "clock_faces"|"gradient_clock" => "clock",
+            "city_skyline"|"neon_sign"|"galaxy"|"ocean_waves"|"warp_speed"|"morphing_blobs" => "fun",
+            "clock_matrix" => "clock",
+            "sierpinski"|"lava_lamp"|"pendulum_wave"|"fiber_optic"|"network_globe"|
+            "plasma_ball"|"moss_growth"|"asteroid_field"|"solar_system"|"lightning_storm"|"bubble_rise"|
+            "spirograph"|"fractal_tree"|"sand_waterfall"|"magnetic_field"|"smoke_plume"|"color_mosaic"|
+            "neural_net"|"ribbon_dance"|"hex_plasma"|"wave_interference"|"clifford_attractor"|"icosahedron"|
+            "mandala"|"flow_field"|"glitch_art"|"double_pendulum"|"rose_curve"|"truchet"|"fourier_epicycles"|"rule_30"|"nbody_gravity"|"torus"|"lemniscate" => "fun",
+            "cpu_3d_bars"|"system_health"|"system_art" => "system",
             _ => "other",
         }
     }
@@ -9496,6 +10084,60 @@ async fn api_render_mode_preview(
             DisplayMode::NeonGrid      => render_neon_grid(),
             DisplayMode::Ripple        => render_ripple(),
             DisplayMode::Hypno         => render_hypno(),
+            DisplayMode::Lorenz        => render_lorenz(),
+            DisplayMode::Mandelbrot    => render_mandelbrot(),
+            DisplayMode::Kaleidoscope  => render_kaleidoscope(),
+            DisplayMode::DnaHelix      => render_dna_helix(),
+            DisplayMode::RainGlass     => render_rain_glass(),
+            DisplayMode::PerlinTerrain => render_perlin_terrain(),
+            DisplayMode::FireText      => render_fire_text(),
+            DisplayMode::DiscoFloor    => render_disco_floor(),
+            DisplayMode::Heartbeat     => render_heartbeat(),
+            DisplayMode::ClockFaces    => render_clock_faces(),
+            DisplayMode::WaveformBars  => render_waveform_bars(),
+            DisplayMode::CitySkyline   => render_city_skyline(),
+            DisplayMode::NeonSign      => render_neon_sign(),
+            DisplayMode::GradientClock => render_gradient_clock(),
+            DisplayMode::Galaxy        => render_galaxy(),
+            DisplayMode::OceanWaves    => render_ocean_waves(),
+            DisplayMode::WarpSpeed     => render_warp_speed(),
+            DisplayMode::MorphingBlobs => render_morphing_blobs(),
+            DisplayMode::ClockMatrix   => render_clock_matrix(),
+            DisplayMode::Sierpinski    => render_sierpinski(),
+            DisplayMode::LavaLamp      => render_lava_lamp(),
+            DisplayMode::PendulumWave  => render_pendulum_wave(),
+            DisplayMode::FiberOptic    => render_fiber_optic(),
+            DisplayMode::NetworkGlobe  => render_network_globe(),
+            DisplayMode::PlasmaBall  => render_plasma_ball(),
+            DisplayMode::MossGrowth    => render_moss_growth(),
+            DisplayMode::Torus  => render_torus(),
+            DisplayMode::Lemniscate  => render_lemniscate(),
+            DisplayMode::SystemArt  => render_system_art(),
+            DisplayMode::FourierEpicycles  => render_fourier_epicycles(),
+            DisplayMode::Rule30  => render_rule_30(),
+            DisplayMode::NbodyGravity  => render_nbody_gravity(),
+            DisplayMode::DoublePendulum  => render_double_pendulum(),
+            DisplayMode::RoseCurve  => render_rose_curve(),
+            DisplayMode::Truchet  => render_truchet(),
+            DisplayMode::Mandala  => render_mandala(),
+            DisplayMode::FlowField  => render_flow_field(),
+            DisplayMode::GlitchArt  => render_glitch_art(),
+            DisplayMode::WaveInterference  => render_wave_interference(),
+            DisplayMode::CliffordAttractor  => render_clifford_attractor(),
+            DisplayMode::Icosahedron  => render_icosahedron(),
+            DisplayMode::NeuralNet  => render_neural_net(),
+            DisplayMode::RibbonDance  => render_ribbon_dance(),
+            DisplayMode::HexPlasma  => render_hex_plasma(),
+            DisplayMode::SandWaterfall  => render_sand_waterfall(),
+            DisplayMode::MagneticField  => render_magnetic_field(),
+            DisplayMode::SmokePlume  => render_smoke_plume(),
+            DisplayMode::ColorMosaic  => render_color_mosaic(),
+            DisplayMode::SolarSystem  => render_solar_system(),
+            DisplayMode::LightningStorm  => render_lightning_storm(),
+            DisplayMode::Spirograph  => render_spirograph(),
+            DisplayMode::FractalTree  => render_fractal_tree(),
+            DisplayMode::BubbleRise  => render_bubble_rise(),
+            DisplayMode::AsteroidField => render_asteroid_field(),
             DisplayMode::ConwayColors  => render_conway_colors(),
             DisplayMode::Cpu3dBars     => render_cpu_3d_bars(),
             DisplayMode::SystemHealth  => render_system_health(),

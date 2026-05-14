@@ -246,7 +246,9 @@ main {
 .quick-btn.deploy { border-color: var(--teal);   color: var(--teal);   }
 .quick-btn.done   { border-color: var(--mauve);  color: var(--mauve);  }
 .quick-btn.info   { border-color: var(--subtext);color: var(--subtext);}
-.quick-btn.reboot { border-color: var(--peach);  color: var(--peach);  }
+.quick-btn.reboot      { border-color: var(--peach);  color: var(--peach);  }
+.quick-btn.demo-start { border-color: var(--mauve);  color: var(--mauve);  }
+.quick-btn.demo-stop  { border-color: var(--overlay); color: var(--subtext); }
 
 .quick-status {
   font-size: 0.82rem;
@@ -1724,3 +1726,22 @@ button.btn-danger:hover   { opacity: 0.85; }
   font-family: var(--font-mono, monospace);
   font-size: 0.82rem;
 }
+
+/* ── Category count badges ──────────────────────────────────────────────── */
+.cat-count-badge {
+  display: inline-block;
+  margin-left: 3px;
+  font-size: 0.65em;
+  font-weight: 700;
+  color: var(--overlay0);
+  vertical-align: super;
+  line-height: 1;
+  transition: color 0.15s;
+}
+.cat-btn.active .cat-count-badge {
+  color: var(--blue);
+}
+.cat-btn:hover .cat-count-badge {
+  color: var(--text);
+}
+
