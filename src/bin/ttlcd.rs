@@ -66,6 +66,8 @@ use ttlcd::{
         push_disk_io_history,
         render_disk_io_graph,
         render_graphs_overview,
+        render_net_speed_graph,
+        render_cpu_core_bars,
         read_docker_containers,
         read_user_sessions,
         HttpMonitorResult,
@@ -765,6 +767,8 @@ enum DisplayMode {
     TempGraph,
     DiskIoGraph,
     GraphsOverview,
+    NetSpeedGraph,
+    CpuCoreBars,
     Idle,
     CustomImage,
     CustomText,
@@ -774,7 +778,7 @@ enum DisplayMode {
 impl DisplayMode {
     const ALL_NAMES: &'static [&'static str] = &[
         "clock", "big_clock", "clock_sysinfo", "sysinfo", "cpu_detail",
-        "network", "disk_usage", "process_top", "temperature", "memory_detail", "countdown", "cpu_graph", "net_graph", "recent_alerts", "process_memory", "disk_io", "calendar", "stopwatch", "metrics", "weather", "notes", "qr_code", "pomodoro", "battery", "world_clock", "ticker", "http_status", "shell_cmd", "ping_monitor", "dashboard", "log_tail", "cpu_freq", "hostname_ip", "rss_feed", "service_status", "net_connections", "uptime_fancy", "os_info", "docker_status", "logged_in_users", "load_graph", "mem_graph", "progress", "matrix_rain", "temp_graph", "disk_io_graph", "graphs_overview", "idle",
+        "network", "disk_usage", "process_top", "temperature", "memory_detail", "countdown", "cpu_graph", "net_graph", "recent_alerts", "process_memory", "disk_io", "calendar", "stopwatch", "metrics", "weather", "notes", "qr_code", "pomodoro", "battery", "world_clock", "ticker", "http_status", "shell_cmd", "ping_monitor", "dashboard", "log_tail", "cpu_freq", "hostname_ip", "rss_feed", "service_status", "net_connections", "uptime_fancy", "os_info", "docker_status", "logged_in_users", "load_graph", "mem_graph", "progress", "matrix_rain", "temp_graph", "disk_io_graph", "graphs_overview", "net_speed_graph", "cpu_core_bars", "idle",
     ];
 
     fn from_str_name(s: &str) -> Option<Self> {
@@ -823,6 +827,8 @@ impl DisplayMode {
             "mem_graph"        => Some(DisplayMode::MemGraph),
             "progress"         => Some(DisplayMode::Progress),
             "matrix_rain"      => Some(DisplayMode::MatrixRain),
+            "net_speed_graph"   => Some(DisplayMode::NetSpeedGraph),
+            "cpu_core_bars"     => Some(DisplayMode::CpuCoreBars),
             "idle"             => Some(DisplayMode::Idle),
             "custom_text"   => Some(DisplayMode::CustomText),
             "slideshow"     => Some(DisplayMode::Slideshow),
@@ -879,6 +885,8 @@ impl DisplayMode {
             DisplayMode::TempGraph      => "temp_graph",
             DisplayMode::DiskIoGraph    => "disk_io_graph",
             DisplayMode::GraphsOverview => "graphs_overview",
+    DisplayMode::NetSpeedGraph  => "net_speed_graph",
+    DisplayMode::CpuCoreBars    => "cpu_core_bars",
             DisplayMode::Idle           => "idle",
             DisplayMode::CustomImage  => "image",
             DisplayMode::CustomText   => "custom_text",
@@ -2401,6 +2409,8 @@ fn display_loop(panel: Arc<Mutex<Option<Panel>>>, state: DaemonState) {
                 DisplayMode::TempGraph    => (render_temp_graph(), 5),
                 DisplayMode::DiskIoGraph    => (render_disk_io_graph(), 5),
                 DisplayMode::GraphsOverview => (render_graphs_overview(), 5),
+                DisplayMode::NetSpeedGraph  => (render_net_speed_graph(), 5),
+                DisplayMode::CpuCoreBars    => (render_cpu_core_bars(), 5),
                 DisplayMode::MatrixRain => (render_matrix_rain(), 0),
                 DisplayMode::Idle
                 | DisplayMode::CustomImage
@@ -2413,7 +2423,9 @@ fn display_loop(panel: Arc<Mutex<Option<Panel>>>, state: DaemonState) {
                 | DisplayMode::CpuDetail | DisplayMode::Network | DisplayMode::DiskUsage
                 | DisplayMode::ProcessTop | DisplayMode::Temperature | DisplayMode::MemoryDetail
                 | DisplayMode::NetGraph | DisplayMode::LoadGraph | DisplayMode::MemGraph | DisplayMode::TempGraph
-                | DisplayMode::DiskIoGraph) {
+                | DisplayMode::DiskIoGraph
+                | DisplayMode::NetSpeedGraph
+                | DisplayMode::CpuCoreBars) {
                 use sysinfo::System;
                 let mut s = System::new_all();
                 s.refresh_cpu_usage();
@@ -3765,6 +3777,8 @@ async fn api_modes_list() -> impl Responder {
         ModeInfo { name: "mem_graph",      description: "Memory usage history graph: RAM % over time as a filled line chart" },
         ModeInfo { name: "progress",       description: "Full-screen progress bar — configure via POST /api/progress with value/total/label" },
         ModeInfo { name: "matrix_rain",    description: "Matrix digital rain screensaver — animated falling characters" },
+        ModeInfo { name: "net_speed_graph", description: "Network speed history: overlaid Rx/Tx line chart with per-interface breakdown" },
+        ModeInfo { name: "cpu_core_bars",   description: "Per-core CPU utilisation as horizontal bars — good for high core-count systems" },
         ModeInfo { name: "temp_graph",     description: "CPU/component temperature history graph with thermal thresholds" },
         ModeInfo { name: "disk_io_graph",  description: "Disk I/O history graph: total read and write throughput over time" },
         ModeInfo { name: "graphs_overview",description: "4-panel mini-charts: CPU, Load, Memory, Temperature at a glance" },
@@ -5726,6 +5740,8 @@ async fn api_status_badge(state: web::Data<DaemonState>) -> impl Responder {
         "disk_usage" | "disk_io"                => "#f9e2af",  // yellow
         "process_top" | "process_memory"        => "#a6e3a1",  // green
         "temperature" | "temp_graph"            => "#fab387",  // peach
+        "net_speed_graph"                      => "#a6e3a1",  // green
+        "cpu_core_bars"                        => "#cba6f7",  // mauve
         "disk_io_graph" | "graphs_overview"     => "#f9e2af",  // yellow
         "countdown"                             => "#eba0ac",  // maroon
         "recent_alerts"                         => "#f38ba8",  // red
@@ -8690,6 +8706,8 @@ async fn api_render_mode_preview(
             DisplayMode::TempGraph    => render_temp_graph(),
             DisplayMode::DiskIoGraph    => render_disk_io_graph(),
             DisplayMode::GraphsOverview => render_graphs_overview(),
+            DisplayMode::NetSpeedGraph  => render_net_speed_graph(),
+            DisplayMode::CpuCoreBars    => render_cpu_core_bars(),
             DisplayMode::MatrixRain   => render_matrix_rain(),
             DisplayMode::Progress     => {
                 let ps = state_clone.progress_state.lock().unwrap().clone();

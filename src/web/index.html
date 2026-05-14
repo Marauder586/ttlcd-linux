@@ -79,6 +79,8 @@
         <button class="mode-btn" data-mode="temp_graph"        title="Temperature history graph — CPU/component temperature over time with thermal thresholds">🌡<span>Temp Graph</span></button>
         <button class="mode-btn" data-mode="disk_io_graph"     title="Disk I/O history graph: total read and write throughput over time">💾<span>Disk I/O Graph</span></button>
         <button class="mode-btn" data-mode="graphs_overview"  title="4-panel mini-charts: CPU, Load average, Memory, and Temperature at a glance">📈<span>Graphs Overview</span></button>
+        <button class="mode-btn" data-mode="net_speed_graph"   title="Network speed history: overlaid Rx/Tx line chart with per-interface breakdown">📡<span>Net Speed</span></button>
+        <button class="mode-btn" data-mode="cpu_core_bars"     title="Per-core CPU utilisation as large horizontal bars — good for high core-count systems">📊<span>CPU Bars</span></button>
         <button class="mode-btn" data-mode="idle"              title="Keepalive — no display update">💤<span>Idle</span></button>
       </div>
       <p id="mode-filter-count" style="font-size:0.78rem;color:var(--overlay0);margin:0.3rem 0 0"></p>
@@ -87,11 +89,19 @@
     <!-- ── Auto-rotation ─────────────────────────────────────────── -->
     <section class="card">
       <h2>Auto-Rotation</h2>
-      <p class="card-hint">Cycle through modes automatically. Active modes are highlighted above.</p>
+      <p class="card-hint">Cycle through modes automatically. Click modes below to toggle them in/out of rotation.</p>
       <div class="rotation-form">
-        <div class="form-row two-col">
+        <!-- Visual mode picker (mini toggle buttons) -->
+        <div id="rot-mode-picker" class="rot-mode-picker">
+          <!-- Populated by JS from the mode grid -->
+        </div>
+        <div id="rot-selected-preview" class="rot-selected-preview" style="display:none">
+          <span class="hint-inline">Selected:</span>
+          <span id="rot-selected-list"></span>
+        </div>
+        <div class="form-row two-col" style="margin-top:0.5rem">
           <div class="form-group">
-            <label for="rot-modes">Modes <span class="hint-inline">(comma-separated)</span></label>
+            <label for="rot-modes">Modes <span class="hint-inline">(or type comma-separated)</span></label>
             <input type="text" id="rot-modes" placeholder="clock,sysinfo,cpu_detail,network">
           </div>
           <div class="form-group">
@@ -711,6 +721,8 @@
         <tr><td><kbd>Shift</kbd>+<kbd>K</kbd></td><td>Switch to Docker Status mode</td></tr>
         <tr><td><kbd>Shift</kbd>+<kbd>W</kbd></td><td>Switch to Logged-in Users mode</td></tr>
         <tr><td><kbd>Shift</kbd>+<kbd>T</kbd></td><td>Switch to Temp Graph mode</td></tr>
+        <tr><td><kbd>Shift</kbd>+<kbd>N</kbd></td><td>Switch to Net Speed Graph mode</td></tr>
+        <tr><td><kbd>Shift</kbd>+<kbd>B</kbd></td><td>Switch to CPU Core Bars mode</td></tr>
         <tr><td><kbd>/</kbd></td><td>Focus mode search filter (Esc to clear)</td></tr>
       </table>
       <p class="card-hint" style="margin-top:0.5rem">Shortcuts are disabled while a text input is focused.</p>

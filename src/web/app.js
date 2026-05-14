@@ -3871,3 +3871,182 @@ startPolling();
 setInterval(fetchDocker,   60000);
 setInterval(fetchSessions, 30000);
 log('ttlcd web UI connected');
+
+
+// ─── Keyboard shortcuts for new modes (Shift+N, Shift+B) ─────────────────────
+(function patchNewModeShortcuts() {
+  // These are additive patches; the main keydown handler already handles Shift+T
+  // We re-listen here to keep code modular
+  document.addEventListener('keydown', e => {
+    if (document.activeElement.tagName === 'INPUT' ||
+        document.activeElement.tagName === 'TEXTAREA' ||
+        document.activeElement.tagName === 'SELECT') return;
+    if (!e.shiftKey) return;
+    switch (e.key) {
+      case 'N':
+        api('POST', '/api/mode', { mode: 'net_speed_graph' }).then(() => fetchStatus()).catch(() => {});
+        break;
+      case 'B':
+        api('POST', '/api/mode', { mode: 'cpu_core_bars' }).then(() => fetchStatus()).catch(() => {});
+        break;
+    }
+  });
+})();
+
+// ─── Rotation mode picker (visual toggle buttons) ─────────────────────────────
+(function initRotationPicker() {
+  const picker  = document.getElementById('rot-mode-picker');
+  const rotInput = document.getElementById('rot-modes');
+  const selPreview = document.getElementById('rot-selected-preview');
+  const selList    = document.getElementById('rot-selected-list');
+  if (!picker || !rotInput) return;
+
+  // Build toggle buttons from the mode grid
+  const modeGrid  = document.getElementById('mode-grid');
+  if (!modeGrid) return;
+
+  const allBtns = Array.from(modeGrid.querySelectorAll('.mode-btn'));
+  let selected = new Set();
+
+  // Restore last selection from localStorage
+  try {
+    const saved = JSON.parse(localStorage.getItem('ttlcd-rot-modes') || '[]');
+    saved.forEach(m => selected.add(m));
+  } catch (_) {}
+
+  // Parse from rot-modes input on load
+  function parseInput() {
+    const modes = (rotInput.value || '')
+      .split(',').map(s => s.trim()).filter(Boolean);
+    selected = new Set(modes);
+    syncUI();
+  }
+
+  function syncUI() {
+    // Update picker button states
+    picker.querySelectorAll('.rot-pick-btn').forEach(b => {
+      b.classList.toggle('rot-selected', selected.has(b.dataset.mode));
+    });
+    // Update text input
+    rotInput.value = Array.from(selected).join(', ');
+    // Preview
+    if (selected.size > 0) {
+      selList.textContent = Array.from(selected).join(' → ');
+      selPreview.style.display = '';
+    } else {
+      selPreview.style.display = 'none';
+    }
+    // Persist
+    try { localStorage.setItem('ttlcd-rot-modes', JSON.stringify(Array.from(selected))); } catch (_) {}
+  }
+
+  // Populate picker
+  allBtns.forEach(btn => {
+    const mode = btn.dataset.mode;
+    if (!mode || mode === 'idle') return;
+    const tb = document.createElement('button');
+    tb.className = 'rot-pick-btn';
+    tb.dataset.mode = mode;
+    tb.title = `Toggle ${mode} in rotation`;
+    // Use emoji + short label from the main button
+    const span = btn.querySelector('span');
+    const emoji = btn.textContent.replace(span ? span.textContent : '', '').trim();
+    tb.innerHTML = `<span class="rpb-emoji">${emoji}</span><span class="rpb-label">${span ? span.textContent : mode}</span>`;
+    tb.addEventListener('click', () => {
+      if (selected.has(mode)) selected.delete(mode); else selected.add(mode);
+      syncUI();
+    });
+    picker.appendChild(tb);
+  });
+
+  // Sync text input → selected set when user types in the input
+  rotInput.addEventListener('change', parseInput);
+
+  // Initial sync
+  if (rotInput.value) parseInput(); else syncUI();
+
+  // After rotation starts, reflect server state into picker
+  const rotStartBtn = document.getElementById('rot-start-btn');
+  if (rotStartBtn) {
+    rotStartBtn.addEventListener('click', () => {
+      // Re-read input in case user typed
+      parseInput();
+    });
+  }
+})();
+
+// ─── Mode Favorites / Pinning ─────────────────────────────────────────────────
+(function initModeFavorites() {
+  const STORAGE_KEY = 'ttlcd-fav-modes';
+  const modeGrid    = document.getElementById('mode-grid');
+  if (!modeGrid) return;
+
+  let favs = new Set();
+  try { favs = new Set(JSON.parse(localStorage.getItem(STORAGE_KEY) || '[]')); } catch (_) {}
+
+  function saveFavs() {
+    try { localStorage.setItem(STORAGE_KEY, JSON.stringify(Array.from(favs))); } catch (_) {}
+  }
+
+  // Add a ☆ star button to each mode-btn
+  document.querySelectorAll('.mode-btn[data-mode]').forEach(btn => {
+    const mode = btn.dataset.mode;
+    if (!mode) return;
+    const star = document.createElement('span');
+    star.className = 'fav-star';
+    star.title = 'Pin to favourites';
+    star.textContent = favs.has(mode) ? '★' : '☆';
+    star.setAttribute('role', 'button');
+    star.setAttribute('aria-label', `Favourite ${mode}`);
+    star.addEventListener('click', e => {
+      e.stopPropagation();
+      if (favs.has(mode)) { favs.delete(mode); star.textContent = '☆'; }
+      else                { favs.add(mode);    star.textContent = '★'; }
+      saveFavs();
+      renderFavBand();
+    });
+    btn.appendChild(star);
+  });
+
+  // Render a "Pinned" band above the mode grid
+  let favBand = document.getElementById('fav-modes-band');
+  if (!favBand) {
+    favBand = document.createElement('div');
+    favBand.id = 'fav-modes-band';
+    favBand.className = 'fav-band';
+    const header = modeGrid.closest('.card')?.querySelector('.section-header-row');
+    if (header) header.after(favBand);
+    else modeGrid.before(favBand);
+  }
+
+  function renderFavBand() {
+    if (favs.size === 0) {
+      favBand.innerHTML = '';
+      favBand.style.display = 'none';
+      return;
+    }
+    favBand.style.display = 'flex';
+    favBand.innerHTML = '<span class="fav-band-label">★ Pinned:</span>';
+    favs.forEach(mode => {
+      // Find original button
+      const orig = modeGrid.querySelector(`[data-mode="${mode}"]`);
+      if (!orig) return;
+      const btn = document.createElement('button');
+      btn.className = 'mode-btn fav-btn';
+      btn.dataset.mode = mode;
+      btn.title = orig.title || mode;
+      btn.innerHTML = orig.innerHTML;  // copy emoji + label
+      btn.addEventListener('click', async () => {
+        try {
+          await api('POST', '/api/mode', { mode });
+          log(`Mode → ${mode}`);
+          updateActiveModeButton(mode);
+        } catch (e) { log(`Mode change failed: ${e.message}`, 'err'); }
+      });
+      favBand.appendChild(btn);
+    });
+  }
+
+  renderFavBand();
+})();
+

@@ -6472,3 +6472,247 @@ mod matrix_tests {
         let _ = (p1, p2); // suppress unused warning
     }
 }
+
+
+// ─── Net Speed Graph (overlaid Rx + Tx line chart) ───────────────────────────
+
+/// Render a dedicated network speed history graph (480×480).
+///
+/// Shows download (Rx, green) and upload (Tx, peach) overlaid on one shared
+/// chart so the relative magnitudes are directly comparable, plus a compact
+/// per-interface table at the bottom.
+pub fn render_net_speed_graph() -> DynamicImage {
+    use sysinfo::Networks;
+
+    // Two-pass sample: sleep ~200 ms between refreshes
+    let mut nets = Networks::new_with_refreshed_list();
+    std::thread::sleep(std::time::Duration::from_millis(200));
+    nets.refresh(true);
+
+    // Per-interface breakdown (for the mini table)
+    let mut ifaces: Vec<(String, u64, u64)> = nets.iter()
+        .filter_map(|(name, data)| {
+            let rx = data.received() * 5;
+            let tx = data.transmitted() * 5;
+            if rx + tx > 0 { Some((name.clone(), rx, tx)) } else { None }
+        })
+        .collect();
+    ifaces.sort_by(|a, b| (b.1 + b.2).cmp(&(a.1 + a.2)));
+    ifaces.truncate(4); // show at most 4 interfaces
+
+    let total_rx: u64 = ifaces.iter().map(|i| i.1).sum();
+    let total_tx: u64 = ifaces.iter().map(|i| i.2).sum();
+
+    // Add sample to shared history
+    push_net_history(total_rx, total_tx);
+
+    let rx_hist: Vec<f32> = net_rx_history().iter().map(|&v| v as f32).collect();
+    let tx_hist: Vec<f32> = net_tx_history().iter().map(|&v| v as f32).collect();
+
+    let peak_rx = rx_hist.iter().cloned().fold(0.0f32, f32::max);
+    let peak_tx = tx_hist.iter().cloned().fold(0.0f32, f32::max);
+    let max_val  = ((peak_rx.max(peak_tx)) * 1.1).max(10_240.0); // at least 10 KB/s
+
+    let mut img  = blank();
+    let bold = font_bold();
+    let mono = font_mono();
+
+    let now = Local::now();
+
+    // ── Header ────────────────────────────────────────────────────────────
+    draw_text_mut(&mut img, OVERLAY0, 20, 18, PxScale::from(19.0), &bold, "NET SPEED GRAPH");
+    let ts = now.format("%H:%M:%S").to_string();
+    let tw = text_width(&mono, PxScale::from(22.0), &ts);
+    draw_text_mut(&mut img, OVERLAY0, 480 - 20 - tw, 18, PxScale::from(22.0), &mono, &ts);
+
+    // ── Current Rx / Tx ───────────────────────────────────────────────────
+    let rx_str = format!("↓ {}  ↑ {}", format_bps(total_rx), format_bps(total_tx));
+    let rw = text_width(&bold, PxScale::from(30.0), &rx_str);
+    draw_text_mut(&mut img, GREEN, ((480 - rw) / 2).max(0), 48, PxScale::from(30.0), &bold, &rx_str);
+
+    // ── Peak row ─────────────────────────────────────────────────────────
+    let pk_str = format!(
+        "peak ↓ {} / ↑ {}",
+        format_bps(peak_rx as u64),
+        format_bps(peak_tx as u64)
+    );
+    let pw = text_width(&mono, PxScale::from(14.0), &pk_str);
+    draw_text_mut(&mut img, SUBTEXT, ((480 - pw) / 2).max(4), 88, PxScale::from(14.0), &mono, &pk_str);
+
+    // ── Chart area (one shared, overlaid) ─────────────────────────────────
+    let chart_x = 0i32;
+    let chart_y = 112i32;
+    let chart_w = 480i32;
+    let chart_h = 270i32;
+
+    // Grid lines at 25 / 50 / 75 %
+    for pct in &[0.25f32, 0.5, 0.75] {
+        let ly = chart_y + chart_h - (chart_h as f32 * pct) as i32;
+        for x in (chart_x..(chart_x + chart_w)).step_by(8) {
+            if x >= 0 && (x as u32) < img.width() && ly >= 0 && (ly as u32) < img.height() {
+                img.put_pixel(x as u32, ly as u32, SURFACE0);
+            }
+        }
+        let label = format_bps((max_val * pct) as u64);
+        draw_text_mut(&mut img, OVERLAY0, 2, (ly - 10).max(chart_y), PxScale::from(11.0), &mono, &label);
+    }
+
+    // Draw Tx first (behind), then Rx on top
+    let fill_rx = Rgb([GREEN.0[0] / 8, GREEN.0[1] / 8, GREEN.0[2] / 8]);
+    let fill_tx = Rgb([PEACH.0[0] / 8, PEACH.0[1] / 8, PEACH.0[2] / 8]);
+    draw_line_chart(&mut img, &tx_hist, max_val, chart_x, chart_y, chart_w, chart_h, PEACH, fill_tx);
+    draw_line_chart(&mut img, &rx_hist, max_val, chart_x, chart_y, chart_w, chart_h, GREEN, fill_rx);
+
+    // Bottom border
+    draw_filled_rect_mut(&mut img, Rect::at(chart_x, chart_y + chart_h).of_size(chart_w as u32, 2), SURFACE0);
+
+    // ── Legend ────────────────────────────────────────────────────────────
+    draw_filled_rect_mut(&mut img, Rect::at(20, 390).of_size(14, 9), GREEN);
+    draw_text_mut(&mut img, SUBTEXT, 40, 387, PxScale::from(13.0), &mono, "Download");
+    draw_filled_rect_mut(&mut img, Rect::at(130, 390).of_size(14, 9), PEACH);
+    draw_text_mut(&mut img, SUBTEXT, 150, 387, PxScale::from(13.0), &mono, "Upload");
+    draw_text_mut(&mut img, OVERLAY0, 330, 387, PxScale::from(12.0), &mono, "← 1 min");
+
+    // ── Per-interface mini table ───────────────────────────────────────────
+    let table_y = 408i32;
+    draw_filled_rect_mut(&mut img, Rect::at(0, table_y).of_size(480, 1), SURFACE0);
+
+    if ifaces.is_empty() {
+        draw_centered(&mut img, &mono, PxScale::from(14.0), table_y + 8, OVERLAY0, "No active interfaces");
+    } else {
+        let row_h = 16i32;
+        for (n, (name, rx, tx)) in ifaces.iter().enumerate() {
+            let ry = table_y + 6 + n as i32 * row_h;
+            let short_name = if name.len() > 10 { &name[..10] } else { name.as_str() };
+            draw_text_mut(&mut img, SUBTEXT, 8,   ry, PxScale::from(13.0), &mono, short_name);
+            draw_text_mut(&mut img, GREEN,   130,  ry, PxScale::from(13.0), &mono, &format!("↓ {}", format_bps(*rx)));
+            draw_text_mut(&mut img, PEACH,   280,  ry, PxScale::from(13.0), &mono, &format!("↑ {}", format_bps(*tx)));
+        }
+    }
+
+    DynamicImage::ImageRgb8(img)
+}
+
+#[cfg(test)]
+mod net_speed_graph_tests {
+    use super::*;
+
+    #[test]
+    fn test_render_net_speed_graph_size() {
+        let img = render_net_speed_graph();
+        assert_eq!(img.width(), 480);
+        assert_eq!(img.height(), 480);
+    }
+}
+
+// ─── CPU Core Bars (horizontal per-core utilisation) ─────────────────────────
+
+/// Render a large horizontal-bar chart of per-core CPU utilisation (480×480).
+///
+/// Each row is one logical CPU core.  The bar colour shifts from green → yellow
+/// → red as load increases.  Good for systems with many cores where the grid
+/// view in `cpu_detail` is too cramped.
+pub fn render_cpu_core_bars() -> DynamicImage {
+    use sysinfo::{CpuRefreshKind, RefreshKind};
+
+    let refresh = RefreshKind::nothing().with_cpu(CpuRefreshKind::everything());
+    let mut sys = System::new_with_specifics(refresh);
+    // Two refreshes to get non-zero per-core usage from sysinfo
+    std::thread::sleep(std::time::Duration::from_millis(200));
+    sys.refresh_specifics(refresh);
+
+    let cores: Vec<(String, f32)> = sys.cpus()
+        .iter()
+        .map(|c| (c.name().to_string(), c.cpu_usage()))
+        .collect();
+
+    let global = sys.global_cpu_usage();
+    let n = cores.len().max(1);
+
+    let mut img  = blank();
+    let bold = font_bold();
+    let mono = font_mono();
+
+    let now = Local::now();
+
+    // ── Header ────────────────────────────────────────────────────────────
+    draw_text_mut(&mut img, OVERLAY0, 20, 18, PxScale::from(19.0), &bold, "CPU CORE BARS");
+    let ts = now.format("%H:%M:%S").to_string();
+    let tw = text_width(&mono, PxScale::from(22.0), &ts);
+    draw_text_mut(&mut img, OVERLAY0, 480 - 20 - tw, 18, PxScale::from(22.0), &mono, &ts);
+
+    // Global summary
+    let acc = if global > 80.0 { RED } else if global > 50.0 { YELLOW } else { GREEN };
+    let g_str = format!("{:.1}% global", global);
+    let gw = text_width(&bold, PxScale::from(24.0), &g_str);
+    draw_text_mut(&mut img, acc, ((480 - gw) / 2).max(0), 46, PxScale::from(24.0), &bold, &g_str);
+
+    let load = System::load_average();
+    let load_str = format!("load {:.2} / {:.2} / {:.2}", load.one, load.five, load.fifteen);
+    let lw = text_width(&mono, PxScale::from(14.0), &load_str);
+    draw_text_mut(&mut img, SUBTEXT, ((480 - lw) / 2).max(0), 76, PxScale::from(14.0), &mono, &load_str);
+
+    // ── Per-core bars ─────────────────────────────────────────────────────
+    let bar_area_top  = 102i32;
+    let bar_area_h    = 370i32;
+    let max_cores     = 32usize;
+    let visible       = n.min(max_cores);
+    let row_h         = (bar_area_h / visible as i32).max(10);
+    let label_w       = 34i32;
+    let pct_w         = 36i32;
+    let bar_x         = label_w + 4;
+    let bar_max_w     = 480 - bar_x - pct_w - 6;
+
+    for (i, (_name, usage)) in cores.iter().enumerate().take(visible) {
+        let y   = bar_area_top + i as i32 * row_h;
+        let bar_color = if *usage > 80.0 { RED } else if *usage > 50.0 { YELLOW } else { GREEN };
+        let fill_color = Rgb([bar_color.0[0] / 6, bar_color.0[1] / 6, bar_color.0[2] / 6]);
+
+        // Label
+        let lbl = format!("C{}", i);
+        draw_text_mut(&mut img, SUBTEXT, 4, y + 1, PxScale::from((row_h - 2).min(14) as f32), &mono, &lbl);
+
+        // Background track
+        let bar_h_draw = (row_h - 4).max(4) as u32;
+        draw_filled_rect_mut(&mut img, Rect::at(bar_x, y + 2).of_size(bar_max_w as u32, bar_h_draw), SURFACE0);
+
+        // Filled portion
+        let filled = ((bar_max_w as f32 * usage / 100.0) as i32).max(if *usage > 0.0 { 2 } else { 0 });
+        if filled > 0 {
+            draw_filled_rect_mut(&mut img, Rect::at(bar_x, y + 2).of_size(filled as u32, bar_h_draw), bar_color);
+            // Lighter fill overlay for depth
+            if filled > 4 {
+                draw_filled_rect_mut(&mut img, Rect::at(bar_x, y + 2).of_size(filled as u32, (bar_h_draw / 3).max(1)), fill_color);
+            }
+        }
+
+        // Percentage text
+        let pct_str = format!("{:.0}%", usage);
+        draw_text_mut(&mut img, TEXT,
+                      480 - pct_w - 2,
+                      y + 1,
+                      PxScale::from((row_h - 2).min(13) as f32),
+                      &mono,
+                      &pct_str);
+    }
+
+    // Separator line
+    let sep_y = bar_area_top + visible as i32 * row_h + 2;
+    if sep_y < 480 {
+        draw_filled_rect_mut(&mut img, Rect::at(0, sep_y).of_size(480, 1), SURFACE0);
+    }
+
+    DynamicImage::ImageRgb8(img)
+}
+
+#[cfg(test)]
+mod cpu_core_bars_tests {
+    use super::*;
+
+    #[test]
+    fn test_render_cpu_core_bars_size() {
+        let img = render_cpu_core_bars();
+        assert_eq!(img.width(), 480);
+        assert_eq!(img.height(), 480);
+    }
+}

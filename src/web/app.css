@@ -1359,3 +1359,122 @@ button.btn-danger:hover   { opacity: 0.85; }
 .mode-btn.hidden-by-filter {
   display: none !important;
 }
+
+/* ─── Rotation mode picker ────────────────────────────────────────────────── */
+.rot-mode-picker {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  padding: 0.5rem 0;
+  border-top: 1px solid var(--surface2);
+  border-bottom: 1px solid var(--surface2);
+  margin-bottom: 0.5rem;
+  max-height: 180px;
+  overflow-y: auto;
+}
+
+.rot-pick-btn {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.1rem;
+  padding: 0.25rem 0.45rem;
+  border-radius: 6px;
+  border: 1px solid var(--surface2);
+  background: var(--surface0);
+  color: var(--subtext0);
+  cursor: pointer;
+  font-size: 0.7rem;
+  min-width: 52px;
+  transition: background 0.15s, border-color 0.15s, color 0.15s;
+}
+
+.rot-pick-btn .rpb-emoji {
+  font-size: 1.1rem;
+  line-height: 1;
+}
+
+.rot-pick-btn .rpb-label {
+  font-size: 0.62rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 56px;
+}
+
+.rot-pick-btn:hover {
+  background: var(--surface1);
+  border-color: var(--blue);
+  color: var(--text);
+}
+
+.rot-pick-btn.rot-selected {
+  background: color-mix(in srgb, var(--blue) 20%, var(--surface0));
+  border-color: var(--blue);
+  color: var(--blue);
+  font-weight: 600;
+}
+
+.rot-selected-preview {
+  font-size: 0.8rem;
+  color: var(--overlay0);
+  padding: 0.2rem 0;
+  word-break: break-all;
+}
+
+/* ─── Mode favorites band ─────────────────────────────────────────────────── */
+.fav-band {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.4rem 0.2rem;
+  background: color-mix(in srgb, var(--yellow) 8%, var(--mantle));
+  border-radius: 6px;
+  margin-bottom: 0.6rem;
+}
+
+.fav-band-label {
+  font-size: 0.75rem;
+  font-weight: 700;
+  color: var(--yellow);
+  padding: 0 0.3rem;
+  white-space: nowrap;
+}
+
+.mode-btn.fav-btn {
+  font-size: 0.75rem;
+  padding: 0.3rem 0.55rem;
+}
+
+/* ─── Favourite star on mode buttons ──────────────────────────────────────── */
+.mode-btn {
+  position: relative;
+}
+
+.fav-star {
+  position: absolute;
+  top: 2px;
+  right: 3px;
+  font-size: 0.65rem;
+  color: var(--overlay0);
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.15s, color 0.15s;
+  z-index: 2;
+}
+
+.mode-btn:hover .fav-star,
+.mode-btn.active .fav-star {
+  opacity: 1;
+}
+
+.fav-star:hover {
+  color: var(--yellow) !important;
+}
+
+/* Show filled star always when it's a favourite */
+.fav-star:not(:empty) {
+  opacity: 1;
+}
