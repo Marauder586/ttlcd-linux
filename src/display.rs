@@ -9054,8 +9054,10 @@ fn project_cube_vertex(x: f64, y: f64, z: f64, rx: f64, ry: f64) -> (f64, f64) {
     let y2 = y1 * rx.cos() - z1 * rx.sin();
     let z2 = y1 * rx.sin() + z1 * rx.cos();
     // Perspective
-    let fov = 400.0_f64;
-    let dist = 4.0_f64;
+    // Camera far enough back that the whole cube (corner radius ≈ 2.42)
+    // stays inside the 480×480 frame at every rotation.
+    let fov = 440.0_f64;
+    let dist = 6.0_f64;
     let w = fov / (dist + z2);
     (240.0 + x2 * w, 240.0 - y2 * w)
 }
@@ -10943,26 +10945,23 @@ pub fn render_tunnel() -> DynamicImage {
             let dy = cy as f32 - 120.0;
             let dist = (dx * dx + dy * dy).sqrt().max(0.5);
 
-            // Depth brightness (close = bright)
-            let depth = (100.0 / dist).min(1.0);
+            // Depth fog: the centre is far away, the rim is close.
+            let br = (dist / 150.0).min(1.0).powf(0.8);
 
-            // Texture coords (scroll inward)
-            let ring    = (32.0 / dist + tf * 0.35) as i32;
-            let angle   = dy.atan2(dx);                    // -π .. π
-            let sector  = (angle / std::f32::consts::FRAC_PI_3) as i32;  // 6 sectors
+            // Texture coords: v runs down the tunnel (∝ 1/dist, scrolling
+            // towards the viewer), u runs around it in 12 sectors.
+            let v       = 640.0 / dist + tf * 0.12;
+            let ring    = v.floor() as i32;
+            let angle   = dy.atan2(dx) + tf * 0.004;       // slow roll
+            let sector  = (angle / (std::f32::consts::PI / 6.0)).floor() as i32;
 
-            // Checkerboard of rings × sectors → stripe index
-            let idx = if (ring.abs() + sector.abs()) % 2 == 0 {
-                ring.unsigned_abs() as usize % 6
-            } else {
-                sector.unsigned_abs() as usize % 6
-            };
-            let base = stripes[idx];
-            let br = depth.powf(1.3);
+            // Checkerboard of rings × sectors; colour cycles per ring.
+            let base = stripes[ring.rem_euclid(6) as usize];
+            let shade = if (ring + sector).rem_euclid(2) == 0 { 1.0 } else { 0.35 };
             let col = Rgb([
-                (base[0] as f32 * br) as u8,
-                (base[1] as f32 * br) as u8,
-                (base[2] as f32 * br) as u8,
+                (base[0] as f32 * br * shade) as u8,
+                (base[1] as f32 * br * shade) as u8,
+                (base[2] as f32 * br * shade) as u8,
             ]);
 
             let px = cx * 2; let py = cy * 2;
@@ -12601,11 +12600,15 @@ pub fn render_ripple() -> DynamicImage {
 
     // Drop a new "stone" every 15 ticks
     if st.tick % 15 == 0 {
-        let x = 2 + (lcg(&mut st.seed) % (W - 4) as u32) as usize;
-        let y = 2 + (lcg(&mut st.seed) % (H - 4) as u32) as usize;
-        for dy in 0..3usize {
-            for dx in 0..3usize {
-                st.field[(y + dy) * W + (x + dx)] = 0.8;
+        // Smooth (gaussian) bump — a hard-edged block rings as checkerboard noise.
+        const R: i32 = 4;
+        let x = (R + 1) as usize + (lcg(&mut st.seed) % (W as u32 - 2 * (R as u32 + 1))) as usize;
+        let y = (R + 1) as usize + (lcg(&mut st.seed) % (H as u32 - 2 * (R as u32 + 1))) as usize;
+        for dy in -R..=R {
+            for dx in -R..=R {
+                let bump = 0.9 * (-((dx * dx + dy * dy) as f32) / 5.0).exp();
+                let i = (y as i32 + dy) as usize * W + (x as i32 + dx) as usize;
+                st.field[i] = (st.field[i] + bump).min(1.0);
             }
         }
     }
@@ -12630,15 +12633,19 @@ pub fn render_ripple() -> DynamicImage {
         for cx in 0..W {
             let h  = st.field[cy * W + cx];
             let ah = h.abs();
-            let col = if ah < 0.02 {
-                BG
-            } else if h > 0.0 {
-                // Positive: teal/cyan
-                Rgb([ (ah * 80.0)  as u8, (ah * 220.0) as u8, (ah * 200.0 + 40.0).min(255.0) as u8 ])
+            // Blend from the background towards the crest/trough colour so
+            // small amplitudes fade out instead of dropping to black.
+            let target: [f32; 3] = if h > 0.0 {
+                [80.0, 220.0, 240.0]   // crest: teal/cyan
             } else {
-                // Negative: blue/purple
-                Rgb([ (ah * 60.0)  as u8, (ah * 80.0)  as u8, (ah * 255.0) as u8 ])
+                [70.0, 80.0, 255.0]    // trough: blue/purple
             };
+            let k = (ah * 4.0).min(1.0);
+            let col = Rgb([
+                (BG[0] as f32 + (target[0] - BG[0] as f32) * k) as u8,
+                (BG[1] as f32 + (target[1] - BG[1] as f32) * k) as u8,
+                (BG[2] as f32 + (target[2] - BG[2] as f32) * k) as u8,
+            ]);
             let px0 = cx as u32 * CELL;
             let py0 = cy as u32 * CELL;
             for dy in 0..CELL { for dx in 0..CELL { img.put_pixel(px0+dx, py0+dy, col); }}
@@ -14950,6 +14957,16 @@ pub fn render_network_globe() -> DynamicImage {
     const CY: f32 = 240.0;
     const R:  f32 = 180.0;
 
+    // Grid colour: fades from the background (limb) to a soft blue (centre).
+    let grid_col = |z: f32| -> Rgb<u8> {
+        let k = (z / R * 0.75 + 0.15).clamp(0.0, 1.0);
+        Rgb([
+            (BG[0] as f32 + (110.0 - BG[0] as f32) * k) as u8,
+            (BG[1] as f32 + (135.0 - BG[1] as f32) * k) as u8,
+            (BG[2] as f32 + (200.0 - BG[2] as f32) * k) as u8,
+        ])
+    };
+
     // Rotation: slowly spin the globe
     let rot_y = tf;
 
@@ -14973,9 +14990,8 @@ pub fn render_network_globe() -> DynamicImage {
             let lon2 = (i + 1) as f32 / steps as f32 * std::f32::consts::TAU;
             if let (Some((x1, y1, _z1)), Some((x2, y2, z2))) = (project(lat, lon1), project(lat, lon2)) {
                 if x1 < 480 && y1 < 480 && x2 < 480 && y2 < 480 {
-                    let bright = (z2 / R * 0.6 + 0.2) as f32;
-                    let col = Rgb([(SURFACE0[0] as f32 * bright) as u8, (SURFACE0[1] as f32 * bright) as u8, (SURFACE0[2] as f32 * bright) as u8]);
-                    img.put_pixel(x1, y1, col);
+                    imageproc::drawing::draw_line_segment_mut(
+                        &mut img, (x1 as f32, y1 as f32), (x2 as f32, y2 as f32), grid_col(z2));
                 }
             }
         }
@@ -14985,13 +15001,13 @@ pub fn render_network_globe() -> DynamicImage {
     for lon_deg in (0i32..360).step_by(20) {
         let lon = lon_deg as f32 * std::f32::consts::PI / 180.0;
         let steps = 60;
-        for i in 0..=steps {
-            let lat = (i as f32 / steps as f32 - 0.5) * std::f32::consts::PI;
-            if let Some((px, py, z)) = project(lat, lon) {
-                if px < 480 && py < 480 {
-                    let bright = (z / R * 0.6 + 0.2) as f32;
-                    let col = Rgb([(SURFACE0[0] as f32 * bright) as u8, (SURFACE0[1] as f32 * bright) as u8, (SURFACE0[2] as f32 * bright) as u8]);
-                    img.put_pixel(px, py, col);
+        for i in 0..steps {
+            let lat1 = (i as f32 / steps as f32 - 0.5) * std::f32::consts::PI;
+            let lat2 = ((i + 1) as f32 / steps as f32 - 0.5) * std::f32::consts::PI;
+            if let (Some((x1, y1, _)), Some((x2, y2, z2))) = (project(lat1, lon), project(lat2, lon)) {
+                if x1 < 480 && y1 < 480 && x2 < 480 && y2 < 480 {
+                    imageproc::drawing::draw_line_segment_mut(
+                        &mut img, (x1 as f32, y1 as f32), (x2 as f32, y2 as f32), grid_col(z2));
                 }
             }
         }
@@ -15014,7 +15030,14 @@ pub fn render_network_globe() -> DynamicImage {
         let arc_phase = (tf * 0.5 + i as f32 * 1.3).rem_euclid(2.0);
         let progress = arc_phase.min(1.0);
 
-        let steps = 30;
+        // Endpoint nodes
+        for (lat, lon) in [(lat1, lon1), (lat2, lon2)] {
+            if let Some((px, py, _)) = project(lat, lon) {
+                imageproc::drawing::draw_filled_circle_mut(&mut img, (px as i32, py as i32), 3, col);
+            }
+        }
+
+        let steps = 120;
         for s in 0..(steps as f32 * progress) as i32 {
             let t = s as f32 / steps as f32;
             let lat = lat1 + (lat2 - lat1) * t;
@@ -15023,15 +15046,19 @@ pub fn render_network_globe() -> DynamicImage {
             let lift = (t * std::f32::consts::PI).sin() * 0.3;
             let lat_lifted = lat + lift;
             if let Some((px, py, z)) = project(lat_lifted, lon) {
-                if px < 480 && py < 480 {
-                    let brightness = (1.0 - (t - 0.5).abs() * 2.0).max(0.0);
-                    let fa = brightness * 0.8 * (z / R);
-                    let bg = *img.get_pixel(px, py);
-                    img.put_pixel(px, py, Rgb([
-                        (bg[0] as f32 + col[0] as f32 * fa).min(255.0) as u8,
-                        (bg[1] as f32 + col[1] as f32 * fa).min(255.0) as u8,
-                        (bg[2] as f32 + col[2] as f32 * fa).min(255.0) as u8,
-                    ]));
+                // Bright head, dimmer tail; 2×2 dots so the arc reads as a line.
+                let head = (t / progress.max(0.01)).powi(3);
+                let fa = (0.35 + 0.65 * head) * (0.4 + 0.6 * z / R);
+                for (ox, oy) in [(0u32, 0u32), (1, 0), (0, 1), (1, 1)] {
+                    let (qx, qy) = (px + ox, py + oy);
+                    if qx < 480 && qy < 480 {
+                        let bg = *img.get_pixel(qx, qy);
+                        img.put_pixel(qx, qy, Rgb([
+                            (bg[0] as f32 * (1.0 - fa) + col[0] as f32 * fa) as u8,
+                            (bg[1] as f32 * (1.0 - fa) + col[1] as f32 * fa) as u8,
+                            (bg[2] as f32 * (1.0 - fa) + col[2] as f32 * fa) as u8,
+                        ]));
+                    }
                 }
             }
         }
@@ -16140,14 +16167,15 @@ pub fn render_smoke_plume() -> DynamicImage {
     const W: usize = 80;
     const H: usize = 120;
     const CELL: usize = 4; // scaled
-    static SMOKE_STATE: std::sync::OnceLock<std::sync::Mutex<(Vec<f32>, Vec<f32>, u32, u64)>> =
+    static SMOKE_STATE: std::sync::OnceLock<std::sync::Mutex<(Vec<f32>, u32, u64)>> =
         std::sync::OnceLock::new();
 
     let mut guard = SMOKE_STATE.get_or_init(|| {
-        std::sync::Mutex::new((vec![0.0f32; W * H], vec![0.0f32; W * H], 0xBABE_F00Du32, 0u64))
+        std::sync::Mutex::new((vec![0.0f32; W * H], 0xBABE_F00Du32, 0u64))
     }).lock().unwrap();
-    let (ref mut density, ref mut vel_y, ref mut seed, ref mut tick) = *guard;
+    let (ref mut density, ref mut seed, ref mut tick) = *guard;
     *tick += 1;
+    let tf = *tick as f32;
 
     let mut s = *seed;
     let mut rng = || -> f32 {
@@ -16155,37 +16183,38 @@ pub fn render_smoke_plume() -> DynamicImage {
         (s as f32) / (u32::MAX as f32)
     };
 
-    // Source: add density and upward velocity at bottom
+    // Source: flickering emitter along the bottom two rows
     let cx = W / 2;
-    for x in (cx.saturating_sub(3))..(cx + 4).min(W) {
-        density[x + (H - 1) * W] = (density[x + (H - 1) * W] + 1.5).min(4.0);
-        vel_y[x + (H - 1) * W] = -2.5;
+    for y in H - 2..H {
+        for x in (cx.saturating_sub(3))..(cx + 4).min(W) {
+            density[x + y * W] = (density[x + y * W] + 0.6 + rng() * 0.9).min(3.0);
+        }
     }
 
-    // Advect density upward and diffuse
+    // Advect: each cell pulls density from below (buoyant rise), with a
+    // swaying sideways drift that grows with height.
+    const RISE: f32 = 1.3;
+    let sample = |d: &[f32], x: f32, y: f32| -> f32 {
+        if x < 0.0 || y < 0.0 || x > (W - 1) as f32 || y > (H - 1) as f32 { return 0.0; }
+        let (x0, y0) = (x as usize, y as usize);
+        let (x1, y1) = ((x0 + 1).min(W - 1), (y0 + 1).min(H - 1));
+        let (fx, fy) = (x.fract(), y.fract());
+        let top = d[y0 * W + x0] * (1.0 - fx) + d[y0 * W + x1] * fx;
+        let bot = d[y1 * W + x0] * (1.0 - fx) + d[y1 * W + x1] * fx;
+        top * (1.0 - fy) + bot * fy
+    };
     let mut new_d = vec![0.0f32; W * H];
-    let mut new_v = vec![0.0f32; W * H];
-    for y in 0..H {
+    for y in 0..H - 2 {
+        let height = (H - 1 - y) as f32 / H as f32;
+        let sway = ((y as f32 * 0.07 + tf * 0.05).sin() * 0.6
+            + (y as f32 * 0.19 - tf * 0.11).sin() * 0.4) * height * 0.9;
         for x in 0..W {
-            let v = vel_y[y * W + x];
-            // Advect upward
-            let src_y = y as f32 - v;
-            let src_yi = src_y as i32;
-            let frac = src_y.fract();
-            let d = if src_yi >= 0 && src_yi < H as i32 {
-                density[src_yi as usize * W + x] * (1.0 - frac) +
-                if src_yi + 1 < H as i32 { density[(src_yi + 1) as usize * W + x] * frac } else { 0.0 }
-            } else { 0.0 };
-
-            // Add turbulent drift
-            let wobble = (rng() - 0.5) * 0.15;
-            let src_xi = (x as f32 + wobble * 2.0).round() as i32;
-            let dd = if src_xi >= 0 && src_xi < W as i32 && y > 0 {
-                density[(y - 1) * W + src_xi as usize]
-            } else { 0.0 };
-            new_d[y * W + x] = (d * 0.7 + dd * 0.25).max(0.0);
-            new_v[y * W + x] = v * 0.96;
+            let jitter = (rng() - 0.5) * 0.5;
+            new_d[y * W + x] = sample(density, x as f32 - sway + jitter, y as f32 + RISE) * 0.988;
         }
+    }
+    for y in H - 2..H {
+        for x in 0..W { new_d[y * W + x] = density[y * W + x] * 0.6; }
     }
 
     // Diffuse density horizontally (blur)
@@ -16198,7 +16227,6 @@ pub fn render_smoke_plume() -> DynamicImage {
     }
 
     *density = new_d;
-    *vel_y = new_v;
     *seed = s;
 
     let mut img = RgbImage::new(480, 480);
@@ -17037,18 +17065,15 @@ pub fn render_flow_field() -> DynamicImage {
         (s as f32) / (u32::MAX as f32)
     };
 
-    // Hash-based noise angle at position
+    // Smooth, slowly drifting angle field.  (A per-cell hash here gives a
+    // piecewise-constant field, which traps particles on cell borders and
+    // draws staircases instead of curves.)
     let noise_angle = |x: f32, y: f32, t: f32| -> f32 {
-        let ix = (x * 0.02 + t * 0.002) as i32;
-        let iy = (y * 0.02) as i32;
-        let h = ix.wrapping_mul(73856093i32).wrapping_add(iy.wrapping_mul(19349663i32)) as u32;
-        let h2 = h.wrapping_mul(2_654_435_761).wrapping_add(ix as u32);
-        let base = (h2 as f32 / u32::MAX as f32) * std::f32::consts::TAU;
-        // Second harmonic for more complex flow
-        let ix2 = (x * 0.006) as i32;
-        let iy2 = (y * 0.006 + t * 0.003) as i32;
-        let h3 = (ix2 ^ iy2).wrapping_mul(2_246_822_519u32 as i32) as u32;
-        base + (h3 as f32 / u32::MAX as f32) * 1.5
+        ((x * 0.011 + t * 0.004).sin()
+            + (y * 0.013 - t * 0.003).cos()
+            + ((x + y) * 0.007 + t * 0.002).sin()
+            + ((x - y) * 0.005).cos())
+            * std::f32::consts::PI
     };
 
     // Spawn new particles
@@ -17692,14 +17717,18 @@ pub fn render_rule_30() -> DynamicImage {
 
     let mut guard = RULE30_STATE.get_or_init(|| {
         let mut rows = vec![vec![0u8; W]; H];
-        // Seed: single 1 at center
-        rows[0][W / 2] = 1;
+        // Seed: single 1 at center of the newest (bottom) row, which is the
+        // one each tick evolves from.
+        rows[H - 1][W / 2] = 1;
         std::sync::Mutex::new((rows, 0u64))
     }).lock().unwrap();
     let (ref mut rows, ref mut tick) = *guard;
     *tick += 1;
 
     // Evolve one new row (append at bottom, drop top)
+    if rows[H - 1].iter().all(|&c| c == 0) {
+        rows[H - 1][W / 2] = 1; // pattern died out — reseed
+    }
     let last = &rows[H - 1].clone();
     let mut new_row = vec![0u8; W];
     // Alternate between Rule 30 (era 0) and Rule 90 (era 1) every 120 ticks
@@ -18142,6 +18171,161 @@ pub fn render_system_art() -> DynamicImage {
     // LOAD
     draw_text_mut(&mut img, grey,  212, 345, scale_sm,  &font, "LOAD");
     draw_text_mut(&mut img, white, 208, 363, scale_val, &font, &format!("{:.2}", load_1));
+
+    DynamicImage::ImageRgb8(img)
+}
+
+// ─── EKG rhythm strip ────────────────────────────────────────────────────────
+
+/// Heart rate shown by the EKG strip with the CPU idle.
+pub const EKG_REST_BPM: f64 = 70.0;
+/// Heart rate shown by the EKG strip with every core fully loaded.
+pub const EKG_LOAD_BPM: f64 = 160.0;
+
+/// Lead-II style ECG voltage (mV) at `dt` seconds from the R peak of a beat
+/// whose R-R interval is `rr` seconds: P wave, QRS complex and T wave as a
+/// sum of Gaussians.  As in a real heart, the QT and PR intervals shorten at
+/// faster rates so the T wave doesn't run into the next P wave.
+fn ekg_beat_mv(dt: f64, rr: f64) -> f64 {
+    let qt = (rr / 0.857).sqrt().clamp(0.6, 1.1); // Bazett-style scaling
+    let pr = 0.7 + 0.3 * qt;
+    // (amplitude mV, centre s, width s)
+    let waves = [
+        (0.16, -0.180 * pr, 0.026 * pr), // P
+        (-0.11, -0.036, 0.009),          // Q
+        (1.15, 0.000, 0.011),            // R
+        (-0.24, 0.034, 0.011),           // S
+        (0.32, 0.250 * qt, 0.052 * qt),  // T
+    ];
+    waves
+        .iter()
+        .map(|&(amp, centre, width)| amp * (-((dt - centre) / width).powi(2) / 2.0).exp())
+        .sum()
+}
+
+/// EKG rhythm strip screensaver: a sinus rhythm (P wave, QRS complex, T wave)
+/// scrolling across ECG paper at the standard 25 mm/s, 10 mm/mV.  The heart
+/// rate follows system load, from [`EKG_REST_BPM`] at 0 % CPU to
+/// [`EKG_LOAD_BPM`] at 100 %.
+pub fn render_ekg_strip() -> DynamicImage {
+    const MM: f64 = 6.0;            // pixels per millimetre of paper
+    const PX_PER_SEC: f64 = 25.0 * MM;
+    const PX_PER_MV: f64 = 10.0 * MM;
+    const BASELINE: f64 = 300.0;
+
+    struct EkgState {
+        start: std::time::Instant,
+        /// (R-peak time in seconds since `start`, R-R interval), oldest first.
+        beats: std::collections::VecDeque<(f64, f64)>,
+        seed: u32,
+        /// Kept alive between frames: CPU usage is a delta between refreshes.
+        sys: System,
+        cpu_sampled_at: f64,
+        cpu_pct: f64,
+        /// Current heart rate, easing towards the rate the load calls for.
+        bpm: f64,
+        last_frame: f64,
+    }
+    static EKG_STATE: OnceLock<std::sync::Mutex<EkgState>> = OnceLock::new();
+    let mut guard = EKG_STATE
+        .get_or_init(|| {
+            let mut sys = System::new();
+            sys.refresh_cpu_usage();
+            std::sync::Mutex::new(EkgState {
+                start: std::time::Instant::now(),
+                beats: std::collections::VecDeque::from([(0.4, 60.0 / EKG_REST_BPM)]),
+                seed: 0x0E_C6_BEA7,
+                sys,
+                cpu_sampled_at: 0.0,
+                cpu_pct: 0.0,
+                bpm: EKG_REST_BPM,
+                last_frame: 0.0,
+            })
+        })
+        .lock()
+        .unwrap();
+    let st = &mut *guard;
+
+    let now = st.start.elapsed().as_secs_f64();
+    let window = 480.0 / PX_PER_SEC;
+
+    // Sample CPU load twice a second and ease the heart rate towards its
+    // target over a few seconds, the way a real pulse ramps up and settles.
+    if now - st.cpu_sampled_at >= 0.5 {
+        st.sys.refresh_cpu_usage();
+        st.cpu_pct = st.sys.global_cpu_usage().clamp(0.0, 100.0) as f64;
+        st.cpu_sampled_at = now;
+    }
+    let target = EKG_REST_BPM + (EKG_LOAD_BPM - EKG_REST_BPM) * st.cpu_pct / 100.0;
+    let dt = (now - st.last_frame).clamp(0.0, 1.0);
+    st.last_frame = now;
+    st.bpm += (target - st.bpm) * (1.0 - (-dt / 2.5).exp());
+
+    // Schedule beats a little past "now", with mild sinus arrhythmia.
+    while st.beats.back().unwrap().0 < now + 1.0 {
+        st.seed = st.seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+        let jitter = (st.seed >> 8) as f64 / (1u32 << 24) as f64 - 0.5;
+        let last = st.beats.back().unwrap().0;
+        let rr = 60.0 / st.bpm
+            * (1.0 + 0.03 * (last * 0.25 * std::f64::consts::TAU).sin() + 0.02 * jitter);
+        st.beats.push_back((last + rr, rr));
+    }
+    while st.beats.len() > 2 && st.beats[1].0 < now - window - 1.0 {
+        st.beats.pop_front();
+    }
+
+    let beats = &st.beats;
+    let mv_at = |t: f64| -> f64 {
+        beats.iter().filter(|(b, _)| (t - b).abs() < 0.6).map(|&(b, rr)| ekg_beat_mv(t - b, rr)).sum()
+    };
+
+    // Paper: 1 mm minor and 5 mm major grid, scrolling with the trace.
+    const PAPER: Rgb<u8> = Rgb([255, 245, 240]);
+    const MINOR: Rgb<u8> = Rgb([248, 208, 204]);
+    const MAJOR: Rgb<u8> = Rgb([234, 150, 150]);
+    const INK: Rgb<u8> = Rgb([28, 28, 36]);
+    let scroll = (now * PX_PER_SEC) as i64;
+    let mut img = RgbImage::from_pixel(480, 480, PAPER);
+    for (step, color) in [(MM as i64, MINOR), (5 * MM as i64, MAJOR)] {
+        for x in 0..480i64 {
+            if (x + scroll).rem_euclid(step) == 0 {
+                for y in 0..480 { img.put_pixel(x as u32, y, color); }
+            }
+        }
+        for y in (0..480i64).filter(|y| y % step == 0) {
+            for x in 0..480 { img.put_pixel(x, y as u32, color); }
+        }
+    }
+
+    // Trace: the newest sample is at the right-hand edge.
+    let y_at = |x: i32| (BASELINE - mv_at(now - (479 - x) as f64 / PX_PER_SEC) * PX_PER_MV) as f32;
+    let mut prev = y_at(0);
+    for x in 1..480 {
+        let y = y_at(x);
+        for (ox, oy) in [(0.0, 0.0), (0.0, 1.0), (1.0, 0.0), (0.0, -1.0)] {
+            imageproc::drawing::draw_line_segment_mut(
+                &mut img,
+                ((x - 1) as f32 + ox, prev + oy),
+                (x as f32 + ox, y + oy),
+                INK,
+            );
+        }
+        prev = y;
+    }
+
+    // Labels, as printed along the top of a rhythm strip.
+    let bpm = beats
+        .iter()
+        .rev()
+        .find(|(b, _)| *b <= now)
+        .map_or(st.bpm, |&(_, rr)| 60.0 / rr)
+        .round() as u32;
+    let font = font_bold();
+    draw_filled_rect_mut(&mut img, Rect::at(0, 0).of_size(480, 44), PAPER);
+    draw_text_mut(&mut img, INK, 14, 10, PxScale::from(26.0), &font, "II");
+    draw_text_mut(&mut img, INK, 62, 15, PxScale::from(17.0), &font, "25 mm/s   10 mm/mV");
+    draw_text_mut(&mut img, INK, 262, 15, PxScale::from(17.0), &font, &format!("CPU {:.0}%", st.cpu_pct));
+    draw_text_mut(&mut img, Rgb([200, 40, 60]), 356, 10, PxScale::from(26.0), &font, &format!("HR {bpm}"));
 
     DynamicImage::ImageRgb8(img)
 }

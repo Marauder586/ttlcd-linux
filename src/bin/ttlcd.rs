@@ -115,7 +115,7 @@ use ttlcd::{
     render_neural_net, render_ribbon_dance, render_hex_plasma,
     render_sand_waterfall, render_magnetic_field, render_smoke_plume, render_color_mosaic,
     render_solar_system, render_lightning_storm, render_spirograph, render_fractal_tree, render_bubble_rise,
-        render_plasma_ball, render_moss_growth, render_asteroid_field,
+        render_plasma_ball, render_moss_growth, render_asteroid_field, render_ekg_strip,
         read_docker_containers,
         read_user_sessions,
         HttpMonitorResult,
@@ -236,8 +236,9 @@ enum Cmd {
     Daemon {
         #[arg(long, default_value_t = 7070)]
         port: u16,
-        /// Bind address. Use 127.0.0.1 to restrict to localhost only.
-        #[arg(long, default_value = "0.0.0.0")]
+        /// Bind address. Must be a loopback address: the web UI and API are
+        /// unauthenticated and only served to this machine.
+        #[arg(long, default_value = "127.0.0.1")]
         bind: String,
         #[arg(long, default_value = "clock_sysinfo", value_parser = parse_mode)]
         mode: String,
@@ -517,6 +518,38 @@ struct PersistedState {
     rotate_deg: Option<u16>,
     /// Brightness factor 0.0–1.0.
     brightness: Option<f32>,
+    /// Pet cat coat / environment / background colour.
+    #[serde(default)]
+    pet:        Option<PetSettings>,
+}
+
+/// Pet cat settings as exposed by `/api/pet` and stored in the state file.
+#[derive(serde::Serialize, serde::Deserialize, Clone)]
+struct PetSettings {
+    coat:        String,
+    environment: String,
+    /// `#rrggbb`, used by the `solid` environment.
+    background:  String,
+}
+
+impl PetSettings {
+    fn current() -> Self {
+        let cfg = ttlcd::pet::config();
+        Self {
+            coat:        cfg.coat.as_str().to_string(),
+            environment: cfg.environment.as_str().to_string(),
+            background:  ttlcd::pet::format_hex_color(cfg.background),
+        }
+    }
+
+    /// Apply to the live pet, ignoring any field that doesn't parse.
+    fn apply(&self) {
+        let mut cfg = ttlcd::pet::config();
+        if let Some(c) = ttlcd::pet::Coat::from_str_name(&self.coat) { cfg.coat = c; }
+        if let Some(e) = ttlcd::pet::Environment::from_str_name(&self.environment) { cfg.environment = e; }
+        if let Some(b) = ttlcd::pet::parse_hex_color(&self.background) { cfg.background = b; }
+        ttlcd::pet::set_config(cfg);
+    }
 }
 
 fn load_persisted_state() -> PersistedState {
@@ -549,6 +582,7 @@ fn persist_state(state: &DaemonState) {
         quality:    Some(*state.quality.lock().unwrap()),
         rotate_deg: Some(*state.rotate_deg.lock().unwrap()),
         brightness: Some(*state.dim_factor.lock().unwrap()),
+        pet:        Some(PetSettings::current()),
     };
     save_persisted_state(&ps);
 }
@@ -603,25 +637,32 @@ fn main() -> Result<()> {
             if !no_init { panel.init()?; }
             if letterbox { panel.send_jpeg(&letterbox_for_panel(&img, quality)?)?; }
             else         { panel.send_image(&img, quality)?; }
-            log::info!("frame sent");
+            log::info!("frame sent — holding (Ctrl-C to exit)");
+            panel.hold();
         }
 
         Cmd::Test { quality, no_init } => {
             let mut panel = open_panel(cli.vid, cli.pid, cli.reset)?;
             if !no_init { panel.init()?; }
             panel.send_image(&test_pattern(), quality)?;
+            log::info!("frame sent — holding (Ctrl-C to exit)");
+            panel.hold();
         }
 
         Cmd::Testcard { quality, no_init } => {
             let mut panel = open_panel(cli.vid, cli.pid, cli.reset)?;
             if !no_init { panel.init()?; }
             panel.send_image(&render_test_card(), quality)?;
+            log::info!("frame sent — holding (Ctrl-C to exit)");
+            panel.hold();
         }
 
         Cmd::Solid { r, g, b, quality, no_init } => {
             let mut panel = open_panel(cli.vid, cli.pid, cli.reset)?;
             if !no_init { panel.init()?; }
             panel.send_image(&render_solid(r, g, b), quality)?;
+            log::info!("frame sent — holding (Ctrl-C to exit)");
+            panel.hold();
         }
 
         Cmd::Sysinfo { interval, quality, no_init } => {
@@ -921,6 +962,8 @@ enum DisplayMode {
     FractalTree,
     BubbleRise,
     AsteroidField,
+    PetCat,
+    EkgStrip,
     Idle,
     CustomImage,
     CustomText,
@@ -929,8 +972,32 @@ enum DisplayMode {
 
 impl DisplayMode {
     const ALL_NAMES: &'static [&'static str] = &[
-        "clock", "big_clock", "clock_sysinfo", "sysinfo", "cpu_detail",
-        "network", "disk_usage", "process_top", "temperature", "memory_detail", "countdown", "cpu_graph", "net_graph", "recent_alerts", "process_memory", "disk_io", "calendar", "stopwatch", "metrics", "weather", "notes", "qr_code", "pomodoro", "battery", "world_clock", "ticker", "http_status", "shell_cmd", "ping_monitor", "dashboard", "log_tail", "cpu_freq", "hostname_ip", "rss_feed", "service_status", "net_connections", "uptime_fancy", "os_info", "docker_status", "logged_in_users", "load_graph", "mem_graph", "progress", "matrix_rain", "temp_graph", "disk_io_graph", "graphs_overview", "analog_clock", "ping_graph", "status_overview", "game_of_life", "led_clock", "bounce_ball", "net_speed_graph", "cpu_core_bars", "speedometer_gauge", "disk_pie", "thermal_dashboard", "plasma", "fireworks", "cpu_heatmap", "starfield", "pulse", "minimal_clock", "particle_clock", "snake", "cube_3d", "dvd_bounce", "binary_clock", "radar", "oscilloscope", "lissajous", "pong", "neon_clock", "net_heatmap", "word_clock", "breakout", "spectrum", "doom_fire", "boids", "tunnel", "aurora", "metaballs", "sand", "gravity", "voronoi", "reaction_diffusion", "snowfall", "hex_grid", "bubble_chart", "conway_colors", "julia_set", "confetti", "cpu_3d_bars", "system_health", "neon_grid", "ripple", "hypno", "lorenz", "mandelbrot", "kaleidoscope", "dna_helix", "rain_glass", "perlin_terrain", "fire_text", "disco_floor", "heartbeat", "clock_faces", "waveform_bars", "city_skyline", "neon_sign", "gradient_clock", "galaxy", "ocean_waves", "warp_speed", "morphing_blobs", "clock_matrix", "sierpinski", "lava_lamp", "pendulum_wave", "fiber_optic", "network_globe", "plasma_ball", "moss_growth", "torus", "lemniscate", "system_art", "torus", "lemniscate", "fourier_epicycles", "rule_30", "nbody_gravity", "fourier_epicycles", "rule_30", "nbody_gravity", "double_pendulum", "rose_curve", "truchet", "double_pendulum", "rose_curve", "truchet", "mandala", "flow_field", "glitch_art", "mandala", "flow_field", "glitch_art", "wave_interference", "clifford_attractor", "icosahedron", "wave_interference", "clifford_attractor", "icosahedron", "neural_net", "ribbon_dance", "hex_plasma", "neural_net", "ribbon_dance", "hex_plasma", "sand_waterfall", "magnetic_field", "smoke_plume", "color_mosaic", "sand_waterfall", "magnetic_field", "smoke_plume", "color_mosaic", "solar_system", "lightning_storm", "spirograph", "fractal_tree", "bubble_rise", "asteroid_field", "idle",
+        "clock", "big_clock", "clock_sysinfo", "sysinfo", "cpu_detail", "network",
+        "disk_usage", "process_top", "temperature", "memory_detail", "countdown", "cpu_graph",
+        "net_graph", "recent_alerts", "process_memory", "disk_io", "calendar", "stopwatch",
+        "metrics", "weather", "notes", "qr_code", "pomodoro", "battery",
+        "world_clock", "ticker", "http_status", "shell_cmd", "ping_monitor", "dashboard",
+        "log_tail", "cpu_freq", "hostname_ip", "rss_feed", "service_status", "net_connections",
+        "uptime_fancy", "os_info", "docker_status", "logged_in_users", "load_graph", "mem_graph",
+        "progress", "matrix_rain", "temp_graph", "disk_io_graph", "graphs_overview", "analog_clock",
+        "ping_graph", "status_overview", "game_of_life", "led_clock", "bounce_ball", "net_speed_graph",
+        "cpu_core_bars", "speedometer_gauge", "disk_pie", "thermal_dashboard", "plasma", "fireworks",
+        "cpu_heatmap", "starfield", "pulse", "minimal_clock", "particle_clock", "snake",
+        "cube_3d", "dvd_bounce", "binary_clock", "radar", "oscilloscope", "lissajous",
+        "pong", "neon_clock", "net_heatmap", "word_clock", "breakout", "spectrum",
+        "doom_fire", "boids", "tunnel", "aurora", "metaballs", "sand",
+        "gravity", "voronoi", "reaction_diffusion", "snowfall", "hex_grid", "bubble_chart",
+        "conway_colors", "julia_set", "confetti", "cpu_3d_bars", "system_health", "neon_grid",
+        "ripple", "hypno", "lorenz", "mandelbrot", "kaleidoscope", "dna_helix",
+        "rain_glass", "perlin_terrain", "fire_text", "disco_floor", "heartbeat", "clock_faces",
+        "waveform_bars", "city_skyline", "neon_sign", "gradient_clock", "galaxy", "ocean_waves",
+        "warp_speed", "morphing_blobs", "clock_matrix", "sierpinski", "lava_lamp", "pendulum_wave",
+        "fiber_optic", "network_globe", "plasma_ball", "moss_growth", "torus", "lemniscate",
+        "system_art", "fourier_epicycles", "rule_30", "nbody_gravity", "double_pendulum", "rose_curve",
+        "truchet", "mandala", "flow_field", "glitch_art", "wave_interference", "clifford_attractor",
+        "icosahedron", "neural_net", "ribbon_dance", "hex_plasma", "sand_waterfall", "magnetic_field",
+        "smoke_plume", "color_mosaic", "solar_system", "lightning_storm", "spirograph", "fractal_tree",
+        "bubble_rise", "asteroid_field", "pet_cat", "ekg_strip", "idle",
     ];
 
     fn from_str_name(s: &str) -> Option<Self> {
@@ -979,6 +1046,9 @@ impl DisplayMode {
             "mem_graph"        => Some(DisplayMode::MemGraph),
             "progress"         => Some(DisplayMode::Progress),
             "matrix_rain"      => Some(DisplayMode::MatrixRain),
+            "temp_graph"       => Some(DisplayMode::TempGraph),
+            "disk_io_graph"    => Some(DisplayMode::DiskIoGraph),
+            "graphs_overview"  => Some(DisplayMode::GraphsOverview),
             "analog_clock"      => Some(DisplayMode::AnalogClock),
             "ping_graph"        => Some(DisplayMode::PingGraph),
             "status_overview"   => Some(DisplayMode::StatusOverview),
@@ -1084,6 +1154,8 @@ impl DisplayMode {
             "fractal_tree"   => Some(DisplayMode::FractalTree),
             "bubble_rise"   => Some(DisplayMode::BubbleRise),
             "asteroid_field"   => Some(DisplayMode::AsteroidField),
+            "pet_cat"          => Some(DisplayMode::PetCat),
+            "ekg_strip"        => Some(DisplayMode::EkgStrip),
             "idle"             => Some(DisplayMode::Idle),
             "custom_text"   => Some(DisplayMode::CustomText),
             "slideshow"     => Some(DisplayMode::Slideshow),
@@ -1245,6 +1317,8 @@ impl DisplayMode {
             DisplayMode::FractalTree  => "fractal_tree",
             DisplayMode::BubbleRise  => "bubble_rise",
             DisplayMode::AsteroidField => "asteroid_field",
+            DisplayMode::PetCat         => "pet_cat",
+            DisplayMode::EkgStrip       => "ekg_strip",
             DisplayMode::Idle           => "idle",
             DisplayMode::CustomImage  => "image",
             DisplayMode::CustomText   => "custom_text",
@@ -1876,6 +1950,7 @@ async fn run_daemon(
     let quality     = persisted.quality.unwrap_or(quality);
     let rotate_deg  = persisted.rotate_deg.unwrap_or(rotate_deg);
     let init_brightness = persisted.brightness.unwrap_or(1.0);
+    if let Some(pet) = &persisted.pet { pet.apply(); }
     if persisted.mode.is_some() {
         log::info!("restored persisted state: mode={} quality={} rotate={}°",
             initial_mode.as_str(), quality, rotate_deg);
@@ -2434,6 +2509,9 @@ async fn run_daemon(
             .route("/api/screensaver",       web::post().to(api_set_screensaver))
             .route("/api/screensaver",       web::delete().to(api_clear_screensaver))
             .route("/api/screensaver/wake",  web::post().to(api_screensaver_wake))
+            // Pet cat
+            .route("/api/pet",               web::get().to(api_get_pet))
+            .route("/api/pet",               web::post().to(api_set_pet))
             .route("/api/night",             web::get().to(api_get_night_mode))
             .route("/api/night",             web::post().to(api_set_night_mode))
             .route("/api/modes/catalog",     web::get().to(api_modes_catalog))
@@ -2445,7 +2523,7 @@ async fn run_daemon(
             .route("/static/app.js",      web::get().to(web_ui_js))
             .route("/manifest.json",      web::get().to(web_ui_manifest))
     })
-    .bind((bind.as_str(), port))?
+    .bind((require_loopback(&bind)?, port))?
     .run();
 
     let handle = server.handle();
@@ -2515,6 +2593,32 @@ fn update_fps(state: &DaemonState) {
 
 // ─── Display loop ─────────────────────────────────────────────────────────────
 
+/// The web UI / API is unauthenticated, so it is only ever served on a
+/// loopback address.  Returns the address to bind, or an error for anything
+/// that would expose it to the network.
+fn require_loopback(bind: &str) -> Result<std::net::IpAddr> {
+    let ip: std::net::IpAddr = if bind.eq_ignore_ascii_case("localhost") {
+        std::net::Ipv4Addr::LOCALHOST.into()
+    } else {
+        bind.parse().with_context(|| format!("invalid bind address '{bind}'"))?
+    };
+    anyhow::ensure!(
+        ip.is_loopback(),
+        "refusing to bind the web UI to {ip}: only loopback addresses (127.0.0.1, ::1) are allowed"
+    );
+    Ok(ip)
+}
+
+/// Sleep for `dur`, returning early if the active display mode changes.
+fn sleep_unless_mode_changes(state: &DaemonState, mode: &DisplayMode, dur: Duration) {
+    let deadline = std::time::Instant::now() + dur;
+    loop {
+        let left = deadline.saturating_duration_since(std::time::Instant::now());
+        if left.is_zero() || *state.mode.lock().unwrap() != *mode { return; }
+        thread::sleep(left.min(Duration::from_millis(50)));
+    }
+}
+
 fn display_loop(panel: Arc<Mutex<Option<Panel>>>, state: DaemonState) {
     let mut consecutive_errors: u32 = 0;
     loop {
@@ -2555,6 +2659,9 @@ fn display_loop(panel: Arc<Mutex<Option<Panel>>>, state: DaemonState) {
         }
 
         let mut mode = state.mode.lock().unwrap().clone();
+        // Sleep between frames, but wake early when the mode is switched.
+        let requested = mode.clone();
+        let nap = |d: Duration| sleep_unless_mode_changes(&state, &requested, d);
         let quality    = *state.quality.lock().unwrap();
         let rotate_deg = *state.rotate_deg.lock().unwrap();
 
@@ -2563,7 +2670,7 @@ fn display_loop(panel: Arc<Mutex<Option<Panel>>>, state: DaemonState) {
             if *state.frozen.lock().unwrap() {
                 let mut g = panel.lock().unwrap();
                 if let Some(p) = g.as_mut() { p.keepalive()?; }
-                thread::sleep(Duration::from_secs(2));
+                nap(Duration::from_secs(2));
                 return Ok(());
             }
 
@@ -2579,7 +2686,7 @@ fn display_loop(panel: Arc<Mutex<Option<Panel>>>, state: DaemonState) {
                         let jpeg = store_frame(&state, jpeg);
                         let mut g = panel.lock().unwrap();
                         if let Some(p) = g.as_mut() { p.send_jpeg(&jpeg)?; }
-                        thread::sleep(Duration::from_secs(1));
+                        nap(Duration::from_secs(1));
                         return Ok(());
                     } else {
                         // Expired — clear it
@@ -2609,7 +2716,7 @@ fn display_loop(panel: Arc<Mutex<Option<Panel>>>, state: DaemonState) {
                 DisplayMode::Idle => {
                     let mut g = panel.lock().unwrap();
                     if let Some(p) = g.as_mut() { p.keepalive()?; }
-                    thread::sleep(Duration::from_secs(2));
+                    nap(Duration::from_secs(2));
                     return Ok(());
                 }
                 DisplayMode::CustomImage => {
@@ -2622,7 +2729,7 @@ fn display_loop(panel: Arc<Mutex<Option<Panel>>>, state: DaemonState) {
                         let mut g = panel.lock().unwrap();
                         if let Some(p) = g.as_mut() { p.keepalive()?; }
                     }
-                    thread::sleep(Duration::from_secs(2));
+                    nap(Duration::from_secs(2));
                     return Ok(());
                 }
                 DisplayMode::CustomText => {
@@ -2656,7 +2763,7 @@ fn display_loop(panel: Arc<Mutex<Option<Panel>>>, state: DaemonState) {
                         let mut g = panel.lock().unwrap();
                         if let Some(p) = g.as_mut() { p.keepalive()?; }
                     }
-                    thread::sleep(Duration::from_secs(2));
+                    nap(Duration::from_secs(2));
                     return Ok(());
                 }
                 DisplayMode::Slideshow => {
@@ -2671,7 +2778,7 @@ fn display_loop(panel: Arc<Mutex<Option<Panel>>>, state: DaemonState) {
                         let jpeg = store_frame(&state, encode_for_panel(&placeholder, quality)?);
                         let mut g = panel.lock().unwrap();
                         if let Some(p) = g.as_mut() { p.send_jpeg(&jpeg)?; }
-                        thread::sleep(Duration::from_secs(2));
+                        nap(Duration::from_secs(2));
                         return Ok(());
                     }
                     let idx = {
@@ -2687,7 +2794,7 @@ fn display_loop(panel: Arc<Mutex<Option<Panel>>>, state: DaemonState) {
                     let jpeg = letterbox_for_panel(&img, quality)?;
                     let jpeg = store_frame(&state, jpeg);
                     { let mut g = panel.lock().unwrap(); if let Some(p) = g.as_mut() { p.send_jpeg(&jpeg)?; } }
-                    thread::sleep(Duration::from_secs(interval));
+                    nap(Duration::from_secs(interval));
                     return Ok(());
                 }
                 _ => {}
@@ -3003,6 +3110,8 @@ fn display_loop(panel: Arc<Mutex<Option<Panel>>>, state: DaemonState) {
                 DisplayMode::FractalTree  => (render_fractal_tree(), 0),
                 DisplayMode::BubbleRise  => (render_bubble_rise(), 0),
                 DisplayMode::AsteroidField => (render_asteroid_field(), 0),
+                DisplayMode::PetCat => (ttlcd::pet::render_pet_cat(), 0),
+                DisplayMode::EkgStrip => (render_ekg_strip(), 0),
                 DisplayMode::MatrixRain => (render_matrix_rain(), 0),
                 DisplayMode::Idle
                 | DisplayMode::CustomImage
@@ -3064,7 +3173,7 @@ fn display_loop(panel: Arc<Mutex<Option<Panel>>>, state: DaemonState) {
             consecutive_errors = 0;
             if !state.headless { *state.panel_connected.lock().unwrap() = true; }
             if sleep_secs > 0 {
-                thread::sleep(Duration::from_secs(sleep_secs));
+                nap(Duration::from_secs(sleep_secs));
             } else {
                 // Continuous modes (sleep_secs==0): yield briefly so other threads run.
                 thread::sleep(Duration::from_millis(16));
@@ -4514,6 +4623,8 @@ async fn api_modes_list() -> impl Responder {
         ModeInfo { name: "fractal_tree", description: "Fractal tree — iterative fractal tree with wind sway animation" },
         ModeInfo { name: "bubble_rise", description: "Bubble rise — physics-based coloured bubbles with specular highlights rising in water" },
         ModeInfo { name: "asteroid_field", description: "Asteroid field — tumbling rocky asteroids drifting through a star field" },
+        ModeInfo { name: "pet_cat",        description: "Pet cat — pixel-art cat that sleeps, grooms, stretches and plays with a ball; coat and room are configurable" },
+        ModeInfo { name: "ekg_strip",      description: "EKG rhythm strip — P wave, QRS complex and T wave on scrolling ECG paper; heart rate follows CPU load (70 bpm idle to 160 bpm)" },
         ModeInfo { name: "idle",           description: "Keepalive — no display update, prevents blank" },
     ];
     HttpResponse::Ok().json(modes)
@@ -4856,6 +4967,8 @@ async fn api_benchmark(state: web::Data<DaemonState>) -> impl Responder {
                 DisplayMode::PlasmaBall      => render_plasma_ball(),
                 DisplayMode::MossGrowth      => render_moss_growth(),
                 DisplayMode::AsteroidField   => render_asteroid_field(),
+                DisplayMode::PetCat          => ttlcd::pet::render_pet_cat(),
+                DisplayMode::EkgStrip        => render_ekg_strip(),
                 DisplayMode::SolarSystem     => render_solar_system(),
                 DisplayMode::LightningStorm  => render_lightning_storm(),
                 DisplayMode::Spirograph      => render_spirograph(),
@@ -6865,6 +6978,8 @@ async fn api_status_badge(state: web::Data<DaemonState>) -> impl Responder {
         "fractal_tree"                          => "#a6e3a1",
         "bubble_rise"                          => "#89dceb",
         "asteroid_field"                       => "#f9e2af",  // yellow
+        "pet_cat"                              => "#fab387",  // peach
+        "ekg_strip"                            => "#f38ba8",  // red
         "status_overview"                      => "#89dceb",  // sky
         "analog_clock"                         => "#cba6f7",  // mauve
         "net_speed_graph"                      => "#a6e3a1",  // green
@@ -7179,7 +7294,7 @@ async fn api_modes_catalog(_state: web::Data<DaemonState>) -> impl Responder {
             "city_skyline"|"neon_sign"|"galaxy"|"ocean_waves"|"warp_speed"|"morphing_blobs" => "fun",
             "clock_matrix" => "clock",
             "sierpinski"|"lava_lamp"|"pendulum_wave"|"fiber_optic"|"network_globe"|
-            "plasma_ball"|"moss_growth"|"asteroid_field"|"solar_system"|"lightning_storm"|"bubble_rise"|
+            "plasma_ball"|"moss_growth"|"asteroid_field"|"pet_cat"|"ekg_strip"|"solar_system"|"lightning_storm"|"bubble_rise"|
             "spirograph"|"fractal_tree"|"sand_waterfall"|"magnetic_field"|"smoke_plume"|"color_mosaic"|
             "neural_net"|"ribbon_dance"|"hex_plasma"|"wave_interference"|"clifford_attractor"|"icosahedron"|
             "mandala"|"flow_field"|"glitch_art"|"double_pendulum"|"rose_curve"|"truchet"|"fourier_epicycles"|"rule_30"|"nbody_gravity"|"torus"|"lemniscate" => "fun",
@@ -7299,6 +7414,8 @@ async fn api_modes_info() -> impl Responder {
         ModeInfo { name: "dashboard",      description: "Four-quadrant overview: clock, CPU/RAM, network, temperature" },
         ModeInfo { name: "log_tail",       description: "Live log tail viewer — configure file via POST /api/log_tail" },
         ModeInfo { name: "cpu_freq",       description: "Per-core CPU clock frequency grid (reads /proc/cpuinfo)" },
+        ModeInfo { name: "pet_cat",        description: "Pet cat — pixel-art cat that sleeps, grooms, stretches and plays with a ball; coat and room are configurable" },
+        ModeInfo { name: "ekg_strip",      description: "EKG rhythm strip — P wave, QRS complex and T wave on scrolling ECG paper; heart rate follows CPU load (70 bpm idle to 160 bpm)" },
         ModeInfo { name: "idle",           description: "Keepalive — no display update" },
     ];
     HttpResponse::Ok().json(modes)
@@ -10138,6 +10255,8 @@ async fn api_render_mode_preview(
             DisplayMode::FractalTree  => render_fractal_tree(),
             DisplayMode::BubbleRise  => render_bubble_rise(),
             DisplayMode::AsteroidField => render_asteroid_field(),
+            DisplayMode::PetCat => ttlcd::pet::render_pet_cat(),
+            DisplayMode::EkgStrip => render_ekg_strip(),
             DisplayMode::ConwayColors  => render_conway_colors(),
             DisplayMode::Cpu3dBars     => render_cpu_3d_bars(),
             DisplayMode::SystemHealth  => render_system_health(),
@@ -10288,6 +10407,59 @@ async fn api_get_screensaver(state: web::Data<DaemonState>) -> impl Responder {
         "active": active,
         "seconds_since_activity": since_activity,
     }))
+}
+
+// ── /api/pet ─────────────────────────────────────────────────────────────────
+
+fn pet_json() -> serde_json::Value {
+    let cur = PetSettings::current();
+    serde_json::json!({
+        "coat": cur.coat,
+        "environment": cur.environment,
+        "background": cur.background,
+        "coats": ttlcd::pet::Coat::ALL.map(|c| c.as_str()),
+        "environments": ttlcd::pet::Environment::ALL.map(|e| e.as_str()),
+    })
+}
+
+/// GET /api/pet — current pet cat settings plus the allowed values.
+async fn api_get_pet() -> impl Responder {
+    HttpResponse::Ok().json(pet_json())
+}
+
+#[derive(Deserialize)]
+struct PetUpdate {
+    coat:        Option<String>,
+    environment: Option<String>,
+    background:  Option<String>,
+}
+
+/// POST /api/pet — update any subset of `coat`, `environment`, `background`
+/// (`#rrggbb`).  Unknown values are rejected and nothing is changed.
+async fn api_set_pet(state: web::Data<DaemonState>, body: web::Json<PetUpdate>) -> impl Responder {
+    let bad = |msg: String| HttpResponse::BadRequest().json(serde_json::json!({ "error": msg }));
+    let mut cfg = ttlcd::pet::config();
+    if let Some(v) = &body.coat {
+        match ttlcd::pet::Coat::from_str_name(v) {
+            Some(c) => cfg.coat = c,
+            None => return bad(format!("unknown coat '{v}'")),
+        }
+    }
+    if let Some(v) = &body.environment {
+        match ttlcd::pet::Environment::from_str_name(v) {
+            Some(e) => cfg.environment = e,
+            None => return bad(format!("unknown environment '{v}'")),
+        }
+    }
+    if let Some(v) = &body.background {
+        match ttlcd::pet::parse_hex_color(v) {
+            Some(b) => cfg.background = b,
+            None => return bad(format!("background must be #rrggbb, got '{v}'")),
+        }
+    }
+    ttlcd::pet::set_config(cfg);
+    persist_state(&state);
+    HttpResponse::Ok().json(pet_json())
 }
 
 #[derive(Deserialize)]

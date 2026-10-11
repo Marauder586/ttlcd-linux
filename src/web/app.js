@@ -3850,7 +3850,7 @@ async function fetchThresholds() {
 
 async function fetchScreensaverStatus() {
   try {
-    const data = await api('GET', '/api/screensaver');
+    const data = await apiJson('GET', '/api/screensaver');
     const line = document.getElementById('screensaver-status-line');
     if (!line) return;
     if (data.enabled) {
@@ -5096,4 +5096,146 @@ log('ttlcd web UI connected');
       showToast('Next mode ▶', 'info', 1800);
     }
   }, { passive: true });
+})();
+
+
+// ─── Mode preview popup on hover ──────────────────────────────────────────────
+(function initModePreviewPopup() {
+  const DELAY_MS = 250;   // ms before popup appears
+  const POPUP_W  = 196;   // must match CSS width (border-box)
+  const POPUP_H  = 225;   // approx total popup height for flip detection
+
+  // ── Build one shared popup element injected into <body> ──────────────────
+  const popup = document.createElement('div');
+  popup.className = 'mode-preview-popup';
+  popup.innerHTML = `
+    <img class="mpop-img" src="" alt="" />
+    <div class="mpop-name"></div>
+    <div class="mpop-cat"></div>
+    <div class="mpop-caret"></div>
+  `;
+  document.body.appendChild(popup);
+
+  const popImg   = popup.querySelector('.mpop-img');
+  const popName  = popup.querySelector('.mpop-name');
+  const popCat   = popup.querySelector('.mpop-cat');
+  const popCaret = popup.querySelector('.mpop-caret');
+
+  let hoverTimer = null;
+  let activeMode = null;
+
+  // Cache of modes whose images have been successfully loaded at least once
+  const loadedModes = new Set();
+
+  function positionPopup(btn) {
+    const rect = btn.getBoundingClientRect();
+    const vw   = window.innerWidth;
+
+    // Centre horizontally above the button
+    let left = rect.left + rect.width  / 2 - POPUP_W / 2;
+    let top  = rect.top  - POPUP_H - 10;
+    let flipDown = top < 8;
+
+    if (flipDown) top = rect.bottom + 10;
+
+    // Clamp to viewport horizontal bounds
+    left = Math.max(8, Math.min(left, vw - POPUP_W - 8));
+
+    popup.style.left = left + 'px';
+    popup.style.top  = top  + 'px';
+    popup.classList.toggle('flip-down', flipDown);
+
+    // Align caret to the button midpoint
+    const caretX = (rect.left + rect.width / 2) - left;
+    popCaret.style.left = Math.max(14, Math.min(caretX, POPUP_W - 14)) + 'px';
+  }
+
+  function showFor(btn) {
+    const mode = btn.dataset.mode;
+    activeMode = mode;
+
+    // Fill text immediately
+    popName.textContent = mode.replace(/_/g, ' ');
+    popCat.textContent  = (btn.dataset.cat || '').replace(/_/g, ' ');
+
+    // Set image URL (browser caches JPEG responses from /api/render)
+    const url = `/api/render/${mode}`;
+    if (loadedModes.has(mode)) {
+      popImg.classList.add('loaded');
+    } else {
+      popImg.classList.remove('loaded');
+    }
+    if (popImg.src !== window.location.origin + url) {
+      popImg.src = '';            // reset so the onload fires again if mode changed
+      popImg.src = url;
+    }
+
+    positionPopup(btn);
+    popup.classList.add('visible');
+  }
+
+  popImg.addEventListener('load', () => {
+    if (activeMode) loadedModes.add(activeMode);
+    popImg.classList.add('loaded');
+  });
+
+  function hidePopup() {
+    clearTimeout(hoverTimer);
+    hoverTimer = null;
+    activeMode = null;
+    popup.classList.remove('visible');
+  }
+
+  // ── Attach listeners to every mode button ────────────────────────────────
+  document.querySelectorAll('.mode-btn').forEach(btn => {
+    btn.addEventListener('mouseenter', () => {
+      clearTimeout(hoverTimer);
+      hoverTimer = setTimeout(() => showFor(btn), DELAY_MS);
+    });
+    btn.addEventListener('mouseleave', hidePopup);
+    // Hide immediately on click so it doesn't linger
+    btn.addEventListener('mousedown', hidePopup);
+  });
+})();
+
+// ─── Pet cat section ─────────────────────────────────────────────────────────
+
+(function initPetSection() {
+  const coatSel  = document.getElementById('pet-coat-select');
+  const envSel   = document.getElementById('pet-env-select');
+  const bgInput  = document.getElementById('pet-bg-input');
+  const bgGroup  = document.getElementById('pet-bg-group');
+  const showBtn  = document.getElementById('pet-show-btn');
+  const statusEl = document.getElementById('pet-action-status');
+  if (!coatSel || !envSel || !bgInput) return;
+
+  function render(data) {
+    coatSel.value = data.coat;
+    envSel.value  = data.environment;
+    bgInput.value = data.background;
+    if (bgGroup) bgGroup.style.display = data.environment === 'solid' ? '' : 'none';
+  }
+
+  async function update(change) {
+    try {
+      render(await apiJson('POST', '/api/pet', change));
+      if (statusEl) statusEl.textContent = 'Saved';
+    } catch (e) {
+      if (statusEl) statusEl.textContent = `Error: ${e.message}`;
+    }
+  }
+
+  coatSel.addEventListener('change', () => update({ coat: coatSel.value }));
+  envSel.addEventListener('change',  () => update({ environment: envSel.value }));
+  // 'input' fires continuously while dragging in the picker; 'change' on commit.
+  bgInput.addEventListener('change', () => update({ background: bgInput.value }));
+
+  if (showBtn) {
+    showBtn.addEventListener('click', async () => {
+      const r = await api('POST', '/api/mode', { mode: 'pet_cat' });
+      if (statusEl) statusEl.textContent = r.ok ? 'Showing the cat' : `Error: ${await r.text()}`;
+    });
+  }
+
+  apiJson('GET', '/api/pet').then(render).catch(() => {});
 })();

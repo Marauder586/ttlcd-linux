@@ -6,9 +6,13 @@
 //! re-attached on [`Drop`]).
 
 pub mod display;
+pub mod pet;
 pub mod proto;
 
-use std::time::Duration;
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+use std::sync::{Arc, Mutex};
+use std::thread::JoinHandle;
+use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, bail, Context, Result};
 use image::{imageops::FilterType, DynamicImage, ImageFormat};
@@ -26,6 +30,22 @@ pub const DEFAULT_JPEG_QUALITY: u8 = 85;
 /// USB transfer timeout for both control and image transfers.
 pub const TRANSFER_TIMEOUT: Duration = Duration::from_millis(3000);
 
+/// Largest JPEG that fits in one frame (255 packets of 1020 payload bytes).
+pub const MAX_JPEG_BYTES: usize = u8::MAX as usize * IMG_PAYLOAD_SIZE;
+
+/// Size [`encode_for_panel`] aims to stay under (100 packets).
+pub const TARGET_JPEG_BYTES: usize = 100 * IMG_PAYLOAD_SIZE;
+
+/// How long to wait for the per-frame ACK on the image IN endpoint.  It
+/// normally arrives within ~10 ms of the last packet.  Roughly one frame in a
+/// few hundred is acknowledged late or not at all (cause unknown), so this is
+/// kept short to make that a barely visible hitch rather than a stall.
+pub const IMG_ACK_TIMEOUT: Duration = Duration::from_millis(100);
+
+/// How often a static frame must be re-sent to stay on screen.  The panel
+/// reverts to its built-in screen ~2 s after the last frame it received.
+pub const FRAME_REFRESH_INTERVAL: Duration = Duration::from_millis(500);
+
 // ─── Device-info parsed from the init ACK ────────────────────────────────────
 
 /// Information extracted from the device's initialization ACK packets.
@@ -42,8 +62,22 @@ pub struct DeviceInfo {
 // ─── Panel ───────────────────────────────────────────────────────────────────
 
 pub struct Panel {
-    handle: DeviceHandle<GlobalContext>,
+    link: Arc<Link>,
     pub info: DeviceInfo,
+    /// Background thread that re-sends the last frame so it stays on screen.
+    refresher: Option<JoinHandle<()>>,
+}
+
+/// USB state shared between [`Panel`] and its refresher thread.
+struct Link {
+    handle: DeviceHandle<GlobalContext>,
+    /// Serialises whole control packets / whole frames on the wire.
+    io: Mutex<()>,
+    /// Set once the `0x12` stream-begin prelude and the first frame are out.
+    stream_started: AtomicBool,
+    /// Last JPEG sent and when it went out.
+    last_frame: Mutex<Option<(Arc<Vec<u8>>, Instant)>>,
+    stop: AtomicBool,
 }
 
 impl Panel {
@@ -171,9 +205,25 @@ impl Panel {
                 .with_context(|| format!("claim_interface(if={})", iface))?;
         }
 
-        Ok(Self {
+        let link = Arc::new(Link {
             handle,
+            io: Mutex::new(()),
+            stream_started: AtomicBool::new(false),
+            last_frame: Mutex::new(None),
+            stop: AtomicBool::new(false),
+        });
+        let refresher = {
+            let link = Arc::clone(&link);
+            std::thread::Builder::new()
+                .name("ttlcd-refresh".into())
+                .spawn(move || link.refresh_loop())
+                .context("spawn refresher thread")?
+        };
+
+        Ok(Self {
+            link,
             info: DeviceInfo::default(),
+            refresher: Some(refresher),
         })
     }
 
@@ -231,28 +281,18 @@ impl Panel {
         Ok(())
     }
 
-    /// Send a single JPEG frame: `0x12` prelude on the control interface,
-    /// then all data packets on the image interface.
+    /// Send a single JPEG frame on the image interface and wait for the
+    /// panel's ACK.
+    ///
+    /// The first call after opening also sends the `0x12` stream-begin prelude
+    /// on the control interface, and sends the frame twice: the panel discards
+    /// the first image it receives after the handshake.
+    ///
+    /// The panel only shows a frame for ~2 s, so a background thread re-sends
+    /// the most recent one every [`FRAME_REFRESH_INTERVAL`] until the next
+    /// frame arrives or the `Panel` is dropped.
     pub fn send_jpeg(&self, jpeg: &[u8]) -> Result<()> {
-        if jpeg.is_empty() {
-            bail!("empty JPEG buffer");
-        }
-        let pkts = build_image_packets(jpeg);
-        if pkts.len() > u8::MAX as usize {
-            bail!(
-                "JPEG too large: {} packets > 255-packet protocol limit",
-                pkts.len()
-            );
-        }
-        log::debug!("send_jpeg: {} bytes in {} packets", jpeg.len(), pkts.len());
-
-        self.write_ctrl(&build_frame_begin())
-            .context("frame begin prelude")?;
-        for (i, pkt) in pkts.iter().enumerate() {
-            self.write_image(pkt)
-                .with_context(|| format!("image packet {}/{}", i + 1, pkts.len()))?;
-        }
-        Ok(())
+        self.send_jpeg_with_delay(jpeg, 0)
     }
 
     /// Encode `img` to a panel-sized JPEG and send it via [`Panel::send_jpeg`].
@@ -267,34 +307,35 @@ impl Panel {
         if jpeg.is_empty() {
             bail!("empty JPEG buffer");
         }
-        let pkts = build_image_packets(jpeg);
-        if pkts.len() > u8::MAX as usize {
+        if jpeg.len().div_ceil(IMG_PAYLOAD_SIZE) > u8::MAX as usize {
             bail!(
-                "JPEG too large: {} packets > 255-packet protocol limit",
-                pkts.len()
+                "JPEG too large: {} bytes > 255-packet protocol limit",
+                jpeg.len()
             );
         }
-        log::info!(
-            "send_jpeg_with_delay: {} bytes, {} pkts, delay={}ms",
-            jpeg.len(), pkts.len(), packet_delay_ms
-        );
-        self.write_ctrl(&build_frame_begin())
-            .context("frame begin prelude")?;
-        for (i, pkt) in pkts.iter().enumerate() {
-            self.write_image(pkt)
-                .with_context(|| format!("image packet {}/{}", i + 1, pkts.len()))?;
-            if packet_delay_ms > 0 {
-                std::thread::sleep(Duration::from_millis(packet_delay_ms));
-            }
-        }
+        self.link.send_frame(jpeg, packet_delay_ms)?;
+        *self.link.last_frame.lock().unwrap() = Some((Arc::new(jpeg.to_vec()), Instant::now()));
         Ok(())
     }
 
-    /// Send the keepalive packet (opcode `0x82`).  Should be sent every ~2 s
-    /// while idle to prevent the panel from blanking.
+    /// Block forever while the refresher thread keeps the last frame on
+    /// screen.  For one-shot CLI commands.
+    pub fn hold(&self) -> ! {
+        loop {
+            std::thread::park();
+        }
+    }
+
+    /// Send the keepalive packet (opcode `0x82`) and consume its ACK.
     pub fn keepalive(&self) -> Result<()> {
-        self.write_ctrl(&build_ctrl(KEEPALIVE_OPCODE))
-            .context("keepalive")
+        let _io = self.link.io.lock().unwrap();
+        self.link
+            .write_ctrl(&build_ctrl(KEEPALIVE_OPCODE))
+            .context("keepalive")?;
+        if let Err(e) = self.link.read_ctrl() {
+            log::debug!("no keepalive ack: {e}");
+        }
+        Ok(())
     }
 
     /// Send a single arbitrary control opcode (useful for reverse engineering).
@@ -309,6 +350,53 @@ impl Panel {
     }
 
     // ── private helpers ───────────────────────────────────────────────────────
+
+    fn write_ctrl(&self, buf: &[u8]) -> Result<()> {
+        let _io = self.link.io.lock().unwrap();
+        self.link.write_ctrl(buf)
+    }
+
+    fn read_ctrl(&self) -> Result<Vec<u8>> {
+        self.link.read_ctrl()
+    }
+}
+
+impl Link {
+    /// Re-send the last frame whenever it is about to age out on the panel.
+    fn refresh_loop(&self) {
+        while !self.stop.load(Ordering::Acquire) {
+            std::thread::sleep(Duration::from_millis(50));
+            let due = match &*self.last_frame.lock().unwrap() {
+                Some((jpeg, sent)) if sent.elapsed() >= FRAME_REFRESH_INTERVAL => Some(Arc::clone(jpeg)),
+                _ => None,
+            };
+            let Some(jpeg) = due else { continue };
+            if let Err(e) = self.send_frame(&jpeg, 0) {
+                log::debug!("frame refresh failed: {e:#}");
+            }
+            // Stamp even on failure so a dead device isn't hammered; a newer
+            // frame from the caller simply overwrites this.
+            if let Some((cur, sent)) = &mut *self.last_frame.lock().unwrap() {
+                if Arc::ptr_eq(cur, &jpeg) {
+                    *sent = Instant::now();
+                }
+            }
+        }
+    }
+
+    fn send_frame(&self, jpeg: &[u8], packet_delay_ms: u64) -> Result<()> {
+        let pkts = build_image_packets(jpeg);
+        log::debug!("send_jpeg: {} bytes in {} packets", jpeg.len(), pkts.len());
+
+        let _io = self.io.lock().unwrap();
+        if !self.stream_started.load(Ordering::Acquire) {
+            self.write_ctrl(&build_frame_begin())
+                .context("frame begin prelude")?;
+            self.write_frame(&pkts, packet_delay_ms)?;
+            self.stream_started.store(true, Ordering::Release);
+        }
+        self.write_frame(&pkts, packet_delay_ms)
+    }
 
     fn write_ctrl(&self, buf: &[u8]) -> Result<()> {
         let n = self
@@ -329,6 +417,25 @@ impl Panel {
         Ok(buf)
     }
 
+    /// Write one frame's packets, then consume the panel's ACK.  A missing ACK
+    /// is logged rather than treated as fatal: the next frame goes through.
+    fn write_frame(&self, pkts: &[[u8; IMG_PKT_SIZE]], packet_delay_ms: u64) -> Result<()> {
+        for (i, pkt) in pkts.iter().enumerate() {
+            self.write_image(pkt)
+                .with_context(|| format!("image packet {}/{}", i + 1, pkts.len()))?;
+            if packet_delay_ms > 0 {
+                std::thread::sleep(Duration::from_millis(packet_delay_ms));
+            }
+        }
+        let mut ack = [0u8; IMG_ACK_SIZE];
+        let t0 = Instant::now();
+        match self.handle.read_interrupt(EP_IMG_IN, &mut ack, IMG_ACK_TIMEOUT) {
+            Ok(n) => log::debug!("frame ack {:02x?} after {:?}", &ack[..n.min(2)], t0.elapsed()),
+            Err(e) => log::debug!("no frame ack from panel after {:?}: {e}", t0.elapsed()),
+        }
+        Ok(())
+    }
+
     fn write_image(&self, buf: &[u8]) -> Result<()> {
         let n = self
             .handle
@@ -342,11 +449,15 @@ impl Panel {
 
 impl Drop for Panel {
     fn drop(&mut self) {
+        self.link.stop.store(true, Ordering::Release);
+        if let Some(t) = self.refresher.take() {
+            let _ = t.join();
+        }
         for iface in [IF_CONTROL, IF_IMAGE] {
-            let _ = self.handle.release_interface(iface);
+            let _ = self.link.handle.release_interface(iface);
             // Best-effort: re-attach the kernel driver so usbhid works again
             // after we exit.  Failure is silently ignored.
-            let _ = self.handle.attach_kernel_driver(iface);
+            let _ = self.link.handle.attach_kernel_driver(iface);
         }
     }
 }
@@ -362,14 +473,35 @@ pub fn encode_for_panel(img: &DynamicImage, quality: u8) -> Result<Vec<u8>> {
             .to_rgb8()
     };
 
-    let mut out = Vec::with_capacity(64 * 1024);
-    let mut cursor = std::io::Cursor::new(&mut out);
-    let encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut cursor, quality);
-    image::DynamicImage::ImageRgb8(resized)
-        .write_with_encoder(encoder)
-        .context("JPEG encode")?;
     let _ = ImageFormat::Jpeg; // suppress unused-import warning
-    Ok(out)
+    let resized = image::DynamicImage::ImageRgb8(resized);
+
+    // Very busy images encode to huge JPEGs: past 255 packets they cannot be
+    // sent at all, and on `0x2343` frames above ~120 kB are intermittently
+    // not acknowledged (a visible stall).  Step the quality down until the
+    // frame fits the target, and remember it so an animation that stays busy
+    // doesn't pay for the retries on every frame.
+    static QUALITY_HINT: AtomicU8 = AtomicU8::new(100);
+    let mut q = quality.min(QUALITY_HINT.load(Ordering::Relaxed));
+    loop {
+        let mut out = Vec::with_capacity(64 * 1024);
+        let encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(
+            std::io::Cursor::new(&mut out),
+            q,
+        );
+        resized.write_with_encoder(encoder).context("JPEG encode")?;
+        if out.len() <= TARGET_JPEG_BYTES || q <= 10 {
+            // Creep back up once frames are comfortably small again.
+            let next = if out.len() < TARGET_JPEG_BYTES * 6 / 10 { q.saturating_add(5).min(100) } else { q };
+            QUALITY_HINT.store(next, Ordering::Relaxed);
+            if out.len() > MAX_JPEG_BYTES {
+                bail!("frame is {} bytes even at q{}; exceeds 255-packet limit", out.len(), q);
+            }
+            return Ok(out);
+        }
+        log::debug!("frame is {} bytes at q{}; retrying at lower quality", out.len(), q);
+        q = (q as u32 * 3 / 4).max(10) as u8;
+    }
 }
 
 /// Fit `img` inside 480×480 with letterboxing (black bars) and JPEG-encode.

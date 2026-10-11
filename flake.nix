@@ -1,5 +1,5 @@
 {
-  description = "ttlcd-rs — Rust driver for XinWeiYe/Thermaltake USB LCD panels";
+  description = "ttlcd-linux — Rust driver for XinWeiYe/Thermaltake USB LCD panels";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
@@ -42,7 +42,7 @@
 
         meta = {
           description = "USB LCD panel driver and display suite (XinWeiYe / Thermaltake)";
-          homepage = "https://github.com/marauder/ttlcd-rs";
+          homepage = "https://github.com/marauder/ttlcd-linux";
           license = pkgs.lib.licenses.mit;
           maintainers = [];
           mainProgram = "ttlcd";
@@ -71,7 +71,7 @@
       };
 
       # ── NixOS module ─────────────────────────────────────────────
-      # Import as:  imports = [ ttlcd-rs.nixosModules.default ];
+      # Import as:  imports = [ ttlcd-linux.nixosModules.default ];
       nixosModules.default = {
         config,
         lib,
@@ -132,7 +132,7 @@
           bind = lib.mkOption {
             type = lib.types.str;
             default = "127.0.0.1";
-            description = "Bind address for the HTTP server (use 0.0.0.0 to listen on all interfaces).";
+            description = "Bind address for the HTTP server. Must be a loopback address; the daemon refuses anything else.";
           };
 
           rotationModes = lib.mkOption {

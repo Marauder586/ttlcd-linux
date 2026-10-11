@@ -14,21 +14,29 @@ pub const IF_IMAGE: u8 = 1;
 pub const EP_CTRL_OUT: u8 = 0x01;
 pub const EP_CTRL_IN: u8 = 0x82;
 pub const EP_IMG_OUT: u8 = 0x03;
+pub const EP_IMG_IN: u8 = 0x84;
 
 pub const CTRL_PKT_SIZE: usize = 440;
 pub const IMG_PKT_SIZE: usize = 1024;
 pub const IMG_HDR_SIZE: usize = 4;
 pub const IMG_PAYLOAD_SIZE: usize = IMG_PKT_SIZE - IMG_HDR_SIZE; // 1020
 
+/// Size of the per-frame ACK the panel returns on [`EP_IMG_IN`] once it has
+/// received a complete image (`[0x08, 0x81, 0, …]` on `0x2343`).
+pub const IMG_ACK_SIZE: usize = 16;
+
 /// Init opcodes, sent in order on EP_CTRL_OUT.  Each is followed by a 440-byte
 /// read on EP_CTRL_IN.  The first response embeds the device serial number
 /// starting at byte 4.
 pub const INIT_OPCODES: &[u8] = &[0x85, 0x87, 0x85, 0x87, 0x84, 0x81];
 
-/// Keepalive opcode (sent every ~2 s while idle / between frames).
+/// Keepalive opcode.  Note: on `0x2343` this alone does not reliably keep an
+/// image on screen — the panel falls back to its built-in screen ~2 s after
+/// the last frame, so frames must be re-sent (`Panel` does this in a background thread).
 pub const KEEPALIVE_OPCODE: u8 = 0x82;
 
-/// "Begin image stream" bytes, zero-padded to [`CTRL_PKT_SIZE`].
+/// "Begin image stream" bytes, zero-padded to [`CTRL_PKT_SIZE`].  Sent once
+/// after init, not per frame.
 pub const FRAME_BEGIN: [u8; 5] = [0x12, 0x01, 0x00, 0x80, 0x64];
 
 /// Leading byte of every image data packet.

@@ -174,6 +174,8 @@
         <button class="mode-btn" data-mode="plasma_ball"     data-cat="fun"      title="Plasma ball — electric tendrils inside a glowing sphere">⚡<span>Plasma Ball</span></button>
         <button class="mode-btn" data-mode="moss_growth"     data-cat="fun"      title="Moss growth — organic cellular automaton simulating moss">🌿<span>Moss</span></button>
         <button class="mode-btn" data-mode="asteroid_field"  data-cat="fun"      title="Asteroid field — tumbling rocky asteroids drifting through a star field">🪨<span>Asteroids</span></button>
+        <button class="mode-btn" data-mode="pet_cat"         data-cat="fun"      title="Pet cat — pixel-art cat that sleeps, grooms, stretches and plays with a ball">🐱<span>Pet Cat</span></button>
+        <button class="mode-btn" data-mode="ekg_strip"       data-cat="fun"      title="EKG rhythm strip — P wave, QRS complex and T wave on scrolling ECG paper; heart rate follows CPU load (70 bpm idle to 160 bpm)">🫀<span>EKG Strip</span></button>
         <button class="mode-btn" data-mode="solar_system"    data-cat="fun"      title="Solar system — animated orrery with planets orbiting the sun">🌍<span>Solar Sys</span></button>
         <button class="mode-btn" data-mode="lightning_storm"  data-cat="fun"      title="Lightning storm — branching electric bolts on a stormy sky">⛈<span>Lightning</span></button>
         <button class="mode-btn" data-mode="spirograph"       data-cat="fun"      title="Spirograph — rotating hypotrochoid mathematical art curves">🎠<span>Spirograph</span></button>
@@ -806,6 +808,41 @@
       </div>
     </details>
 
+    <!-- ── Pet Cat ─────────────────────────────────────────────────── -->
+    <details class="card" id="pet-section">
+      <summary>🐱 Pet Cat</summary>
+      <p class="card-hint">A pixel-art cat that naps, licks its paw, stretches and plays with a ball. Changes apply immediately.</p>
+      <div class="form-row two-col">
+        <div class="form-group">
+          <label for="pet-coat-select">Cat</label>
+          <select id="pet-coat-select">
+            <option value="tuxedo">Black &amp; white</option>
+            <option value="black">Black</option>
+            <option value="orange">Orange tabby</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label for="pet-env-select">Environment</label>
+          <select id="pet-env-select">
+            <option value="solid">Solid colour</option>
+            <option value="forest">Forest</option>
+            <option value="living_room">Living room</option>
+            <option value="night_forest">Night forest</option>
+            <option value="dungeon">Alchemy dungeon</option>
+            <option value="library">Dark library</option>
+          </select>
+        </div>
+      </div>
+      <div class="form-group" id="pet-bg-group">
+        <label for="pet-bg-input">Background colour <span class="hint-inline">used by the solid environment</span></label>
+        <input type="color" id="pet-bg-input" value="#7eaac4">
+      </div>
+      <div class="form-actions">
+        <button id="pet-show-btn" class="primary" title="Switch the panel to the pet cat">🐱 Show cat</button>
+        <span id="pet-action-status"></span>
+      </div>
+    </details>
+
     <!-- ── Screensaver / Idle Timeout ──────────────────────────────── -->
     <details class="card" id="screensaver-section">
       <summary>💤 Screensaver / Idle Timeout</summary>
@@ -872,6 +909,8 @@
             <option value="plasma_ball">⚡ Plasma Ball</option>
             <option value="moss_growth">🌿 Moss Growth</option>
             <option value="asteroid_field">🪨 Asteroid Field</option>
+            <option value="ekg_strip">🫀 EKG Strip</option>
+            <option value="pet_cat">🐱 Pet Cat</option>
             <option value="solar_system">🌍 Solar System</option>
             <option value="lightning_storm">⛈ Lightning Storm</option>
             <option value="spirograph">🎠 Spirograph</option>
