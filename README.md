@@ -78,7 +78,9 @@ Then enable the service:
 {
   services.ttlcd = {
     enable = true;
-    mode = "clock_sysinfo";  # mode shown at start-up
+    mode = "pet_cat";        # mode on first start; later the last mode is restored
+    pet.coat = "black";
+    pet.environment = "library";
   };
 }
 ```
@@ -107,6 +109,8 @@ Other options, all optional:
 | `rotationModes` | `[]` | Modes to cycle through |
 | `rotationInterval` | `0` | Seconds between rotation steps; 0 disables |
 | `headless` | `false` | Run without the USB panel (web UI only) |
+| `pet.coat` | saved choice | `tuxedo`, `black` or `orange`; applied at every start |
+| `pet.environment` | saved choice | `solid`, `forest`, `living_room`, `night_forest`, `dungeon` or `library`; applied at every start |
 | `package` | this flake's build | The `ttlcd` package to run |
 
 ### Other distributions

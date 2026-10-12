@@ -317,6 +317,7 @@ pub(crate) async fn run_daemon(
     rotate_deg: u16,
     rotation_mode_names: Vec<String>,
     rotation_interval: u64,
+    pet_override: (Option<ttlcd::pet::Coat>, Option<ttlcd::pet::Environment>),
 ) -> Result<()> {
     use actix_web::{web, App, HttpServer};
 
@@ -364,6 +365,12 @@ pub(crate) async fn run_daemon(
     if let Some(pet) = &persisted.pet {
         pet.apply();
     }
+    // Command-line pet settings win over the saved ones. Changes made in the
+    // web UI still apply, but only until the next start.
+    let mut pet = ttlcd::pet::config();
+    pet.coat = pet_override.0.unwrap_or(pet.coat);
+    pet.environment = pet_override.1.unwrap_or(pet.environment);
+    ttlcd::pet::set_config(pet);
     if persisted.mode.is_some() {
         log::info!(
             "restored persisted state: mode={} quality={} rotate={}°",

@@ -3,6 +3,21 @@
 use super::*;
 
 #[test]
+fn pet_flags_accept_known_names_and_list_them_otherwise() {
+    assert_eq!(parse_pet_coat("black"), Ok(ttlcd::pet::Coat::Black));
+    assert_eq!(
+        parse_pet_environment("library"),
+        Ok(ttlcd::pet::Environment::Library)
+    );
+    assert!(parse_pet_coat("calico")
+        .unwrap_err()
+        .contains("tuxedo, black, orange"));
+    assert!(parse_pet_environment("moon")
+        .unwrap_err()
+        .contains("night_forest"));
+}
+
+#[test]
 fn web_ui_page_satisfies_its_own_security_policy() {
     let script_src = WEB_UI_CSP
         .split(';')

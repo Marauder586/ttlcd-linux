@@ -114,6 +114,10 @@
         qualityArgs =
           lib.optionalString (cfg.quality != 85)
           " --quality ${toString cfg.quality}";
+        petArgs =
+          lib.optionalString (cfg.pet.coat != null) " --pet-coat ${cfg.pet.coat}"
+          + lib.optionalString (cfg.pet.environment != null)
+          " --pet-environment ${cfg.pet.environment}";
       in {
         options.services.ttlcd = {
           enable = lib.mkEnableOption "ttlcd LCD panel daemon";
@@ -127,7 +131,7 @@
           mode = lib.mkOption {
             type = lib.types.str;
             default = "clock_sysinfo";
-            description = "Initial display mode on startup.";
+            description = "Display mode on first start. After that the daemon restores the mode it was last showing.";
           };
 
           quality = lib.mkOption {
@@ -165,6 +169,18 @@
             type = lib.types.ints.unsigned;
             default = 0;
             description = "Seconds between auto-rotation advances (0 = disabled).";
+          };
+
+          pet.coat = lib.mkOption {
+            type = lib.types.nullOr (lib.types.enum ["tuxedo" "black" "orange"]);
+            default = null;
+            description = "Pet cat coat. If set, it replaces the choice saved from the web UI at every start.";
+          };
+
+          pet.environment = lib.mkOption {
+            type = lib.types.nullOr (lib.types.enum ["solid" "forest" "living_room" "night_forest" "dungeon" "library"]);
+            default = null;
+            description = "Pet cat environment. If set, it replaces the choice saved from the web UI at every start.";
           };
 
           package = lib.mkOption {
@@ -222,6 +238,7 @@
                 headlessFlag
                 modeArgs
                 rotIntervalArgs
+                petArgs
               ];
               Restart = "on-failure";
               RestartSec = 5;

@@ -218,6 +218,14 @@ enum Cmd {
         /// Seconds between auto-rotation advances (0 = disabled).
         #[arg(long, default_value_t = 0)]
         rotation_interval: u64,
+        /// Pet cat coat (tuxedo, black, orange). Replaces the saved choice
+        /// at every start
+        #[arg(long, value_parser = parse_pet_coat)]
+        pet_coat: Option<ttlcd::pet::Coat>,
+        /// Pet cat environment (solid, forest, living_room, night_forest,
+        /// dungeon, library). Replaces the saved choice at every start
+        #[arg(long, value_parser = parse_pet_environment)]
+        pet_environment: Option<ttlcd::pet::Environment>,
     },
 
     /// Live network I/O rates. Refreshes every ~3 seconds.
@@ -325,6 +333,23 @@ fn parse_mode(s: &str) -> Result<String, String> {
                 DisplayMode::ALL_NAMES.join(", ")
             )
         })
+}
+
+fn parse_pet_coat(s: &str) -> Result<ttlcd::pet::Coat, String> {
+    ttlcd::pet::Coat::from_str_name(s).ok_or_else(|| {
+        let names = ttlcd::pet::Coat::ALL.map(ttlcd::pet::Coat::as_str);
+        format!("unknown coat '{s}'; expected one of: {}", names.join(", "))
+    })
+}
+
+fn parse_pet_environment(s: &str) -> Result<ttlcd::pet::Environment, String> {
+    ttlcd::pet::Environment::from_str_name(s).ok_or_else(|| {
+        let names = ttlcd::pet::Environment::ALL.map(ttlcd::pet::Environment::as_str);
+        format!(
+            "unknown environment '{s}'; expected one of: {}",
+            names.join(", ")
+        )
+    })
 }
 
 fn parse_rotation(s: &str) -> Result<u16, String> {
@@ -642,6 +667,8 @@ fn main() -> Result<()> {
             rotate,
             rotation_modes,
             rotation_interval,
+            pet_coat,
+            pet_environment,
         } => {
             let eff_port = cfg.daemon.port.unwrap_or(port);
             let eff_bind = cfg.daemon.bind.clone().unwrap_or(bind);
@@ -683,6 +710,7 @@ fn main() -> Result<()> {
                 eff_rotate,
                 eff_rot_modes,
                 eff_rot_interval,
+                (pet_coat, pet_environment),
             )?;
         }
 
