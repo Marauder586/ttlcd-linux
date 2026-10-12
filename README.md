@@ -13,10 +13,11 @@ USB LCD (480×480, USB id `264a:2343`).
 
 The daemon only listens on loopback addresses.
 
-Optionally, the computer's RGB lighting can follow the colour of the screen.
-This goes through an [OpenRGB](https://openrgb.org) server, so it works with
-whatever OpenRGB can drive. Turn it on in the web UI under *Panel & alerts*,
-or start the daemon with `--lights`.
+Optionally, the daemon can drive the computer's RGB lighting, either following
+the colour of the screen or holding a colour you pick. This goes through an
+[OpenRGB](https://openrgb.org) server, so it works with whatever OpenRGB can
+drive. Turn it on in the web UI under *Panel & alerts*, or start the daemon
+with `--lights` (and `--lights-color ff8800` for a fixed colour).
 
 Full disclaimer: this is an AI generated project (which should be obvious).
 
@@ -115,7 +116,8 @@ Other options, all optional:
 | `rotationInterval` | `0` | Seconds between rotation steps; 0 disables |
 | `headless` | `false` | Run without the USB panel (web UI only) |
 | `pet.coat` | saved choice | `tuxedo`, `black` or `orange`; applied at every start |
-| `lights.enable` | `false` | Match RGB lighting to the screen at every start; needs OpenRGB (`services.hardware.openrgb`) |
+| `lights.enable` | `false` | Control RGB lighting at every start; needs OpenRGB (`services.hardware.openrgb`) |
+| `lights.color` | follow the screen | A fixed colour such as `"#ff8800"`; applied at every start |
 | `lights.openrgbAddress` | `"127.0.0.1:6742"` | OpenRGB SDK server address |
 | `pet.environment` | saved choice | `solid`, `forest`, `living_room`, `night_forest`, `dungeon` or `library`; applied at every start |
 | `package` | this flake's build | The `ttlcd` package to run |

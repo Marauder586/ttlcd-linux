@@ -120,6 +120,8 @@
           " --pet-environment ${cfg.pet.environment}";
         lightsArgs =
           lib.optionalString cfg.lights.enable " --lights"
+          + lib.optionalString (cfg.lights.color != null)
+          " --lights-color ${lib.removePrefix "#" cfg.lights.color}"
           + lib.optionalString (cfg.lights.openrgbAddress != "127.0.0.1:6742")
           " --openrgb ${cfg.lights.openrgbAddress}";
       in {
@@ -190,7 +192,14 @@
           lights.enable = lib.mkOption {
             type = lib.types.bool;
             default = false;
-            description = "Match the computer's RGB lighting to the panel through OpenRGB at every start. When false, the choice saved from the web UI is used. Needs an OpenRGB server, e.g. services.hardware.openrgb.";
+            description = "Control the computer's RGB lighting through OpenRGB at every start: it follows the colour of the panel unless lights.color is set. When false, the choice saved from the web UI is used. Needs an OpenRGB server, e.g. services.hardware.openrgb.";
+          };
+
+          lights.color = lib.mkOption {
+            type = lib.types.nullOr (lib.types.strMatching "#?[0-9a-fA-F]{6}");
+            default = null;
+            example = "#ff8800";
+            description = "Hold this colour on the lights instead of following the screen. If set, it replaces the choice saved from the web UI at every start. Has no visible effect unless light control is on.";
           };
 
           lights.openrgbAddress = lib.mkOption {

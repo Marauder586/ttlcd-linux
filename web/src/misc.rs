@@ -991,9 +991,28 @@ fn init_pet() {
 
 // ─── System lights ───────────────────────────────────────────────────────────
 
+/// The `color` value that tells the daemon to follow the screen.
+const LIGHTS_FOLLOW_SCREEN: &str = "auto";
+
 fn render_lights(data: &Js) {
     let enabled = data.get("enabled").truthy();
+    let fixed = data.get("fixed_color").str();
     El::id("lights-enabled-cb").set("checked", enabled);
+
+    // Leave the colour controls alone while the user is using them.
+    let focused = El(dom::doc().active_element());
+    let (mode, picker) = (El::id("lights-mode-select"), El::id("lights-color-input"));
+    if !mode.same(&focused) && !picker.same(&focused) {
+        mode.set_val(if fixed.is_some() {
+            "fixed"
+        } else {
+            LIGHTS_FOLLOW_SCREEN
+        });
+        if let Some(color) = &fixed {
+            picker.set_val(color);
+        }
+        picker.display(if fixed.is_some() { "" } else { "none" });
+    }
 
     let line = El::id("lights-status-line");
     let devices: Vec<String> = data.get("devices").arr().iter().map(Js::show).collect();
@@ -1033,21 +1052,44 @@ async fn fetch_lights() {
     }
 }
 
+/// Send a change to the light settings and show the result.
+async fn update_lights(change: wasm_bindgen::JsValue) {
+    match api::post("/api/lights", change).await {
+        Ok(data) => render_lights(&data),
+        Err(e) => {
+            El::id("lights-status-line")
+                .set_text(&format!("Error: {e}"))
+                .color("var(--red)");
+        }
+    }
+}
+
 fn init_lights() {
     let toggle = El::id("lights-enabled-cb");
     if !toggle.ok() {
         return;
     }
     toggle.on_async("change", |_| async {
-        let enabled = El::id("lights-enabled-cb").checked();
-        match api::post("/api/lights", obj! { "enabled": enabled }).await {
-            Ok(data) => render_lights(&data),
-            Err(e) => {
-                El::id("lights-status-line")
-                    .set_text(&format!("Error: {e}"))
-                    .color("var(--red)");
-            }
+        update_lights(obj! { "enabled": El::id("lights-enabled-cb").checked() }).await;
+    });
+
+    // The colour to send for the current state of the two colour controls.
+    let chosen_color = || {
+        if El::id("lights-mode-select").val() == "fixed" {
+            El::id("lights-color-input").val()
+        } else {
+            LIGHTS_FOLLOW_SCREEN.to_string()
         }
+    };
+    El::id("lights-mode-select").on_async("change", move |_| async move {
+        let fixed = El::id("lights-mode-select").val() == "fixed";
+        El::id("lights-color-input").display(if fixed { "" } else { "none" });
+        update_lights(obj! { "color": chosen_color() }).await;
+    });
+    // 'change' rather than 'input': the picker fires 'input' continuously
+    // while dragging.
+    El::id("lights-color-input").on_async("change", move |_| async move {
+        update_lights(obj! { "color": chosen_color() }).await;
     });
     dom::poll(5000, fetch_lights);
 }

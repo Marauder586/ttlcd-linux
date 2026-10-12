@@ -18,6 +18,15 @@ fn pet_flags_accept_known_names_and_list_them_otherwise() {
 }
 
 #[test]
+fn lights_colour_flag_takes_hex_with_or_without_a_hash() {
+    assert_eq!(parse_lights_color("ff8800"), Ok([255, 136, 0]));
+    assert_eq!(parse_lights_color("#00FF7f"), Ok([0, 255, 127]));
+    for bad in ["", "red", "ff88", "gg0000", "ff88001"] {
+        assert!(parse_lights_color(bad).is_err(), "{bad}");
+    }
+}
+
+#[test]
 fn web_ui_page_satisfies_its_own_security_policy() {
     let script_src = WEB_UI_CSP
         .split(';')

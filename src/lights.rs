@@ -96,6 +96,52 @@ impl Smoother {
     }
 }
 
+/// Decides what colour the lights should aim for while following the screen.
+///
+/// Frame colours wobble (a flickering candle) and are briefly pulled away by
+/// passing events (a ball crossing the scene); neither should reach the
+/// lights. So the frame colour is averaged over a long window, and the
+/// result only replaces the current aim once it has moved by more than a
+/// dead band.
+pub struct SceneColor {
+    average: Smoother,
+    time_constant: f64,
+    dead_band: u8,
+    aim: Option<Rgb>,
+}
+
+impl SceneColor {
+    /// `time_constant` is the averaging window in seconds; `dead_band` is
+    /// the per-channel change the average must exceed to move the aim.
+    pub fn new(time_constant: f64, dead_band: u8) -> Self {
+        Self {
+            average: Smoother::new(time_constant),
+            time_constant,
+            dead_band,
+            aim: None,
+        }
+    }
+
+    /// Forget the scene, so the next frame's colour is adopted at once.
+    /// For when the display switches to something unrelated.
+    pub fn reset(&mut self) {
+        *self = Self::new(self.time_constant, self.dead_band);
+    }
+
+    /// Take the colour of the frame shown for the last `dt` seconds and
+    /// return the colour to aim for.
+    pub fn observe(&mut self, frame: Rgb, dt: f64) -> Rgb {
+        let average = self.average.step(frame, dt);
+        match self.aim {
+            Some(aim) if !differs(aim, average, self.dead_band) => aim,
+            _ => {
+                self.aim = Some(average);
+                average
+            }
+        }
+    }
+}
+
 /// Whether two colours differ enough to be worth sending again.
 pub fn differs(a: Rgb, b: Rgb, threshold: u8) -> bool {
     a.iter().zip(b).any(|(x, y)| x.abs_diff(y) >= threshold)
@@ -363,6 +409,52 @@ mod tests {
             s.step([200, 0, 0], 0.25);
         }
         assert_eq!(s.step([200, 0, 0], 0.25), [200, 0, 0]);
+    }
+
+    /// Feed `frame` to `scene` four times a second for `secs` seconds and
+    /// return every distinct aim it produced.
+    fn watch(scene: &mut SceneColor, secs: u32, frame: impl Fn(u32) -> Rgb) -> Vec<Rgb> {
+        let mut aims = Vec::new();
+        for tick in 0..secs * 4 {
+            let aim = scene.observe(frame(tick), 0.25);
+            if aims.last() != Some(&aim) {
+                aims.push(aim);
+            }
+        }
+        aims
+    }
+
+    #[test]
+    fn scene_colour_ignores_wobble_and_passing_events() {
+        let mut scene = SceneColor::new(30.0, 24);
+        let base = [196, 209, 255];
+        // A minute of candle-like wobble: the aim never moves.
+        let wobble = watch(&mut scene, 60, |t| {
+            if t % 2 == 0 {
+                base
+            } else {
+                [210, 217, 255]
+            }
+        });
+        assert_eq!(wobble.len(), 1, "{wobble:?}");
+        // Ten seconds pulled well towards pink, then back for a minute.
+        let event = watch(&mut scene, 10, |_| [255, 219, 254]);
+        let after = watch(&mut scene, 60, |_| base);
+        assert_eq!((event, after), (vec![wobble[0]], vec![wobble[0]]));
+    }
+
+    #[test]
+    fn scene_colour_follows_a_lasting_change_and_resets_at_once() {
+        let mut scene = SceneColor::new(30.0, 24);
+        watch(&mut scene, 10, |_| [0, 0, 255]);
+        // A change that stays is followed, gradually, and gets there.
+        let aims = watch(&mut scene, 300, |_| [255, 0, 0]);
+        assert!(aims.len() > 3, "{aims:?}");
+        let [r, _, b] = *aims.last().unwrap();
+        assert!(r > 230 && b < 25, "{aims:?}");
+        // After a reset the next frame's colour is adopted outright.
+        scene.reset();
+        assert_eq!(scene.observe([0, 255, 0], 0.25), [0, 255, 0]);
     }
 
     #[test]

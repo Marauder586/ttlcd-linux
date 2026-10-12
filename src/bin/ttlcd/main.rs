@@ -232,6 +232,10 @@ enum Cmd {
         /// Without this flag the choice saved from the web UI is used
         #[arg(long)]
         lights: bool,
+        /// Hold one colour on the lights instead of following the screen
+        /// (hex, e.g. ff8800). Replaces the saved choice at every start
+        #[arg(long, value_name = "RRGGBB", value_parser = parse_lights_color)]
+        lights_color: Option<ttlcd::lights::Rgb>,
         /// Address of the OpenRGB SDK server used for --lights
         #[arg(long, default_value = ttlcd::lights::DEFAULT_OPENRGB_ADDR)]
         openrgb: String,
@@ -359,6 +363,11 @@ fn parse_pet_environment(s: &str) -> Result<ttlcd::pet::Environment, String> {
             names.join(", ")
         )
     })
+}
+
+fn parse_lights_color(s: &str) -> Result<ttlcd::lights::Rgb, String> {
+    ttlcd::pet::parse_hex_color(s)
+        .ok_or_else(|| format!("'{s}' is not a colour; expected six hex digits such as ff8800"))
 }
 
 fn parse_rotation(s: &str) -> Result<u16, String> {
@@ -679,6 +688,7 @@ fn main() -> Result<()> {
             pet_coat,
             pet_environment,
             lights,
+            lights_color,
             openrgb,
         } => {
             let eff_port = cfg.daemon.port.unwrap_or(port);
@@ -725,6 +735,7 @@ fn main() -> Result<()> {
                     pet_coat,
                     pet_environment,
                     lights,
+                    lights_color,
                     openrgb,
                 },
             )?;

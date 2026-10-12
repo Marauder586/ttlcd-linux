@@ -782,8 +782,15 @@
     <!-- ── System lights ─────────────────────────────────────────────── -->
     <section class="card" id="lights-section">
       <h2>💡 System Lights</h2>
-      <p class="card-hint">Tint the computer's RGB lighting to match the screen. Needs a running OpenRGB server.</p>
-      <label><input type="checkbox" id="lights-enabled-cb"> Match lights to the screen</label>
+      <p class="card-hint">Drive the computer's RGB lighting: follow the colour of the screen, or hold a colour you pick. Needs a running OpenRGB server.</p>
+      <label><input type="checkbox" id="lights-enabled-cb"> Control the lights</label>
+      <div class="form-row" style="gap:0.5rem;align-items:center;margin-top:0.5rem">
+        <select id="lights-mode-select" aria-label="Light colour">
+          <option value="auto">Follow the screen</option>
+          <option value="fixed">Fixed colour</option>
+        </select>
+        <input type="color" id="lights-color-input" value="#89b4fa" aria-label="Fixed colour" style="display:none">
+      </div>
       <div id="lights-status-line" class="hint-inline" style="display:block;margin-top:0.5rem"></div>
     </section>
 

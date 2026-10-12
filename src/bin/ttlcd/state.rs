@@ -123,6 +123,9 @@ pub(crate) struct PersistedState {
     /// Whether RGB lighting follows the panel.
     #[serde(default)]
     pub(crate) lights_enabled: Option<bool>,
+    /// `#rrggbb` the lights hold; absent when they follow the screen.
+    #[serde(default)]
+    pub(crate) lights_color: Option<String>,
 }
 
 /// Pet cat settings as exposed by `/api/pet` and stored in the state file.
@@ -183,13 +186,24 @@ pub(crate) fn save_persisted_state(ps: &PersistedState) {
 
 /// Snapshot the current daemon settings to disk (called on any settings change).
 pub(crate) fn persist_state(state: &DaemonState) {
+    // Read both light settings under one lock. Locking `state.lights` twice
+    // inside the struct literal below would deadlock: the first guard is a
+    // temporary that lives until the end of that statement.
+    let (lights_enabled, lights_color) = {
+        let lights = state.lights.lock().unwrap();
+        (
+            lights.enabled,
+            lights.fixed.map(ttlcd::pet::format_hex_color),
+        )
+    };
     let ps = PersistedState {
         mode: Some(state.mode.lock().unwrap().as_str().to_string()),
         quality: Some(*state.quality.lock().unwrap()),
         rotate_deg: Some(*state.rotate_deg.lock().unwrap()),
         brightness: Some(*state.dim_factor.lock().unwrap()),
         pet: Some(PetSettings::current()),
-        lights_enabled: Some(state.lights.lock().unwrap().enabled),
+        lights_enabled: Some(lights_enabled),
+        lights_color,
     };
     save_persisted_state(&ps);
 }

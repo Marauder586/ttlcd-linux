@@ -313,6 +313,8 @@ pub(crate) struct StartupOverrides {
     pub(crate) pet_environment: Option<ttlcd::pet::Environment>,
     /// Turn light sync on regardless of the saved choice.
     pub(crate) lights: bool,
+    /// Hold this colour on the lights regardless of the saved choice.
+    pub(crate) lights_color: Option<ttlcd::lights::Rgb>,
     /// OpenRGB server address.
     pub(crate) openrgb: String,
 }
@@ -385,6 +387,11 @@ pub(crate) async fn run_daemon(
     pet.environment = overrides.pet_environment.unwrap_or(pet.environment);
     ttlcd::pet::set_config(pet);
     let lights_enabled = overrides.lights || persisted.lights_enabled.unwrap_or(false);
+    let saved_lights_color = persisted
+        .lights_color
+        .as_deref()
+        .and_then(ttlcd::pet::parse_hex_color);
+    let lights_color = overrides.lights_color.or(saved_lights_color);
     if persisted.mode.is_some() {
         log::info!(
             "restored persisted state: mode={} quality={} rotate={}°",
@@ -401,6 +408,7 @@ pub(crate) async fn run_daemon(
         last_frame: Arc::new(Mutex::new(None)),
         lights: Arc::new(Mutex::new(LightSync::new(
             lights_enabled,
+            lights_color,
             overrides.openrgb,
         ))),
         frame_seq: Arc::new(Mutex::new(0)),
