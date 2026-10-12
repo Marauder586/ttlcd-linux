@@ -69,7 +69,6 @@ body {
 
 header {
   width: 100%;
-  max-width: 760px;
   padding: 1.4rem 1.6rem 0.8rem;
   display: flex;
   align-items: center;
@@ -1847,3 +1846,144 @@ button.btn-danger:hover   { opacity: 0.85; }
   color: var(--text);
 }
 
+
+/* ─── Page layout: preview on top, tabs on the left ────────────────────────── */
+header,
+.preview-card,
+.layout {
+  max-width: 1080px;
+}
+
+.preview-card {
+  width: calc(100% - 3.2rem);
+  margin-top: 0.4rem;
+}
+
+.layout {
+  width: 100%;
+  display: flex;
+  align-items: flex-start;
+  gap: 1.2rem;
+  padding: 1rem 1.6rem 2rem;
+}
+
+.layout main {
+  flex: 1;
+  min-width: 0;
+  max-width: none;
+  padding: 0;
+}
+
+.sidebar {
+  flex: 0 0 200px;
+  position: sticky;
+  top: 1rem;
+  max-height: calc(100vh - 2rem);
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  padding: 0.8rem;
+  background: var(--base);
+  border: 1px solid var(--surface0);
+  border-radius: var(--radius);
+}
+
+.sidebar-title {
+  margin: 0.5rem 0 0.2rem;
+  font-size: 0.7rem;
+  font-weight: 700;
+  color: var(--overlay0);
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+}
+
+.sidebar-title:first-child {
+  margin-top: 0;
+}
+
+.sidebar .mode-categories,
+.tool-tabs {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.sidebar .cat-btn,
+.tab-btn {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  width: 100%;
+  padding: 0.4rem 0.65rem;
+  border-radius: 8px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--subtext0);
+  font-size: 0.84rem;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+
+.sidebar .cat-btn:hover,
+.tab-btn:hover {
+  background: var(--surface0);
+  color: var(--text);
+}
+
+.sidebar .cat-btn.active,
+.tab-btn.active {
+  background: color-mix(in srgb, var(--blue) 20%, var(--surface0));
+  border-color: var(--blue);
+  color: var(--blue);
+  font-weight: 600;
+}
+
+/* A card that belongs to another tab, or to a mode that is not selected. */
+.card.tab-hidden {
+  display: none;
+}
+
+.mode-settings-note {
+  padding: 0 0.2rem;
+  font-size: 0.8rem;
+  color: var(--overlay0);
+}
+
+@media (max-width: 760px) {
+  .layout {
+    flex-direction: column;
+  }
+
+  .sidebar {
+    position: static;
+    flex: none;
+    width: 100%;
+    max-height: none;
+  }
+
+  .sidebar .mode-categories,
+  .tool-tabs {
+    flex-direction: row;
+    flex-wrap: wrap;
+  }
+
+  .sidebar .cat-btn,
+  .tab-btn {
+    width: auto;
+  }
+}
+
+/* Line the preview up with the cards below it, inside the layout's gutters. */
+.preview-card {
+  max-width: calc(1080px - 3.2rem);
+}
+
+/* `.card-hint` pulls itself up under an <h2>; under a <summary> it must not. */
+details.card .card-hint {
+  margin-top: 0.5rem;
+}

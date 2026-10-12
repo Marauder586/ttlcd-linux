@@ -196,6 +196,24 @@ pub fn mode_matches(query: &str, mode: &str, label: &str, title: &str) -> bool {
             .any(|s| s.to_lowercase().contains(query))
 }
 
+/// Whether a card is shown. `tab` is the open tab; a card either belongs to
+/// one tool tab (`card_tab`) or holds the settings of some display modes
+/// (`card_modes`, space-separated), which appear on the modes tab while one
+/// of those modes is selected.
+pub fn card_visible(
+    tab: &str,
+    modes_tab: &str,
+    selected: &str,
+    card_tab: &str,
+    card_modes: &str,
+) -> bool {
+    if tab == modes_tab {
+        !selected.is_empty() && card_modes.split(' ').any(|m| m == selected)
+    } else {
+        card_tab == tab
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -313,6 +331,31 @@ mod tests {
             "Clock",
             "Large digital clock"
         ));
+    }
+
+    #[test]
+    fn cards_follow_the_tab_and_the_selected_mode() {
+        // A tool card shows only on its own tab.
+        assert!(card_visible("push", "modes", "weather", "push", ""));
+        assert!(!card_visible("panel", "modes", "weather", "push", ""));
+        assert!(!card_visible("modes", "modes", "weather", "push", ""));
+        // A settings card shows on the modes tab for its modes only.
+        assert!(card_visible(
+            "modes",
+            "modes",
+            "ping_graph",
+            "",
+            "ping_monitor ping_graph"
+        ));
+        assert!(!card_visible(
+            "modes",
+            "modes",
+            "ping",
+            "",
+            "ping_monitor ping_graph"
+        ));
+        assert!(!card_visible("modes", "modes", "", "", "weather"));
+        assert!(!card_visible("push", "modes", "weather", "", "weather"));
     }
 
     #[test]

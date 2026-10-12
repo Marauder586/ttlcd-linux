@@ -149,6 +149,7 @@ pub fn set_active_mode(mode: &str) {
     }
     El::id("current-mode").set_text(&mode_label(mode));
     with(|s| s.last_mode = mode.to_string());
+    crate::layout::on_active_mode(mode);
 }
 
 /// Ask the daemon to switch mode, then highlight it.
@@ -404,27 +405,47 @@ pub async fn fetch_status() {
 
 // ─── Header controls ─────────────────────────────────────────────────────────
 
+const THEME_KEY: &str = "ttlcd-theme";
+
+/// Whether the page is currently light: by saved choice, or else because the
+/// browser prefers a light colour scheme.
+fn theme_is_light() -> bool {
+    match El(dom::doc().document_element())
+        .attr("data-theme")
+        .as_str()
+    {
+        "latte" => true,
+        "dark" => false,
+        _ => {
+            let query = dom::call1(
+                &dom::win(),
+                "matchMedia",
+                &"(prefers-color-scheme: light)".into(),
+            );
+            dom::prop(&query, "matches").is_truthy()
+        }
+    }
+}
+
+/// Apply a saved theme choice and wire up the toggle. Both choices are set
+/// as an explicit `data-theme`, because without one the stylesheet follows
+/// the browser's preference and "dark" could not override a light system.
 pub fn init_theme() {
     let root = El(dom::doc().document_element());
     let toggle = El::id("theme-toggle-btn");
-    if dom::storage_get("ttlcd-theme").as_deref() == Some("latte") {
-        root.set_attr("data-theme", "latte");
-        toggle.set_text("☀️");
+    if let Some(saved) = dom::storage_get(THEME_KEY).filter(|t| t == "latte" || t == "dark") {
+        root.set_attr("data-theme", &saved);
     }
+    let icon = |light: bool| if light { "☀️" } else { "🌙" };
+    toggle.set_text(icon(theme_is_light()));
+
     let btn = toggle.clone();
     toggle.on("click", move |_| {
-        let Some(root) = dom::doc().document_element() else {
-            return;
-        };
-        if root.get_attribute("data-theme").as_deref() == Some("latte") {
-            let _ = root.remove_attribute("data-theme");
-            dom::storage_set("ttlcd-theme", "dark");
-            btn.set_text("🌙");
-        } else {
-            let _ = root.set_attribute("data-theme", "latte");
-            dom::storage_set("ttlcd-theme", "latte");
-            btn.set_text("☀️");
-        }
+        let light = !theme_is_light();
+        let theme = if light { "latte" } else { "dark" };
+        root.set_attr("data-theme", theme);
+        dom::storage_set(THEME_KEY, theme);
+        btn.set_text(icon(light));
     });
 }
 

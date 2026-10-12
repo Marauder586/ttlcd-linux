@@ -10,6 +10,7 @@ mod api;
 mod core;
 mod dom;
 mod js;
+mod layout;
 mod misc;
 mod modes;
 mod monitors;
@@ -35,6 +36,8 @@ pub fn start() {
     monitors::init();
     modes::init();
     misc::init();
+    // Last, once every card exists.
+    layout::init();
 
     core::init_sse();
     start_polling();

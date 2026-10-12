@@ -31,7 +31,6 @@ const FALLBACK_MODES: [&str; 5] = ["clock", "sysinfo", "cpu_detail", "network", 
 
 pub fn init() {
     inject_stopwatch();
-    inject_thresholds();
     inject_dim();
     inject_metrics();
     inject_metrics_source();
@@ -96,9 +95,7 @@ fn inject_stopwatch() {
     </table>
   "#,
     );
-    El::id("freeze-btn")
-        .closest("section")
-        .insert_after(&section);
+    El::id("modes-section").insert_after(&section);
 
     El::id("sw-start-btn").on_async("click", |_| async {
         let running = STOPWATCH.with(|s| s.borrow().running);
@@ -212,45 +209,6 @@ pub async fn fetch_stopwatch() {
 
 // ─── Alert thresholds ────────────────────────────────────────────────────────
 
-fn inject_thresholds() {
-    let section = card(
-        "",
-        r#"
-    <h2>Alert Thresholds</h2>
-    <p class="card-hint">Panel flashes a custom text alert when CPU or temperature exceeds these limits.</p>
-    <div class="form-row three-col">
-      <div class="form-group">
-        <label for="thr-cpu">CPU % trigger <span class="hint-inline">(0 = off)</span></label>
-        <input type="number" id="thr-cpu" min="0" max="100" value="0" step="1">
-      </div>
-      <div class="form-group">
-        <label for="thr-temp">Temp °C trigger <span class="hint-inline">(0 = off)</span></label>
-        <input type="number" id="thr-temp" min="0" max="200" value="0" step="1">
-      </div>
-      <div class="form-group">
-        <label for="thr-cooldown">Cooldown (s)</label>
-        <input type="number" id="thr-cooldown" min="0" value="300" step="30">
-      </div>
-    </div>
-    <div class="form-actions">
-      <button id="thr-save-btn" class="primary">💾 Save Thresholds</button>
-      <span id="thr-status"></span>
-    </div>
-  "#,
-    );
-    El::id("set-apply-btn")
-        .closest("section")
-        .insert_after(&section);
-
-    El::id("thr-save-btn").on_async("click", |_| async {
-        let result = save_thresholds("thr-cpu", "thr-temp", "thr-cooldown", 300).await;
-        if report(&El::id("thr-status"), &result, "✓ Saved") {
-            log("Alert thresholds updated");
-            fetch_thresholds().await;
-        }
-    });
-}
-
 /// Post the alert thresholds read from the three named inputs.
 pub async fn save_thresholds(
     cpu: &str,
@@ -266,7 +224,7 @@ pub async fn save_thresholds(
     api::post_only("/api/alerts/thresholds", body).await
 }
 
-/// Load the thresholds into both threshold forms and the summary line.
+/// Load the thresholds into the threshold form and its summary line.
 pub async fn fetch_thresholds() {
     let Ok(d) = api::get("/api/alerts/thresholds").await else {
         return;
@@ -275,11 +233,8 @@ pub async fn fetch_thresholds() {
     let cooldown = d.get("cooldown_secs").num_or(300.0);
 
     for (id, value) in [
-        ("thr-cpu", cpu),
         ("thresh-cpu", cpu),
-        ("thr-temp", temp),
         ("thresh-temp", temp),
-        ("thr-cooldown", cooldown),
         ("thresh-cooldown", cooldown),
     ] {
         El::id(id).set_val(&value.to_string());
@@ -335,7 +290,7 @@ fn inject_dim() {
     <div id="dim-active-info" style="display:none;margin-top:0.5rem;font-size:0.85rem;color:var(--subtext)"></div>
   "#,
     );
-    El::id("thr-save-btn")
+    El::id("set-apply-btn")
         .closest("section")
         .insert_after(&section);
 

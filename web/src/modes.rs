@@ -100,8 +100,9 @@ fn init_switching() {
 
 // ─── Search and categories ───────────────────────────────────────────────────
 
-/// Show the grid buttons that match both the search box and the category.
-fn apply_filters() {
+/// Show the grid buttons in the chosen category, or, while a search is
+/// typed, the matches from every category.
+pub fn apply_filters() {
     let query = El::id("mode-search").trimmed().to_lowercase();
     let category = CATEGORY.with(|c| c.borrow().clone());
     let favorites = FAVORITES.with(|f| f.borrow().clone());
@@ -111,11 +112,13 @@ fn apply_filters() {
     for btn in &buttons {
         let mode = btn.data("mode");
         let in_search = mode_matches(&query, &mode, &parts(btn).1, &btn.title());
-        let in_category = match category.as_str() {
-            "all" => true,
-            "favorites" => favorites.contains(&mode),
-            cat => btn.data("cat") == cat,
-        };
+        // A search looks through every category.
+        let in_category = !query.is_empty()
+            || match category.as_str() {
+                "all" => true,
+                "favorites" => favorites.contains(&mode),
+                cat => btn.data("cat") == cat,
+            };
         btn.class("hidden-by-filter", !in_search)
             .class("hidden-by-cat", !in_category);
         if in_search && in_category {
@@ -198,7 +201,7 @@ fn init_categories() {
         btn.on("click", move |_| {
             CATEGORY.with(|c| *c.borrow_mut() = cat.clone());
             dom::storage_set(CATEGORY_KEY, &cat);
-            apply_filters();
+            crate::layout::show_modes();
         });
     }
     apply_filters();
@@ -280,12 +283,13 @@ fn render_favorites_band() {
 
 // ─── Recently used ───────────────────────────────────────────────────────────
 
-/// Record a mode as most recently used.
+/// Record a mode as most recently used and show its settings.
 pub fn remember(mode: &str) {
     let mut recent = dom::storage_list(RECENT_KEY);
     push_recent(&mut recent, mode, MAX_RECENT);
     dom::storage_set_list(RECENT_KEY, &recent);
     render_recent();
+    crate::layout::select_mode(mode);
 }
 
 fn init_recent() {
