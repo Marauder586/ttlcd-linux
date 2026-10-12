@@ -26,28 +26,71 @@
     </div>
   </header>
 
+  <!-- ── Panel preview ──────────────────────────────────────────── -->
+  <section class="card preview-card" id="preview-section">
+      <h2>Panel Preview <span class="refresh-hint">(auto-refreshes)</span></h2>
+      <div class="panel-preview-wrap">
+        <img id="panel-preview-img" alt="panel preview" class="panel-preview-img">
+        <div id="panel-preview-empty" class="panel-preview-empty">
+          No frame yet — waiting for first render…
+        </div>
+      </div>
+      <div class="preview-actions">
+        <a id="screenshot-btn" href="/api/screenshot" download="panel.jpg" class="btn-link">
+          📷 JPEG
+        </a>
+        <a href="/api/screenshot.png" download="panel.png" class="btn-link" title="Download lossless PNG screenshot">
+          📷 PNG
+        </a>
+        <button id="mjpeg-toggle-btn" class="btn-link" title="Toggle between JPEG polling and embedded MJPEG stream">📺 MJPEG</button>
+        <a href="/api/stream" target="_blank" class="btn-link" title="Open MJPEG stream in new tab">↗</a>
+        <button id="fullscreen-preview-btn" class="btn-link" title="View panel in fullscreen overlay (press Escape to exit)">⛶ Full</button>
+        <button id="freeze-btn" class="btn-link" title="Freeze / unfreeze display updates">❄ Freeze</button>
+      </div>
+      <!-- Fullscreen overlay for panel preview -->
+      <div id="fullscreen-overlay" style="display:none;position:fixed;inset:0;z-index:9000;background:rgba(0,0,0,0.9);display:none;align-items:center;justify-content:center;cursor:pointer" title="Click or press Escape to close">
+        <img id="fullscreen-img" src="" alt="Panel fullscreen" style="max-width:90vmin;max-height:90vmin;image-rendering:pixelated;border-radius:8px;box-shadow:0 0 40px rgba(0,0,0,0.8)">
+        <div style="position:absolute;top:1rem;right:1.5rem;color:#fff;font-size:1.5rem;cursor:pointer" id="fullscreen-close">✕</div>
+      </div>
+  </section>
+
+  <div class="layout">
+    <!-- Left-hand tabs: one per group of display modes, then the tools.
+         The web/ crate shows only the cards that belong to the chosen tab. -->
+    <nav class="sidebar" id="sidebar" aria-label="Sections">
+      <div class="sidebar-title">Display modes</div>
+    <div class="mode-categories" id="mode-categories">
+      <button class="cat-btn active" data-cat="all">All</button>
+      <button class="cat-btn" data-cat="clock">🕐 Clocks</button>
+      <button class="cat-btn" data-cat="timer">⏱ Timers</button>
+      <button class="cat-btn" data-cat="system">💻 System</button>
+      <button class="cat-btn" data-cat="network">🌐 Network</button>
+      <button class="cat-btn" data-cat="storage">💽 Storage</button>
+      <button class="cat-btn" data-cat="overview">📊 Overview</button>
+      <button class="cat-btn" data-cat="monitoring">🔍 Monitoring</button>
+      <button class="cat-btn" data-cat="info">📝 Info</button>
+      <button class="cat-btn" data-cat="notifications">🔔 Alerts</button>
+      <button class="cat-btn" data-cat="fun">🎮 Fun</button>
+      <button class="cat-btn" data-cat="other">⚙ Other</button>
+    </div>
+      <div class="sidebar-title">Tools</div>
+      <div class="tool-tabs" id="tool-tabs">
+        <button class="tab-btn" data-tab="push">📣 Push content</button>
+        <button class="tab-btn" data-tab="automation">⏱ Automation</button>
+        <button class="tab-btn" data-tab="panel">⚙ Panel &amp; alerts</button>
+        <button class="tab-btn" data-tab="integrations">🔗 Integrations</button>
+        <button class="tab-btn" data-tab="status">📈 Status &amp; logs</button>
+      </div>
+    </nav>
+
   <main>
     <!-- ── Display modes ──────────────────────────────────────────── -->
-    <section class="card">
+    <section class="card" id="modes-section">
       <div class="section-header-row">
         <h2 style="margin:0">Display Mode</h2>
         <input type="search" id="mode-search" placeholder="🔍 Filter modes…" autocomplete="off"
                style="padding:0.3rem 0.6rem;border-radius:6px;border:1px solid var(--surface2);
                       background:var(--surface0);color:var(--text);font-size:0.85rem;width:180px">
-      </div>
-      <div class="mode-categories" id="mode-categories">
-        <button class="cat-btn active" data-cat="all">All</button>
-        <button class="cat-btn" data-cat="clock">🕐 Clocks</button>
-        <button class="cat-btn" data-cat="timer">⏱ Timers</button>
-        <button class="cat-btn" data-cat="system">💻 System</button>
-        <button class="cat-btn" data-cat="network">🌐 Network</button>
-        <button class="cat-btn" data-cat="storage">💽 Storage</button>
-        <button class="cat-btn" data-cat="overview">📊 Overview</button>
-        <button class="cat-btn" data-cat="monitoring">🔍 Monitoring</button>
-        <button class="cat-btn" data-cat="info">📝 Info</button>
-        <button class="cat-btn" data-cat="notifications">🔔 Alerts</button>
-        <button class="cat-btn" data-cat="fun">🎮 Fun</button>
-        <button class="cat-btn" data-cat="other">⚙ Other</button>
       </div>
       <div class="mode-grid" id="mode-grid">
         <button class="mode-btn" data-mode="clock" data-cat="clock"         title="Large digital clock">🕐<span>Clock</span></button>
@@ -417,32 +460,6 @@
     </section>
 
     <!-- ── Panel preview (live render) ───────────────────────────── -->
-    <section class="card">
-      <h2>Panel Preview <span class="refresh-hint">(auto-refreshes)</span></h2>
-      <div class="panel-preview-wrap">
-        <img id="panel-preview-img" alt="panel preview" class="panel-preview-img">
-        <div id="panel-preview-empty" class="panel-preview-empty">
-          No frame yet — waiting for first render…
-        </div>
-      </div>
-      <div class="preview-actions">
-        <a id="screenshot-btn" href="/api/screenshot" download="panel.jpg" class="btn-link">
-          📷 JPEG
-        </a>
-        <a href="/api/screenshot.png" download="panel.png" class="btn-link" title="Download lossless PNG screenshot">
-          📷 PNG
-        </a>
-        <button id="mjpeg-toggle-btn" class="btn-link" title="Toggle between JPEG polling and embedded MJPEG stream">📺 MJPEG</button>
-        <a href="/api/stream" target="_blank" class="btn-link" title="Open MJPEG stream in new tab">↗</a>
-        <button id="fullscreen-preview-btn" class="btn-link" title="View panel in fullscreen overlay (press Escape to exit)">⛶ Full</button>
-        <button id="freeze-btn" class="btn-link" title="Freeze / unfreeze display updates">❄ Freeze</button>
-      </div>
-      <!-- Fullscreen overlay for panel preview -->
-      <div id="fullscreen-overlay" style="display:none;position:fixed;inset:0;z-index:9000;background:rgba(0,0,0,0.9);display:none;align-items:center;justify-content:center;cursor:pointer" title="Click or press Escape to close">
-        <img id="fullscreen-img" src="" alt="Panel fullscreen" style="max-width:90vmin;max-height:90vmin;image-rendering:pixelated;border-radius:8px;box-shadow:0 0 40px rgba(0,0,0,0.8)">
-        <div style="position:absolute;top:1rem;right:1.5rem;color:#fff;font-size:1.5rem;cursor:pointer" id="fullscreen-close">✕</div>
-      </div>
-    </section>
 
 
     <!-- ── Countdown timer ───────────────────────────────────────── -->
@@ -1036,6 +1053,8 @@
         <tr><td><kbd>Shift</kbd>+<kbd>E</kbd></td><td>Switch to Game of Life mode</td></tr>
         <tr><td><kbd>Shift</kbd>+<kbd>X</kbd></td><td>Switch to LED Clock mode</td></tr>
         <tr><td><kbd>/</kbd></td><td>Focus mode search filter (Esc to clear)</td></tr>
+        <tr><td><kbd>Ctrl</kbd>+<kbd>K</kbd></td><td>Open the command palette</td></tr>
+        <tr><td><kbd>?</kbd></td><td>Show these shortcuts as an overlay</td></tr>
       </table>
       <p class="card-hint" style="margin-top:0.5rem">Shortcuts are disabled while a text input is focused.</p>
     </details>
@@ -1049,7 +1068,9 @@
       <ul id="log"></ul>
     </section>
   </main>
+  </div>
 
-  <script src="/static/app.js"></script>
+  <!-- The UI logic is the web/ crate, compiled to WebAssembly. -->
+  <script type="module" src="/static/boot.js"></script>
 </body>
 </html>

@@ -9,13 +9,14 @@ pub mod display;
 pub mod pet;
 pub mod proto;
 
+use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, bail, Context, Result};
-use image::{imageops::FilterType, DynamicImage, ImageFormat};
+use image::{imageops::FilterType, DynamicImage, ImageReader};
 use rusb::{DeviceHandle, GlobalContext};
 
 use crate::proto::*;
@@ -36,10 +37,21 @@ pub const MAX_JPEG_BYTES: usize = u8::MAX as usize * IMG_PAYLOAD_SIZE;
 /// Size [`encode_for_panel`] aims to stay under (100 packets).
 pub const TARGET_JPEG_BYTES: usize = 100 * IMG_PAYLOAD_SIZE;
 
+/// Lowest JPEG quality [`encode_for_panel`] will fall back to.
+pub const MIN_JPEG_QUALITY: u8 = 10;
+
+/// Largest width or height accepted when decoding an image from a file,
+/// upload or URL.
+pub const MAX_DECODE_DIMENSION: u32 = 8192;
+
+/// Most memory a single image decode may allocate.
+pub const MAX_DECODE_ALLOC: u64 = 256 * 1024 * 1024;
+
 /// How long to wait for the per-frame ACK on the image IN endpoint.  It
-/// normally arrives within ~10 ms of the last packet.  Roughly one frame in a
-/// few hundred is acknowledged late or not at all (cause unknown), so this is
-/// kept short to make that a barely visible hitch rather than a stall.
+/// normally arrives within ~10 ms of the last packet.  With very busy
+/// (near-noise) frames about one in seventy is acknowledged late or not at
+/// all — cause unknown; ordinary frames have not been seen to miss — so this
+/// is kept short to make that a brief hitch rather than a stall.
 pub const IMG_ACK_TIMEOUT: Duration = Duration::from_millis(100);
 
 /// How often a static frame must be re-sent to stay on screen.  The panel
@@ -71,10 +83,9 @@ pub struct Panel {
 /// USB state shared between [`Panel`] and its refresher thread.
 struct Link {
     handle: DeviceHandle<GlobalContext>,
-    /// Serialises whole control packets / whole frames on the wire.
-    io: Mutex<()>,
-    /// Set once the `0x12` stream-begin prelude and the first frame are out.
-    stream_started: AtomicBool,
+    /// Serialises whole control packets / whole frames on the wire.  The
+    /// value is whether the `0x12` stream-begin prelude and first frame are out.
+    io: Mutex<bool>,
     /// Last JPEG sent and when it went out.
     last_frame: Mutex<Option<(Arc<Vec<u8>>, Instant)>>,
     stop: AtomicBool,
@@ -117,8 +128,8 @@ impl Panel {
         use std::io::Write;
 
         // Find the sysfs port path for this VID:PID.
-        let target_vid = format!("{:04x}", vid);
-        let target_pid = format!("{:04x}", pid);
+        let target_vid = format!("{vid:04x}");
+        let target_pid = format!("{pid:04x}");
 
         let port_path: Option<String> = (|| {
             let dir = std::fs::read_dir("/sys/bus/usb/devices").ok()?;
@@ -126,7 +137,9 @@ impl Panel {
                 let p = entry.path();
                 let name = entry.file_name().to_string_lossy().to_string();
                 // Only look at port entries (e.g. "1-6"), not interface entries.
-                if name.contains(':') { continue; }
+                if name.contains(':') {
+                    continue;
+                }
                 let vid_path = p.join("idVendor");
                 let pid_path = p.join("idProduct");
                 if std::fs::read_to_string(&vid_path).ok()?.trim() == target_vid
@@ -139,39 +152,43 @@ impl Panel {
         })();
 
         let Some(port) = port_path else {
-            log::warn!("sysfs_rebind: could not find sysfs port for {:04x}:{:04x}", vid, pid);
+            log::warn!("sysfs_rebind: could not find sysfs port for {vid:04x}:{pid:04x}");
             return;
         };
 
-        log::debug!("sysfs_rebind: found port {}", port);
+        log::debug!("sysfs_rebind: found port {port}");
         let unbind = "/sys/bus/usb/drivers/usb/unbind";
-        let bind   = "/sys/bus/usb/drivers/usb/bind";
+        let bind = "/sys/bus/usb/drivers/usb/bind";
 
-        match std::fs::OpenOptions::new().write(true).open(unbind)
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .open(unbind)
             .and_then(|mut f| f.write_all(port.as_bytes()))
         {
             Ok(()) => {
-                log::debug!("sysfs_rebind: unbound {}", port);
+                log::debug!("sysfs_rebind: unbound {port}");
                 std::thread::sleep(Duration::from_millis(300));
-                match std::fs::OpenOptions::new().write(true).open(bind)
+                match std::fs::OpenOptions::new()
+                    .write(true)
+                    .open(bind)
                     .and_then(|mut f| f.write_all(port.as_bytes()))
                 {
-                    Ok(()) => log::debug!("sysfs_rebind: rebound {}", port),
-                    Err(e) => log::warn!("sysfs_rebind bind failed: {}", e),
+                    Ok(()) => log::debug!("sysfs_rebind: rebound {port}"),
+                    Err(e) => log::warn!("sysfs_rebind bind failed: {e}"),
                 }
             }
-            Err(e) => log::warn!("sysfs_rebind unbind failed (likely not root): {}", e),
+            Err(e) => log::warn!("sysfs_rebind unbind failed (likely not root): {e}"),
         }
     }
 
     fn open_inner(vid: u16, pid: u16) -> Result<Self> {
-        let handle = rusb::open_device_with_vid_pid(vid, pid)
-            .ok_or_else(|| anyhow!(
-                "USB device {:04x}:{:04x} not found.\n\
+        let handle = rusb::open_device_with_vid_pid(vid, pid).ok_or_else(|| {
+            anyhow!(
+                "USB device {vid:04x}:{pid:04x} not found.\n\
                  Hint: ensure the device is connected and you have read/write \
-                 permission on /dev/bus/usb (udev rule or run as root).",
-                vid, pid
-            ))?;
+                 permission on /dev/bus/usb (udev rule or run as root)."
+            )
+        })?;
 
         // Set configuration 1.  The device is almost always already in config 1,
         // and attempting to change an already-correct config can fail on some
@@ -179,10 +196,9 @@ impl Panel {
         let cur_cfg = handle.active_configuration().unwrap_or(0);
         if cur_cfg != 1 {
             match handle.set_active_configuration(1) {
-                Ok(())  => log::debug!("set configuration 1 (was {})", cur_cfg),
-                Err(e)  => log::warn!(
-                    "set_active_configuration(1) failed ({e}); current config={}; continuing",
-                    cur_cfg
+                Ok(()) => log::debug!("set configuration 1 (was {cur_cfg})"),
+                Err(e) => log::warn!(
+                    "set_active_configuration(1) failed ({e}); current config={cur_cfg}; continuing"
                 ),
             }
         }
@@ -202,13 +218,12 @@ impl Panel {
             }
             handle
                 .claim_interface(iface)
-                .with_context(|| format!("claim_interface(if={})", iface))?;
+                .with_context(|| format!("claim_interface(if={iface})"))?;
         }
 
         let link = Arc::new(Link {
             handle,
-            io: Mutex::new(()),
-            stream_started: AtomicBool::new(false),
+            io: Mutex::new(false),
             last_frame: Mutex::new(None),
             stop: AtomicBool::new(false),
         });
@@ -227,22 +242,25 @@ impl Panel {
         })
     }
 
-    /// Run the 6-step init handshake on the control interface and parse
-    /// device info from the ACK packets.
+    /// Run the 6-step init handshake on the control interface, reading the
+    /// ACK after each opcode and parsing device info from the replies.
     ///
-    /// If the device times out on the first ACK read, automatically retries
-    /// with [`Panel::init_no_ack`] (some firmware variants don't ACK).
+    /// Fails if any ACK does not arrive within [`TRANSFER_TIMEOUT`]; for
+    /// firmware that never ACKs, use [`Panel::init_no_ack`] instead.
     pub fn init(&mut self) -> Result<()> {
         log::info!("init: running {}-step handshake", INIT_OPCODES.len());
         for (i, &opcode) in INIT_OPCODES.iter().enumerate() {
             self.write_ctrl(&build_ctrl(opcode))
-                .with_context(|| format!("init write opcode 0x{:02x}", opcode))?;
+                .with_context(|| format!("init write opcode 0x{opcode:02x}"))?;
             let ack = self
                 .read_ctrl()
-                .with_context(|| format!("init read ack for opcode 0x{:02x}", opcode))?;
+                .with_context(|| format!("init read ack for opcode 0x{opcode:02x}"))?;
             log::debug!(
                 "init[{}]: 0x{:02x} → ack {} bytes, head={:02x?}",
-                i, opcode, ack.len(), &ack[..ack.len().min(16)]
+                i,
+                opcode,
+                ack.len(),
+                &ack[..ack.len().min(16)]
             );
 
             // Parse device info from the well-known response opcodes.
@@ -270,13 +288,13 @@ impl Panel {
         Ok(())
     }
 
-    /// Variant of [`Panel::init`] that does NOT read ACKs.
-    /// Matches the C++ reference's behaviour on sibling SKU `0x2428:0x350d`.
+    /// Variant of [`Panel::init`] that does NOT read ACKs, so
+    /// [`Panel::info`] stays empty.  For firmware variants that don't reply.
     pub fn init_no_ack(&self) -> Result<()> {
         log::info!("init_no_ack: writing {} opcodes", INIT_OPCODES.len());
         for &opcode in INIT_OPCODES {
             self.write_ctrl(&build_ctrl(opcode))
-                .with_context(|| format!("init write opcode 0x{:02x}", opcode))?;
+                .with_context(|| format!("init write opcode 0x{opcode:02x}"))?;
         }
         Ok(())
     }
@@ -341,7 +359,7 @@ impl Panel {
     /// Send a single arbitrary control opcode (useful for reverse engineering).
     pub fn send_ctrl_opcode(&self, opcode: u8) -> Result<()> {
         self.write_ctrl(&build_ctrl(opcode))
-            .with_context(|| format!("ctrl opcode 0x{:02x}", opcode))
+            .with_context(|| format!("ctrl opcode 0x{opcode:02x}"))
     }
 
     /// Read a single response packet from the control IN endpoint.
@@ -367,7 +385,9 @@ impl Link {
         while !self.stop.load(Ordering::Acquire) {
             std::thread::sleep(Duration::from_millis(50));
             let due = match &*self.last_frame.lock().unwrap() {
-                Some((jpeg, sent)) if sent.elapsed() >= FRAME_REFRESH_INTERVAL => Some(Arc::clone(jpeg)),
+                Some((jpeg, sent)) if sent.elapsed() >= FRAME_REFRESH_INTERVAL => {
+                    Some(Arc::clone(jpeg))
+                }
                 _ => None,
             };
             let Some(jpeg) = due else { continue };
@@ -388,12 +408,12 @@ impl Link {
         let pkts = build_image_packets(jpeg);
         log::debug!("send_jpeg: {} bytes in {} packets", jpeg.len(), pkts.len());
 
-        let _io = self.io.lock().unwrap();
-        if !self.stream_started.load(Ordering::Acquire) {
+        let mut stream_started = self.io.lock().unwrap();
+        if !*stream_started {
             self.write_ctrl(&build_frame_begin())
                 .context("frame begin prelude")?;
             self.write_frame(&pkts, packet_delay_ms)?;
-            self.stream_started.store(true, Ordering::Release);
+            *stream_started = true;
         }
         self.write_frame(&pkts, packet_delay_ms)
     }
@@ -429,8 +449,15 @@ impl Link {
         }
         let mut ack = [0u8; IMG_ACK_SIZE];
         let t0 = Instant::now();
-        match self.handle.read_interrupt(EP_IMG_IN, &mut ack, IMG_ACK_TIMEOUT) {
-            Ok(n) => log::debug!("frame ack {:02x?} after {:?}", &ack[..n.min(2)], t0.elapsed()),
+        match self
+            .handle
+            .read_interrupt(EP_IMG_IN, &mut ack, IMG_ACK_TIMEOUT)
+        {
+            Ok(n) => log::debug!(
+                "frame ack {:02x?} after {:?}",
+                &ack[..n.min(2)],
+                t0.elapsed()
+            ),
             Err(e) => log::debug!("no frame ack from panel after {:?}: {e}", t0.elapsed()),
         }
         Ok(())
@@ -465,7 +492,42 @@ impl Drop for Panel {
 // ─── Image helpers ───────────────────────────────────────────────────────────
 
 /// Resize `img` to the panel's native resolution (480×480) and JPEG-encode it.
+///
+/// `quality` is an upper bound: very busy images encode to huge JPEGs, which
+/// cannot be sent at all past 255 packets and on `0x2343` are intermittently
+/// acknowledged late.  The quality is stepped down until the frame is at most
+/// [`TARGET_JPEG_BYTES`], and the level that worked is remembered process-wide
+/// so an animation that stays busy doesn't pay for the retries every frame.
 pub fn encode_for_panel(img: &DynamicImage, quality: u8) -> Result<Vec<u8>> {
+    static QUALITY_HINT: AtomicU8 = AtomicU8::new(100);
+
+    let start = quality.min(QUALITY_HINT.load(Ordering::Relaxed));
+    let (jpeg, used) = encode_within(img, start, TARGET_JPEG_BYTES)?;
+    // Creep back up once frames are comfortably small again.
+    let comfortable = jpeg.len() < TARGET_JPEG_BYTES * 6 / 10;
+    QUALITY_HINT.store(
+        if comfortable {
+            used.saturating_add(5).min(100)
+        } else {
+            used
+        },
+        Ordering::Relaxed,
+    );
+
+    if jpeg.len() > MAX_JPEG_BYTES {
+        bail!(
+            "frame is {} bytes even at q{used}; exceeds 255-packet limit",
+            jpeg.len()
+        );
+    }
+    Ok(jpeg)
+}
+
+/// Resize `img` to the panel and JPEG-encode it at `quality`, lowering the
+/// quality by a quarter at a time (down to [`MIN_JPEG_QUALITY`]) until the
+/// result is at most `target` bytes.  Returns the JPEG and the quality used;
+/// the JPEG can still exceed `target` if even the minimum quality is too big.
+fn encode_within(img: &DynamicImage, quality: u8, target: usize) -> Result<(Vec<u8>, u8)> {
     let resized = if img.width() == PANEL_WIDTH && img.height() == PANEL_HEIGHT {
         img.to_rgb8()
     } else {
@@ -473,57 +535,211 @@ pub fn encode_for_panel(img: &DynamicImage, quality: u8) -> Result<Vec<u8>> {
             .to_rgb8()
     };
 
-    let _ = ImageFormat::Jpeg; // suppress unused-import warning
-    let resized = image::DynamicImage::ImageRgb8(resized);
-
-    // Very busy images encode to huge JPEGs: past 255 packets they cannot be
-    // sent at all, and on `0x2343` frames above ~120 kB are intermittently
-    // not acknowledged (a visible stall).  Step the quality down until the
-    // frame fits the target, and remember it so an animation that stays busy
-    // doesn't pay for the retries on every frame.
-    static QUALITY_HINT: AtomicU8 = AtomicU8::new(100);
-    let mut q = quality.min(QUALITY_HINT.load(Ordering::Relaxed));
+    let mut q = quality.max(MIN_JPEG_QUALITY);
     loop {
         let mut out = Vec::with_capacity(64 * 1024);
-        let encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(
-            std::io::Cursor::new(&mut out),
-            q,
-        );
-        resized.write_with_encoder(encoder).context("JPEG encode")?;
-        if out.len() <= TARGET_JPEG_BYTES || q <= 10 {
-            // Creep back up once frames are comfortably small again.
-            let next = if out.len() < TARGET_JPEG_BYTES * 6 / 10 { q.saturating_add(5).min(100) } else { q };
-            QUALITY_HINT.store(next, Ordering::Relaxed);
-            if out.len() > MAX_JPEG_BYTES {
-                bail!("frame is {} bytes even at q{}; exceeds 255-packet limit", out.len(), q);
-            }
-            return Ok(out);
+        image::codecs::jpeg::JpegEncoder::new_with_quality(&mut out, q)
+            .encode_image(&resized)
+            .context("JPEG encode")?;
+        if out.len() <= target || q == MIN_JPEG_QUALITY {
+            return Ok((out, q));
         }
-        log::debug!("frame is {} bytes at q{}; retrying at lower quality", out.len(), q);
-        q = (q as u32 * 3 / 4).max(10) as u8;
+        log::debug!(
+            "frame is {} bytes at q{q}; retrying at lower quality",
+            out.len()
+        );
+        q = (q as u32 * 3 / 4).max(MIN_JPEG_QUALITY as u32) as u8;
     }
 }
 
 /// Fit `img` inside 480×480 with letterboxing (black bars) and JPEG-encode.
 pub fn letterbox_for_panel(img: &DynamicImage, quality: u8) -> Result<Vec<u8>> {
+    let (w, h) = letterbox_size(img.width(), img.height());
+    let resized = img.resize_exact(w, h, FilterType::Lanczos3).to_rgb8();
+
     let mut canvas = image::RgbImage::new(PANEL_WIDTH, PANEL_HEIGHT);
+    image::imageops::replace(
+        &mut canvas,
+        &resized,
+        ((PANEL_WIDTH - w) / 2) as i64,
+        ((PANEL_HEIGHT - h) / 2) as i64,
+    );
+    encode_for_panel(&DynamicImage::ImageRgb8(canvas), quality)
+}
 
-    let src_w = img.width() as f32;
-    let src_h = img.height() as f32;
-    let scale = (PANEL_WIDTH as f32 / src_w).min(PANEL_HEIGHT as f32 / src_h);
-    let new_w = (src_w * scale) as u32;
-    let new_h = (src_h * scale) as u32;
+/// Largest size with the aspect ratio of `width`×`height` that fits the
+/// panel.  Each side is at least 1 px, however extreme the ratio.
+fn letterbox_size(width: u32, height: u32) -> (u32, u32) {
+    let (w, h) = (width.max(1) as f64, height.max(1) as f64);
+    let scale = (PANEL_WIDTH as f64 / w).min(PANEL_HEIGHT as f64 / h);
+    let fit = |side: f64, max: u32| ((side * scale).round() as u32).clamp(1, max);
+    (fit(w, PANEL_WIDTH), fit(h, PANEL_HEIGHT))
+}
 
-    let resized = img
-        .resize_exact(new_w, new_h, FilterType::Lanczos3)
-        .to_rgb8();
+/// Decode an image from memory, refusing ones whose dimensions or memory use
+/// are unreasonable — a few kilobytes of crafted file can otherwise ask the
+/// decoder for gigabytes.  Use this for anything that arrives over the API.
+pub fn decode_image(bytes: &[u8]) -> Result<DynamicImage> {
+    let reader = ImageReader::new(std::io::Cursor::new(bytes))
+        .with_guessed_format()
+        .context("identify image format")?;
+    decode_limited(reader)
+}
 
-    let x_off = (PANEL_WIDTH - new_w) / 2;
-    let y_off = (PANEL_HEIGHT - new_h) / 2;
+/// Like [`decode_image`], for a file on disk.
+pub fn open_image(path: impl AsRef<Path>) -> Result<DynamicImage> {
+    let path = path.as_ref();
+    let reader = ImageReader::open(path)
+        .and_then(image::ImageReader::with_guessed_format)
+        .with_context(|| format!("open {}", path.display()))?;
+    decode_limited(reader).with_context(|| format!("decode {}", path.display()))
+}
 
-    for (x, y, px) in resized.enumerate_pixels() {
-        canvas.put_pixel(x + x_off, y + y_off, *px);
+fn decode_limited<R: std::io::BufRead + std::io::Seek>(
+    mut reader: ImageReader<R>,
+) -> Result<DynamicImage> {
+    let mut limits = image::Limits::default();
+    limits.max_image_width = Some(MAX_DECODE_DIMENSION);
+    limits.max_image_height = Some(MAX_DECODE_DIMENSION);
+    limits.max_alloc = Some(MAX_DECODE_ALLOC);
+    reader.limits(limits);
+    reader.decode().context("decode image")
+}
+
+// ─── Tests ───────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use image::{Rgb, RgbImage};
+
+    /// Incompressible image: every pixel pseudo-random.
+    fn noise(width: u32, height: u32) -> DynamicImage {
+        let mut seed = 0x1234_5678u32;
+        DynamicImage::ImageRgb8(RgbImage::from_fn(width, height, |_, _| {
+            seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            Rgb([(seed >> 24) as u8, (seed >> 16) as u8, (seed >> 8) as u8])
+        }))
     }
 
-    encode_for_panel(&image::DynamicImage::ImageRgb8(canvas), quality)
+    fn solid(width: u32, height: u32, color: [u8; 3]) -> DynamicImage {
+        DynamicImage::ImageRgb8(RgbImage::from_pixel(width, height, Rgb(color)))
+    }
+
+    fn png_bytes(img: &DynamicImage) -> Vec<u8> {
+        let mut out = std::io::Cursor::new(Vec::new());
+        img.write_to(&mut out, image::ImageFormat::Png).unwrap();
+        out.into_inner()
+    }
+
+    #[test]
+    fn simple_image_keeps_the_requested_quality() {
+        let (jpeg, q) =
+            encode_within(&solid(480, 480, [200, 30, 30]), 85, TARGET_JPEG_BYTES).unwrap();
+        assert_eq!(q, 85);
+        assert!(jpeg.len() <= TARGET_JPEG_BYTES);
+        assert_eq!(&jpeg[..2], &[0xff, 0xd8], "not a JPEG");
+    }
+
+    #[test]
+    fn busy_image_is_stepped_down_to_fit() {
+        let img = noise(480, 480);
+        let (full, _) = encode_within(&img, 85, usize::MAX).unwrap();
+        assert!(
+            full.len() > TARGET_JPEG_BYTES,
+            "noise should not fit at q85"
+        );
+
+        let (jpeg, q) = encode_within(&img, 85, TARGET_JPEG_BYTES).unwrap();
+        assert!(q < 85);
+        assert!(jpeg.len() <= TARGET_JPEG_BYTES || q == MIN_JPEG_QUALITY);
+    }
+
+    #[test]
+    fn quality_never_drops_below_the_minimum() {
+        // An impossible target: the loop must still terminate, at the floor.
+        let (_, q) = encode_within(&noise(480, 480), 85, 1).unwrap();
+        assert_eq!(q, MIN_JPEG_QUALITY);
+        let (_, q) = encode_within(&solid(480, 480, [0, 0, 0]), 0, usize::MAX).unwrap();
+        assert_eq!(q, MIN_JPEG_QUALITY);
+    }
+
+    #[test]
+    fn encoded_frames_are_panel_sized_and_sendable() {
+        for img in [
+            solid(64, 48, [10, 200, 90]),
+            noise(480, 480),
+            noise(1000, 300),
+        ] {
+            let jpeg = encode_for_panel(&img, 95).unwrap();
+            assert!(jpeg.len() <= MAX_JPEG_BYTES);
+            let back = decode_image(&jpeg).unwrap();
+            assert_eq!((back.width(), back.height()), (PANEL_WIDTH, PANEL_HEIGHT));
+            // Must not panic: the frame fits the one-byte packet count.
+            assert!(build_image_packets(&jpeg).len() <= 255);
+        }
+    }
+
+    #[test]
+    fn letterbox_size_preserves_aspect_and_fits() {
+        assert_eq!(letterbox_size(480, 480), (480, 480));
+        assert_eq!(letterbox_size(960, 480), (480, 240));
+        assert_eq!(letterbox_size(100, 400), (120, 480));
+        assert_eq!(letterbox_size(1920, 1080), (480, 270));
+        // Extreme ratios keep at least one pixel instead of collapsing to 0.
+        assert_eq!(letterbox_size(10_000, 1), (480, 1));
+        assert_eq!(letterbox_size(1, 10_000), (1, 480));
+        assert_eq!(letterbox_size(0, 0), (480, 480));
+    }
+
+    #[test]
+    fn letterbox_centres_the_image_on_black() {
+        let jpeg = letterbox_for_panel(&solid(200, 100, [255, 255, 255]), 95).unwrap();
+        let img = decode_image(&jpeg).unwrap().to_rgb8();
+        assert_eq!((img.width(), img.height()), (480, 480));
+        assert!(
+            img.get_pixel(240, 240).0.iter().all(|&v| v > 240),
+            "centre should be white"
+        );
+        assert!(
+            img.get_pixel(240, 20).0.iter().all(|&v| v < 16),
+            "top bar should be black"
+        );
+        assert!(
+            img.get_pixel(240, 460).0.iter().all(|&v| v < 16),
+            "bottom bar should be black"
+        );
+    }
+
+    #[test]
+    fn letterbox_handles_extreme_aspect_ratios() {
+        assert!(letterbox_for_panel(&solid(2000, 1, [255, 0, 0]), 85).is_ok());
+        assert!(letterbox_for_panel(&solid(1, 2000, [255, 0, 0]), 85).is_ok());
+    }
+
+    #[test]
+    fn decode_accepts_normal_images_and_rejects_garbage() {
+        let img = decode_image(&png_bytes(&solid(32, 16, [1, 2, 3]))).unwrap();
+        assert_eq!((img.width(), img.height()), (32, 16));
+        assert!(decode_image(b"definitely not an image").is_err());
+        assert!(decode_image(&[]).is_err());
+    }
+
+    #[test]
+    fn decode_rejects_oversized_dimensions() {
+        let wide = png_bytes(&solid(MAX_DECODE_DIMENSION + 1, 1, [0, 0, 0]));
+        assert!(decode_image(&wide).is_err());
+        let ok = png_bytes(&solid(MAX_DECODE_DIMENSION, 1, [0, 0, 0]));
+        assert!(decode_image(&ok).is_ok());
+    }
+
+    #[test]
+    fn open_image_reads_files_and_reports_missing_ones() {
+        let path = std::env::temp_dir().join(format!("ttlcd-test-{}.png", std::process::id()));
+        std::fs::write(&path, png_bytes(&solid(8, 8, [9, 9, 9]))).unwrap();
+        let img = open_image(&path);
+        std::fs::remove_file(&path).unwrap();
+        assert_eq!(img.unwrap().width(), 8);
+        assert!(open_image("/nonexistent/ttlcd.png").is_err());
+    }
 }

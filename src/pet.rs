@@ -6,6 +6,11 @@
 //! animations; every animation starts and ends in the sitting pose, and pose
 //! changes are cross-faded over a few frames.
 //!
+//! The background is one of six environments.  Three are static (solid
+//! colour, forest, living room); three are animated (night forest, alchemy
+//! dungeon, dark library), with occasional events such as a bat or a flying
+//! book scheduled deterministically from the simulation clock.
+//!
 //! Coat and environment are runtime settings ([`config`] / [`set_config`]).
 
 use std::sync::{Mutex, OnceLock};
@@ -455,9 +460,27 @@ impl Pose {
 fn coat_color(coat: Coat, ch: u8) -> Option<[u8; 3]> {
     // (outline, body, light, stripe, eye)
     let (outline, body, light, stripe, eye) = match coat {
-        Coat::Tuxedo => ([14, 14, 20], [46, 46, 56], [244, 244, 240], [46, 46, 56], [150, 220, 110]),
-        Coat::Black => ([8, 8, 12], [38, 38, 48], [56, 56, 68], [38, 38, 48], [250, 210, 70]),
-        Coat::Orange => ([96, 48, 16], [234, 146, 60], [252, 228, 194], [188, 100, 30], [120, 196, 90]),
+        Coat::Tuxedo => (
+            [14, 14, 20],
+            [46, 46, 56],
+            [244, 244, 240],
+            [46, 46, 56],
+            [150, 220, 110],
+        ),
+        Coat::Black => (
+            [8, 8, 12],
+            [38, 38, 48],
+            [56, 56, 68],
+            [38, 38, 48],
+            [250, 210, 70],
+        ),
+        Coat::Orange => (
+            [96, 48, 16],
+            [234, 146, 60],
+            [252, 228, 194],
+            [188, 100, 30],
+            [120, 196, 90],
+        ),
     };
     match ch {
         b'o' | b'c' => Some(outline),
@@ -612,7 +635,12 @@ impl PetState {
         match anim {
             Anim::Idle => self.idle_len = 60 + (self.rand() * 60.0) as u32,
             Anim::Ball => {
-                self.ball = Some(Ball { x: BALL_HOME_X, y: -3.0, vx: 0.0, vy: 0.0 });
+                self.ball = Some(Ball {
+                    x: BALL_HOME_X,
+                    y: -3.0,
+                    vx: 0.0,
+                    vy: 0.0,
+                });
                 self.floor_hits = 0;
                 self.swats = 0;
                 self.swat_timer = 0;
@@ -683,7 +711,7 @@ impl PetState {
         }
 
         // Sleeping "z"s drift up and to the right.
-        if matches!(self.pose, Pose::SleepA | Pose::SleepB) && self.step % 40 == 0 {
+        if matches!(self.pose, Pose::SleepA | Pose::SleepB) && self.step.is_multiple_of(40) {
             self.zs.push((CAT_X as f32 + 5.0, (FLOOR_Y - 10) as f32, 0));
         }
         for z in &mut self.zs {
@@ -741,7 +769,11 @@ impl PetState {
 
         if self.swat_timer > 0 {
             self.swat_timer -= 1;
-            if self.swats > LIGHT_SWATS { Pose::Swat } else { Pose::SwatUp }
+            if self.swats > LIGHT_SWATS {
+                Pose::Swat
+            } else {
+                Pose::SwatUp
+            }
         } else if y < (FLOOR_Y - SPRITE) as f32 && self.swats <= LIGHT_SWATS {
             Pose::LookUp
         } else {
@@ -761,7 +793,9 @@ struct Canvas {
 
 impl Canvas {
     fn new(fill: [u8; 3]) -> Self {
-        Self { px: vec![fill; (GRID * GRID) as usize] }
+        Self {
+            px: vec![fill; (GRID * GRID) as usize],
+        }
     }
 
     fn get(&self, x: i32, y: i32) -> Option<[u8; 3]> {
@@ -808,7 +842,9 @@ impl Canvas {
         for y in (cy - r).floor() as i32..=(cy + r).ceil() as i32 {
             for x in (cx - r).floor() as i32..=(cx + r).ceil() as i32 {
                 let d = ((x as f32 - cx).powi(2) + (y as f32 - cy).powi(2)).sqrt();
-                let (Some(px), true) = (self.get(x, y), d < r) else { continue };
+                let (Some(px), true) = (self.get(x, y), d < r) else {
+                    continue;
+                };
                 let k = (1.0 - d / r).powi(2) * strength;
                 let add = |i: usize| (px[i] as f32 + color[i] as f32 * k).min(255.0) as u8;
                 self.set(x, y, [add(0), add(1), add(2)]);
@@ -830,7 +866,11 @@ impl Canvas {
             let w = line.len() as i32;
             for (col, ch) in line.bytes().enumerate() {
                 if ch == b'o' {
-                    let col = if mirror { w - 1 - col as i32 } else { col as i32 };
+                    let col = if mirror {
+                        w - 1 - col as i32
+                    } else {
+                        col as i32
+                    };
                     self.set(x0 + col, y0 + row as i32, color);
                 }
             }
@@ -875,7 +915,13 @@ fn paint_forest(c: &mut Canvas) {
     for y in 0..42 {
         let band = (y / 7) as f32 / 5.0;
         let mix = |a: f32, b: f32| (a + (b - a) * band) as u8;
-        c.rect(0, y, GRID - 1, y, [mix(118.0, 196.0), mix(192.0, 232.0), mix(226.0, 214.0)]);
+        c.rect(
+            0,
+            y,
+            GRID - 1,
+            y,
+            [mix(118.0, 196.0), mix(192.0, 232.0), mix(226.0, 214.0)],
+        );
     }
     // Clouds
     c.rect(34, 5, 43, 6, [240, 248, 250]);
@@ -883,10 +929,20 @@ fn paint_forest(c: &mut Canvas) {
     c.rect(14, 10, 20, 11, [240, 248, 250]);
     // Two rows of pines
     for (i, cx) in (2..GRID).step_by(8).enumerate() {
-        c.pine(cx, 18 + (scatter(i as i32, 1) % 6) as i32, 42, [70, 138, 118]);
+        c.pine(
+            cx,
+            18 + (scatter(i as i32, 1) % 6) as i32,
+            42,
+            [70, 138, 118],
+        );
     }
     for (i, cx) in (-2..GRID + 4).step_by(9).enumerate() {
-        c.pine(cx, 22 + (scatter(i as i32, 2) % 8) as i32, 43, [40, 100, 80]);
+        c.pine(
+            cx,
+            22 + (scatter(i as i32, 2) % 8) as i32,
+            43,
+            [40, 100, 80],
+        );
     }
     // Grass
     c.rect(0, 42, GRID - 1, 43, [64, 132, 66]);
@@ -939,7 +995,11 @@ fn paint_forest(c: &mut Canvas) {
 fn paint_living_room(c: &mut Canvas) {
     // Striped wallpaper
     for x in 0..GRID {
-        let col = if x % 6 < 3 { [216, 194, 164] } else { [206, 182, 150] };
+        let col = if x % 6 < 3 {
+            [216, 194, 164]
+        } else {
+            [206, 182, 150]
+        };
         c.rect(x, 0, x, 39, col);
     }
     // Baseboard and wooden floor
@@ -1006,20 +1066,49 @@ fn hue_rgb(hue: f32) -> [u8; 3] {
     [r as u8, g as u8, b as u8]
 }
 
-/// Scheduling for occasional scenery events (a bat, the witch, the flying
-/// book).  Time is cut into slots of `slot_len` steps; in `chance_pct` percent
-/// of them the event plays for the slot's first `duration` steps.  Returns the
-/// progress through the event (0–1) and the slot number.
-fn event(tick: u64, slot_len: u64, duration: u64, chance_pct: u32, salt: i32) -> Option<(f32, u64)> {
-    let (slot, within) = (tick / slot_len, tick % slot_len);
-    (within < duration && scatter(slot as i32, salt) % 100 < chance_pct)
-        .then(|| (within as f32 / duration as f32, slot))
+/// An occasional scenery event (a bat, the witch, the flying book).
+///
+/// Time is cut into slots of `slot_len` steps; in `chance_pct` percent of them
+/// — chosen by a hash of the slot number and `salt`, so it is repeatable — the
+/// event plays for the slot's first `duration` steps.
+struct Event {
+    slot_len: u64,
+    duration: u64,
+    chance_pct: u32,
+    salt: i32,
 }
 
-/// (slot length, duration, chance %, salt) for [`event`].
-const BAT_EVENT: (u64, u64, u32, i32) = (300, 110, 50, 5);
-const WITCH_EVENT: (u64, u64, u32, i32) = (1500, 210, 12, 3);
-const BOOK_EVENT: (u64, u64, u32, i32) = (360, 130, 55, 8);
+impl Event {
+    /// If the event is playing at `tick`: how far through it is (0–1) and the
+    /// slot number (handy for varying direction or colour between plays).
+    fn progress(&self, tick: u64) -> Option<(f32, u64)> {
+        let (slot, within) = (tick / self.slot_len, tick % self.slot_len);
+        (within < self.duration && scatter(slot as i32, self.salt) % 100 < self.chance_pct)
+            .then(|| (within as f32 / self.duration as f32, slot))
+    }
+}
+
+/// A bat about every 20 s on average.
+const BAT_EVENT: Event = Event {
+    slot_len: 300,
+    duration: 110,
+    chance_pct: 50,
+    salt: 5,
+};
+/// The witch about every 7 minutes on average.
+const WITCH_EVENT: Event = Event {
+    slot_len: 1500,
+    duration: 210,
+    chance_pct: 12,
+    salt: 3,
+};
+/// The flying book about every 22 s on average.
+const BOOK_EVENT: Event = Event {
+    slot_len: 360,
+    duration: 130,
+    chance_pct: 55,
+    salt: 8,
+};
 
 /// Moon centre: in the gap between the two foreground canopies.
 const MOON: (f32, f32) = (30.0, 10.0);
@@ -1052,7 +1141,13 @@ fn paint_night_forest(c: &mut Canvas, tick: u64) {
     for y in 0..42 {
         let band = (y / 7) as f32 / 5.0;
         let mix = |a: f32, b: f32| (a + (b - a) * band) as u8;
-        c.rect(0, y, GRID - 1, y, [mix(10.0, 30.0), mix(14.0, 42.0), mix(38.0, 80.0)]);
+        c.rect(
+            0,
+            y,
+            GRID - 1,
+            y,
+            [mix(10.0, 30.0), mix(14.0, 42.0), mix(38.0, 80.0)],
+        );
     }
     // Twinkling stars
     for i in 0..36 {
@@ -1067,19 +1162,39 @@ fn paint_night_forest(c: &mut Canvas, tick: u64) {
         c.set(MOON.0 as i32 + dx, MOON.1 as i32 + dy, [214, 208, 176]);
     }
     // Very rarely: a witch on a broomstick, straight across the moon
-    if let Some((p, slot)) = event(tick, WITCH_EVENT.0, WITCH_EVENT.1, WITCH_EVENT.2, WITCH_EVENT.3) {
+    if let Some((p, slot)) = WITCH_EVENT.progress(tick) {
         let leftward = slot % 2 == 1;
         let travel = -WITCH_W - 2.0 + p * (GRID as f32 + 2.0 * WITCH_W + 4.0);
-        let x = if leftward { GRID as f32 - WITCH_W - travel } else { travel };
+        let x = if leftward {
+            GRID as f32 - WITCH_W - travel
+        } else {
+            travel
+        };
         let y = MOON.1 - 5.0 + (p * 9.0).sin() * 0.8;
-        c.stamp(&WITCH, x.round() as i32, y.round() as i32, [6, 6, 12], leftward);
+        c.stamp(
+            &WITCH,
+            x.round() as i32,
+            y.round() as i32,
+            [6, 6, 12],
+            leftward,
+        );
     }
     // Now and then: a bat flapping across the sky
-    if let Some((p, slot)) = event(tick, BAT_EVENT.0, BAT_EVENT.1, BAT_EVENT.2, BAT_EVENT.3) {
+    if let Some((p, slot)) = BAT_EVENT.progress(tick) {
         let x = -10.0 + p * (GRID as f32 + 20.0);
-        let x = if slot % 2 == 0 { x } else { GRID as f32 - 9.0 - x };
+        let x = if slot % 2 == 0 {
+            x
+        } else {
+            GRID as f32 - 9.0 - x
+        };
         let y = 13.0 + (scatter(slot as i32, 6) % 8) as f32 + (p * 11.0).sin() * 3.0;
-        c.stamp(&BAT[(tick / 4 % 2) as usize], x.round() as i32, y.round() as i32, [8, 8, 16], false);
+        c.stamp(
+            &BAT[(tick / 4 % 2) as usize],
+            x.round() as i32,
+            y.round() as i32,
+            [8, 8, 16],
+            false,
+        );
     }
     // Pine silhouettes
     for (i, cx) in (2..GRID).step_by(8).enumerate() {
@@ -1100,7 +1215,13 @@ fn paint_night_forest(c: &mut Canvas, tick: u64) {
             }
         }
     }
-    c.glow(CAT_X as f32 + 8.0, FLOOR_Y as f32 + 1.0, 22.0, [60, 90, 100], 0.6);
+    c.glow(
+        CAT_X as f32 + 8.0,
+        FLOOR_Y as f32 + 1.0,
+        22.0,
+        [60, 90, 100],
+        0.6,
+    );
     // Foreground trunks and canopies
     for &(x0, x1) in &[(2, 7), (51, 56)] {
         c.rect(x0, 0, x1, 46, [34, 28, 40]);
@@ -1124,7 +1245,13 @@ fn paint_night_forest(c: &mut Canvas, tick: u64) {
     .enumerate()
     {
         let pulse = (t * 0.05 + i as f32 * 2.1).sin() * 0.5 + 0.5;
-        c.glow(x as f32 + 0.5, y as f32 - 1.0, 6.0, cap, 0.25 + 0.45 * pulse);
+        c.glow(
+            x as f32 + 0.5,
+            y as f32 - 1.0,
+            6.0,
+            cap,
+            0.25 + 0.45 * pulse,
+        );
         c.rect(x, y, x + 1, y + 2, [226, 226, 214]);
         c.rect(x - 1, y - 1, x + 2, y - 1, cap);
         c.rect(x, y - 2, x + 1, y - 2, cap);
@@ -1135,7 +1262,8 @@ fn paint_night_forest(c: &mut Canvas, tick: u64) {
     for i in 0..12 {
         let f = i as f32;
         let x = (scatter(i, 21) % 56) as f32 + 2.0 + (t * (0.011 + f * 0.0013) + f).sin() * 5.0;
-        let y = (scatter(i, 22) % 26) as f32 + 20.0 + (t * (0.017 + f * 0.0011) + f * 2.3).sin() * 3.0;
+        let y =
+            (scatter(i, 22) % 26) as f32 + 20.0 + (t * (0.017 + f * 0.0011) + f * 2.3).sin() * 3.0;
         let lit = ((t * (0.045 + f * 0.004) + f * 1.9).sin()).max(0.0);
         if lit > 0.05 {
             c.glow(x, y, 3.5, [70, 150, 255], 0.7 * lit);
@@ -1175,7 +1303,16 @@ fn paint_dungeon(c: &mut Canvas, tick: u64) {
         c.set(0, i, [150, 150, 164]);
         c.set(i, i, [150, 150, 164]);
     }
-    for &(x, y) in &[(3, 1), (1, 3), (5, 2), (2, 5), (6, 4), (4, 6), (5, 3), (3, 5)] {
+    for &(x, y) in &[
+        (3, 1),
+        (1, 3),
+        (5, 2),
+        (2, 5),
+        (6, 4),
+        (4, 6),
+        (5, 3),
+        (3, 5),
+    ] {
         c.set(x, y, [120, 120, 136]);
     }
     // Shelf of potion bottles and a skull
@@ -1199,7 +1336,13 @@ fn paint_dungeon(c: &mut Canvas, tick: u64) {
     c.rect(10, 18, 13, 20, [255, 150, 40]);
     c.rect(11, 16, 12, 19, [255, 214, 90]);
     c.set(11 + flick.max(0), 15, [255, 170, 60]);
-    c.glow(11.5, 18.0, 14.0, [255, 150, 60], 0.45 + 0.1 * (t * 0.4).sin());
+    c.glow(
+        11.5,
+        18.0,
+        14.0,
+        [255, 150, 60],
+        0.45 + 0.1 * (t * 0.4).sin(),
+    );
 
     // A spider letting itself down on a thread, and one pacing the wall
     let legs = (tick / 6 % 2) as usize;
@@ -1207,14 +1350,30 @@ fn paint_dungeon(c: &mut Canvas, tick: u64) {
     c.rect(24, 0, 24, drop, [150, 150, 164]);
     c.stamp(&SPIDER[legs], 22, drop, [18, 14, 22], false);
     let crawl = (30.0 + (t * 0.012).sin() * 24.0) as i32;
-    c.stamp(&SPIDER[legs], crawl, 33 + (scatter(crawl / 6, 40) % 2) as i32, [18, 14, 22], false);
+    c.stamp(
+        &SPIDER[legs],
+        crawl,
+        33 + (scatter(crawl / 6, 40) % 2) as i32,
+        [18, 14, 22],
+        false,
+    );
 
     // Cauldron over a fire; the brew slowly cycles through the rainbow
     let brew = hue_rgb(t / 480.0);
     let (cx, top) = (50.0, 37);
     for x in 44..=56 {
         let h = scatter(x, (tick / 3) as i32) % 4;
-        c.rect(x, 51 - h as i32, x, 52, if h > 2 { [255, 220, 100] } else { [255, 130, 40] });
+        c.rect(
+            x,
+            51 - h as i32,
+            x,
+            52,
+            if h > 2 {
+                [255, 220, 100]
+            } else {
+                [255, 130, 40]
+            },
+        );
     }
     c.rect(43, 52, 57, 53, [70, 46, 32]);
     c.glow(cx, 51.0, 9.0, [255, 140, 50], 0.5);
@@ -1222,7 +1381,13 @@ fn paint_dungeon(c: &mut Canvas, tick: u64) {
     c.ellipse(cx - 2.0, 43.0, 4.0, 3.0, [40, 38, 48]);
     c.rect(41, top, 59, top + 1, [44, 42, 54]);
     c.rect(43, top, 57, top, brew);
-    c.rect(44, top + 1, 56, top + 1, brew.map(|v| (v as f32 * 0.7) as u8));
+    c.rect(
+        44,
+        top + 1,
+        56,
+        top + 1,
+        brew.map(|v| (v as f32 * 0.7) as u8),
+    );
     c.glow(cx, top as f32 - 1.0, 12.0, brew, 0.35);
     // Bubbles swell on the surface, rise and pop
     for i in 0..6 {
@@ -1244,8 +1409,14 @@ fn paint_dungeon(c: &mut Canvas, tick: u64) {
 fn paint_library(c: &mut Canvas, tick: u64) {
     let t = tick as f32;
     const SPINES: [[u8; 3]; 8] = [
-        [150, 50, 50], [50, 90, 140], [60, 120, 80], [160, 130, 60],
-        [110, 70, 130], [150, 90, 50], [70, 70, 90], [190, 180, 150],
+        [150, 50, 50],
+        [50, 90, 140],
+        [60, 120, 80],
+        [160, 130, 60],
+        [110, 70, 130],
+        [150, 90, 50],
+        [70, 70, 90],
+        [190, 180, 150],
     ];
     // Wall of bookshelves
     c.rect(0, 0, GRID - 1, 41, [40, 28, 22]);
@@ -1254,11 +1425,13 @@ fn paint_library(c: &mut Canvas, tick: u64) {
         let mut x = 1;
         while x < GRID - 1 {
             let w = 1 + (scatter(x, shelf) % 2) as i32;
-            if scatter(x, shelf + 30) % 11 != 0 {
+            if !scatter(x, shelf + 30).is_multiple_of(11) {
                 let h = 4 + (scatter(x, shelf + 9) % 3) as i32;
                 let col = SPINES[(scatter(x, shelf + 20) % 8) as usize];
                 c.rect(x, y0 + 7 - h, x + w - 1, y0 + 6, col);
-                if w == 2 { c.set(x, y0 + 8 - h, col.map(|v| v / 2 + 110)); }
+                if w == 2 {
+                    c.set(x, y0 + 8 - h, col.map(|v| v / 2 + 110));
+                }
             }
             x += w;
         }
@@ -1295,30 +1468,40 @@ fn paint_library(c: &mut Canvas, tick: u64) {
     c.dim(0.42);
     for (i, &(x, base)) in CANDLES.iter().enumerate() {
         let f = i as f32;
-        let flicker = 0.78
-            + 0.12 * (t * 0.31 + f * 2.0).sin()
-            + 0.10 * (t * 0.83 + f * 5.0).sin();
-        let gust = scatter((tick / 5) as i32, 50 + i as i32) % 6 == 0;
-        c.glow(x as f32, base as f32 - 4.0, 20.0, [255, 170, 80], 0.75 * flicker);
+        let flicker = 0.78 + 0.12 * (t * 0.31 + f * 2.0).sin() + 0.10 * (t * 0.83 + f * 5.0).sin();
+        let gust = scatter((tick / 5) as i32, 50 + i as i32).is_multiple_of(6);
+        c.glow(
+            x as f32,
+            base as f32 - 4.0,
+            20.0,
+            [255, 170, 80],
+            0.75 * flicker,
+        );
         c.rect(x, base - 3, x, base, [236, 228, 204]);
         c.set(x, base - 4, [255, 170, 60]);
         c.set(x + gust as i32, base - 5, [255, 236, 150]);
     }
 
     // Now and then a book flaps past, swooping low through the room
-    if let Some((p, slot)) = event(tick, BOOK_EVENT.0, BOOK_EVENT.1, BOOK_EVENT.2, BOOK_EVENT.3) {
+    if let Some((p, slot)) = BOOK_EVENT.progress(tick) {
         let x = -9.0 + p * (GRID as f32 + 18.0);
-        let x = if slot % 2 == 0 { x } else { GRID as f32 - 7.0 - x };
+        let x = if slot % 2 == 0 {
+            x
+        } else {
+            GRID as f32 - 7.0 - x
+        };
         let y = 8.0 + (p * std::f32::consts::PI).sin() * 16.0 + (p * 14.0).sin() * 1.5;
         let (x, y) = (x.round() as i32, y.round() as i32);
         let cover = SPINES[(slot % 6) as usize];
-        let up = tick / 5 % 2 == 0;
+        let up = (tick / 5).is_multiple_of(2);
         // Covers and pages beat like wings around the spine.
         for dx in 0..7i32 {
             let lift = (dx - 3).abs();
             let wing = if up { 2 - lift.min(2) } else { lift.min(2) };
             c.set(x + dx, y + wing, cover);
-            if dx != 3 { c.set(x + dx, y + wing + 1, [240, 232, 208]); }
+            if dx != 3 {
+                c.set(x + dx, y + wing + 1, [240, 232, 208]);
+            }
         }
         c.set(x + 3, y + if up { 3 } else { 1 }, cover);
     }
@@ -1326,7 +1509,10 @@ fn paint_library(c: &mut Canvas, tick: u64) {
 
 fn paint_ball(c: &mut Canvas, ball: &Ball) {
     const BALL: [&str; 5] = [".ooo.", "ohrro", "orrro", "orrdo", ".ooo."];
-    let (x0, y0) = ((ball.x - BALL_RADIUS).round() as i32, (ball.y - BALL_RADIUS).round() as i32);
+    let (x0, y0) = (
+        (ball.x - BALL_RADIUS).round() as i32,
+        (ball.y - BALL_RADIUS).round() as i32,
+    );
     for (row, line) in BALL.iter().enumerate() {
         for (col, ch) in line.bytes().enumerate() {
             let color = match ch {
@@ -1368,14 +1554,25 @@ fn paint_scene(st: &PetState, cfg: PetConfig) -> Canvas {
 
     // Cat: cross-fade from the previous pose to the current one.
     let t = ((st.since_pose + 1) as f32 / FADE_STEPS as f32).min(1.0);
-    c.cat(st.prev_pose.sprite(), st.pose.sprite(), cfg.coat, CAT_X, FLOOR_Y - SPRITE, t);
+    c.cat(
+        st.prev_pose.sprite(),
+        st.pose.sprite(),
+        cfg.coat,
+        CAT_X,
+        FLOOR_Y - SPRITE,
+        t,
+    );
 
     if let Some(ball) = &st.ball {
         paint_ball(&mut c, ball);
     }
 
     for &(x, y, age) in &st.zs {
-        let a = if age < 10 { age as f32 / 10.0 } else { ((90 - age) as f32 / 40.0).min(1.0) };
+        let a = if age < 10 {
+            age as f32 / 10.0
+        } else {
+            ((90 - age) as f32 / 40.0).min(1.0)
+        };
         let (x, y) = (x.round() as i32, y.round() as i32);
         for (dx, dy) in [(0, 0), (1, 0), (2, 0), (1, 1), (0, 2), (1, 2), (2, 2)] {
             c.blend(x + dx, y + dy, [250, 250, 255], a * 0.9);
@@ -1386,7 +1583,10 @@ fn paint_scene(st: &PetState, cfg: PetConfig) -> Canvas {
 
 /// Advance the simulation to now and render the current frame.
 pub fn render_pet_cat() -> DynamicImage {
-    let mut guard = STATE.get_or_init(|| Mutex::new(PetState::new())).lock().unwrap();
+    let mut guard = STATE
+        .get_or_init(|| Mutex::new(PetState::new()))
+        .lock()
+        .unwrap();
     let st = &mut *guard;
 
     // Run however many 30 Hz steps have elapsed (capped, so a long pause in
@@ -1419,9 +1619,20 @@ mod tests {
     use super::*;
 
     const ALL_POSES: [Pose; 14] = [
-        Pose::Sit, Pose::SitBlink, Pose::SitTail, Pose::Crouch, Pose::Loaf,
-        Pose::SleepA, Pose::SleepB, Pose::LickA, Pose::LickB, Pose::StretchA,
-        Pose::StretchB, Pose::LookUp, Pose::Swat, Pose::SwatUp,
+        Pose::Sit,
+        Pose::SitBlink,
+        Pose::SitTail,
+        Pose::Crouch,
+        Pose::Loaf,
+        Pose::SleepA,
+        Pose::SleepB,
+        Pose::LickA,
+        Pose::LickB,
+        Pose::StretchA,
+        Pose::StretchB,
+        Pose::LookUp,
+        Pose::Swat,
+        Pose::SwatUp,
     ];
 
     #[test]
@@ -1458,7 +1669,13 @@ mod tests {
         let played: Vec<Anim> = order.into_iter().filter(|a| *a != Anim::Idle).collect();
         assert!(played.len() > 8);
         assert!(played.windows(2).all(|w| w[0] != w[1]), "{played:?}");
-        for anim in [Anim::Idle, Anim::Sleep, Anim::Lick, Anim::Stretch, Anim::Ball] {
+        for anim in [
+            Anim::Idle,
+            Anim::Sleep,
+            Anim::Lick,
+            Anim::Stretch,
+            Anim::Ball,
+        ] {
             assert!(seen.contains(&anim), "{anim:?} never played");
         }
     }
@@ -1486,45 +1703,394 @@ mod tests {
         assert_eq!(format_hex_color([126, 170, 196]), "#7eaac4");
     }
 
+    /// First tick at which `event` plays.
+    fn first_play(event: &Event) -> u64 {
+        (0..)
+            .step_by(event.slot_len as usize)
+            .find(|&t| event.progress(t).is_some())
+            .unwrap()
+    }
+
+    fn scene(environment: Environment, tick: u64) -> Canvas {
+        let mut st = PetState::new();
+        st.tick = tick;
+        paint_scene(
+            &st,
+            PetConfig {
+                environment,
+                ..PetConfig::DEFAULT
+            },
+        )
+    }
+
     #[test]
-    fn renders_a_panel_sized_frame_for_every_setting() {
+    fn settings_round_trip_and_every_combination_renders() {
+        // One test owns the global config, so parallel tests can't race on it.
         for coat in Coat::ALL {
+            assert_eq!(Coat::from_str_name(coat.as_str()), Some(coat));
             for environment in Environment::ALL {
-                set_config(PetConfig { coat, environment, ..PetConfig::DEFAULT });
+                assert_eq!(
+                    Environment::from_str_name(environment.as_str()),
+                    Some(environment)
+                );
+                let cfg = PetConfig {
+                    coat,
+                    environment,
+                    background: [1, 2, 3],
+                };
+                set_config(cfg);
+                assert_eq!(config(), cfg);
                 let img = render_pet_cat();
                 assert_eq!((img.width(), img.height()), (480, 480));
             }
         }
         set_config(PetConfig::DEFAULT);
+        assert_eq!(Coat::from_str_name("calico"), None);
+        assert_eq!(Environment::from_str_name("Forest"), None);
     }
 
     #[test]
-    fn scenery_events_do_happen_and_do_not_overlap_their_slot() {
-        for (name, (slot, duration, chance, salt)) in
-            [("bat", BAT_EVENT), ("witch", WITCH_EVENT), ("book", BOOK_EVENT)]
-        {
-            assert!(duration < slot, "{name}");
-            // Within an hour of animation each event plays at least once…
-            let plays = (0..30 * 3600).step_by(slot as usize)
-                .filter(|&t| event(t, slot, duration, chance, salt).is_some())
-                .count();
-            assert!(plays > 0, "{name} never plays");
-            // …and the witch stays rare next to the bat.
-            if name == "witch" { assert!(plays < 20, "witch plays {plays} times an hour"); }
+    fn coats_are_distinct_and_transparent_cells_stay_transparent() {
+        for coat in Coat::ALL {
+            assert_eq!(coat_color(coat, b'.'), None);
+            for cell in *b"obwsecp" {
+                assert!(coat_color(coat, cell).is_some());
+            }
+        }
+        let body = |c| coat_color(c, b'b').unwrap();
+        assert_ne!(body(Coat::Tuxedo), body(Coat::Orange));
+        // The tuxedo has a white chest, the black cat does not…
+        assert!(coat_color(Coat::Tuxedo, b'w')
+            .unwrap()
+            .iter()
+            .all(|&v| v > 200));
+        assert!(coat_color(Coat::Black, b'w')
+            .unwrap()
+            .iter()
+            .all(|&v| v < 100));
+        // …and only the tabby has visible stripes.
+        assert_ne!(
+            coat_color(Coat::Orange, b's'),
+            coat_color(Coat::Orange, b'b')
+        );
+        assert_eq!(
+            coat_color(Coat::Tuxedo, b's'),
+            coat_color(Coat::Tuxedo, b'b')
+        );
+        assert_eq!(coat_color(Coat::Black, b's'), coat_color(Coat::Black, b'b'));
+    }
+
+    #[test]
+    fn scripted_animations_begin_and_end_by_way_of_the_sitting_cat() {
+        for anim in [Anim::Sleep, Anim::Lick, Anim::Stretch] {
+            let mut st = PetState::new();
+            st.start(anim);
+            let mut poses = Vec::new();
+            while st.anim == anim {
+                st.step();
+                if poses.last() != Some(&st.pose) {
+                    poses.push(st.pose);
+                }
+                assert!(poses.len() < 100, "{anim:?} never finished");
+            }
+            assert_eq!(st.anim, Anim::Idle);
+            assert_eq!(
+                st.pose,
+                Pose::Sit,
+                "{anim:?} should hand back a sitting cat"
+            );
+            assert!(poses.len() > 2, "{anim:?} shows only {poses:?}");
         }
     }
 
     #[test]
+    fn sleeping_cat_breathes_and_dreams() {
+        let mut st = PetState::new();
+        st.start(Anim::Sleep);
+        let (mut a, mut b, mut most_zs) = (false, false, 0);
+        while st.anim == Anim::Sleep {
+            st.step();
+            a |= st.pose == Pose::SleepA;
+            b |= st.pose == Pose::SleepB;
+            most_zs = most_zs.max(st.zs.len());
+        }
+        assert!(a && b, "both breathing frames should show");
+        assert!(most_zs >= 1, "no z's floated up");
+        // The z's fade out once the cat is awake.
+        for _ in 0..100 {
+            st.step();
+        }
+        assert!(st.zs.is_empty());
+    }
+
+    #[test]
+    fn idle_cat_blinks_and_flicks_its_tail() {
+        let mut st = PetState::new();
+        st.idle_len = u32::MAX;
+        let mut seen = Vec::new();
+        for _ in 0..300 {
+            st.step();
+            if !seen.contains(&st.pose) {
+                seen.push(st.pose);
+            }
+        }
+        assert_eq!(st.anim, Anim::Idle);
+        for pose in [Pose::Sit, Pose::SitBlink, Pose::SitTail] {
+            assert!(seen.contains(&pose), "{pose:?} never shown while idle");
+        }
+        assert_eq!(seen.len(), 3, "unexpected idle poses: {seen:?}");
+    }
+
+    #[test]
+    fn ball_falls_from_the_sky_bounces_and_stays_in_play_until_the_last_swat() {
+        let mut st = PetState::new();
+        st.start(Anim::Ball);
+        assert!(
+            st.ball.as_ref().unwrap().y < 0.0,
+            "ball should start above the screen"
+        );
+        let floor = FLOOR_Y as f32 - 1.0 - BALL_RADIUS;
+        let mut looked_up = false;
+        while let Some(ball) = &st.ball {
+            assert!(ball.y <= floor + 0.01, "ball sank through the floor");
+            if st.swats <= LIGHT_SWATS {
+                assert!(
+                    (ball.x - BALL_HOME_X).abs() < 8.0,
+                    "ball drifted away before the final swat"
+                );
+            } else {
+                assert!(ball.vx > 0.0, "final swat should send the ball right");
+            }
+            if st.swats == 0 && st.swat_timer == 0 {
+                assert!(
+                    st.floor_hits <= 2,
+                    "cat should bat the ball after two bounces"
+                );
+            }
+            looked_up |= st.pose == Pose::LookUp;
+            st.step();
+        }
+        assert!(looked_up, "cat never watched the ball in the air");
+        assert!(st.floor_hits >= 2);
+    }
+
+    #[test]
+    fn pose_changes_cross_fade_from_the_old_pose_to_the_new() {
+        let cfg = PetConfig {
+            environment: Environment::Solid,
+            ..PetConfig::DEFAULT
+        };
+        let frame = |pose, prev_pose, since_pose| {
+            let mut st = PetState::new();
+            (st.pose, st.prev_pose, st.since_pose) = (pose, prev_pose, since_pose);
+            paint_scene(&st, cfg).px
+        };
+        let sit = frame(Pose::Sit, Pose::Sit, FADE_STEPS);
+        let loaf = frame(Pose::Loaf, Pose::Loaf, FADE_STEPS);
+        assert_ne!(sit, loaf);
+        // Finished fade: exactly the new pose, whatever came before.
+        assert_eq!(frame(Pose::Loaf, Pose::Sit, FADE_STEPS - 1), loaf);
+        // Part-way: neither pose, and no pixel outside the range between them.
+        let mid = frame(Pose::Loaf, Pose::Sit, 0);
+        assert_ne!(mid, sit);
+        assert_ne!(mid, loaf);
+        for ((m, a), b) in mid.iter().zip(&sit).zip(&loaf) {
+            for i in 0..3 {
+                assert!(m[i] >= a[i].min(b[i]) && m[i] <= a[i].max(b[i]));
+            }
+        }
+        // Cells both poses share stay solid rather than ghosting.
+        assert_eq!(
+            frame(Pose::SitBlink, Pose::Sit, 0)[..GRID as usize * 30],
+            sit[..GRID as usize * 30]
+        );
+    }
+
+    #[test]
+    fn canvas_primitives_clip_and_blend() {
+        let mut c = Canvas::new([10, 10, 10]);
+        c.set(-1, 0, [255; 3]);
+        c.set(0, GRID, [255; 3]);
+        assert!(
+            c.px.iter().all(|&p| p == [10, 10, 10]),
+            "out-of-bounds writes must be ignored"
+        );
+        assert_eq!(c.get(GRID, 0), None);
+
+        c.rect(58, 58, 70, 70, [200, 0, 0]);
+        assert_eq!(c.get(59, 59), Some([200, 0, 0]));
+        assert_eq!(c.get(57, 57), Some([10, 10, 10]));
+
+        c.blend(0, 0, [110, 210, 10], 0.5);
+        assert_eq!(c.get(0, 0), Some([60, 110, 10]));
+        c.blend(0, 0, [0, 0, 0], 0.0);
+        assert_eq!(c.get(0, 0), Some([60, 110, 10]));
+
+        c.stamp(&["o..", "..."], 10, 10, [1, 2, 3], false);
+        c.stamp(&["o..", "..."], 20, 10, [1, 2, 3], true);
+        assert_eq!(c.get(10, 10), Some([1, 2, 3]));
+        assert_eq!(
+            c.get(22, 10),
+            Some([1, 2, 3]),
+            "mirrored stamp flips left to right"
+        );
+        assert_eq!(c.get(20, 10), Some([10, 10, 10]));
+
+        let mut lit = Canvas::new([100, 100, 100]);
+        lit.glow(30.0, 30.0, 5.0, [100, 0, 0], 1.0);
+        assert_eq!(
+            lit.get(30, 30),
+            Some([200, 100, 100]),
+            "full strength at the centre"
+        );
+        assert_eq!(
+            lit.get(40, 30),
+            Some([100, 100, 100]),
+            "nothing beyond the radius"
+        );
+        let near = lit.get(32, 30).unwrap()[0];
+        assert!(near > 100 && near < 200, "falls off with distance");
+        lit.glow(30.0, 30.0, 5.0, [255, 255, 255], 5.0);
+        assert_eq!(
+            lit.get(30, 30),
+            Some([255, 255, 255]),
+            "saturates instead of wrapping"
+        );
+
+        lit.dim(0.5);
+        assert_eq!(lit.get(40, 30), Some([50, 50, 50]));
+    }
+
+    #[test]
+    fn hue_wheel_hits_the_primaries() {
+        assert_eq!(hue_rgb(0.0), [255, 0, 0]);
+        assert_eq!(hue_rgb(1.0 / 3.0), [0, 255, 0]);
+        assert_eq!(hue_rgb(2.0 / 3.0), [0, 0, 255]);
+        assert_eq!(hue_rgb(1.0), hue_rgb(0.0));
+        assert_eq!(hue_rgb(-1.0 / 3.0), hue_rgb(2.0 / 3.0));
+    }
+
+    #[test]
+    fn solid_environment_uses_the_configured_colour() {
+        let st = PetState::new();
+        let cfg = PetConfig {
+            environment: Environment::Solid,
+            background: [12, 34, 56],
+            ..PetConfig::DEFAULT
+        };
+        let c = paint_scene(&st, cfg);
+        assert_eq!(c.get(0, 0), Some([12, 34, 56]));
+        assert_eq!(c.get(GRID - 1, GRID - 1), Some([12, 34, 56]));
+        // The cat is drawn on top of it.
+        assert_ne!(c.get(CAT_X + 5, FLOOR_Y - 6), Some([12, 34, 56]));
+    }
+
+    #[test]
+    fn environments_differ_and_only_the_whimsical_ones_animate() {
+        let frames: Vec<_> = Environment::ALL.iter().map(|&e| scene(e, 100).px).collect();
+        for i in 0..frames.len() {
+            for j in i + 1..frames.len() {
+                assert_ne!(
+                    frames[i],
+                    frames[j],
+                    "{:?} and {:?} look identical",
+                    Environment::ALL[i],
+                    Environment::ALL[j]
+                );
+            }
+        }
+        for env in [
+            Environment::Solid,
+            Environment::Forest,
+            Environment::LivingRoom,
+        ] {
+            assert_eq!(
+                scene(env, 100).px,
+                scene(env, 137).px,
+                "{env:?} should be static"
+            );
+        }
+        for env in [
+            Environment::NightForest,
+            Environment::Dungeon,
+            Environment::Library,
+        ] {
+            assert_ne!(
+                scene(env, 100).px,
+                scene(env, 137).px,
+                "{env:?} should animate"
+            );
+        }
+    }
+
+    #[test]
+    fn scenery_events_are_occasional_and_the_witch_is_rare() {
+        let hour = 30 * 3600;
+        let plays = |e: &Event| {
+            (0..hour)
+                .step_by(e.slot_len as usize)
+                .filter(|&t| e.progress(t).is_some())
+                .count()
+        };
+        for (name, event) in [
+            ("bat", &BAT_EVENT),
+            ("witch", &WITCH_EVENT),
+            ("book", &BOOK_EVENT),
+        ] {
+            assert!(
+                event.duration < event.slot_len,
+                "{name} would overlap its next slot"
+            );
+            assert!(plays(event) > 0, "{name} never plays");
+            // Progress runs 0 → just under 1 across the event, then stops.
+            let start = first_play(event);
+            assert_eq!(event.progress(start).unwrap().0, 0.0);
+            assert!(event.progress(start + event.duration - 1).unwrap().0 < 1.0);
+            assert!(event.progress(start + event.duration).is_none());
+        }
+        assert!(plays(&BAT_EVENT) > 100 && plays(&BOOK_EVENT) > 100);
+        assert!(
+            plays(&WITCH_EVENT) < 20,
+            "witch plays {} times an hour",
+            plays(&WITCH_EVENT)
+        );
+    }
+
+    #[test]
     fn witch_passes_in_front_of_the_moon() {
-        let (slot, duration, chance, salt) = WITCH_EVENT;
-        let start = (0..).step_by(slot as usize)
-            .find(|&t| event(t, slot, duration, chance, salt).is_some())
-            .unwrap();
-        let moon_covered = (start..start + duration).any(|tick| {
-            let mut c = Canvas::new([0, 0, 0]);
-            paint_night_forest(&mut c, tick);
-            c.get(MOON.0 as i32, MOON.1 as i32) == Some([6, 6, 12])
+        const SILHOUETTE: [u8; 3] = [6, 6, 12];
+        let moon = (MOON.0 as i32, MOON.1 as i32);
+        let start = first_play(&WITCH_EVENT);
+        assert_ne!(
+            scene(Environment::NightForest, start).get(moon.0, moon.1),
+            Some(SILHOUETTE)
+        );
+        let covered = (start..start + WITCH_EVENT.duration).any(|tick| {
+            scene(Environment::NightForest, tick).get(moon.0, moon.1) == Some(SILHOUETTE)
         });
-        assert!(moon_covered);
+        assert!(covered);
+    }
+
+    #[test]
+    fn bat_and_book_show_up_only_during_their_events() {
+        // Colours nothing else in those scenes uses: the bat's silhouette and
+        // the flying book's pages.
+        let count =
+            |env, tick, color: [u8; 3]| scene(env, tick).px.iter().filter(|&&p| p == color).count();
+        for (env, event, color) in [
+            (Environment::NightForest, &BAT_EVENT, [8, 8, 16]),
+            (Environment::Library, &BOOK_EVENT, [240, 232, 208]),
+        ] {
+            let start = first_play(event);
+            assert!(
+                count(env, start + event.duration / 2, color) >= 6,
+                "{env:?}: nothing flying mid-event"
+            );
+            assert_eq!(
+                count(env, start + event.duration + 5, color),
+                0,
+                "{env:?}: still there after the event"
+            );
+        }
     }
 }

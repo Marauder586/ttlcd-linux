@@ -2,8 +2,9 @@
 //! (Thermaltake "TT LCD Display Module" SKUs `0x264a:0x233d`, `0x264a:0x2343`).
 //!
 //! Reverse-engineered protocol per <https://github.com/bekindpleaserewind/ttlcd>
-//! (Python, sibling SKU `0x233d`). The two SKUs share identical USB descriptors
-//! and packet sizes; opcodes assumed identical until proven otherwise on `0x2343`.
+//! (Python, sibling SKU `0x233d`).  The opcodes and packet layouts below have
+//! been confirmed against a `0x2343` panel (firmware 0.45): every init opcode
+//! is ACKed, and frames sent this way are displayed.
 
 pub const DEFAULT_VID: u16 = 0x264a;
 pub const DEFAULT_PID: u16 = 0x2343;
@@ -32,7 +33,12 @@ pub const INIT_OPCODES: &[u8] = &[0x85, 0x87, 0x85, 0x87, 0x84, 0x81];
 
 /// Keepalive opcode.  Note: on `0x2343` this alone does not reliably keep an
 /// image on screen — the panel falls back to its built-in screen ~2 s after
-/// the last frame, so frames must be re-sent (`Panel` does this in a background thread).
+/// the last frame, so frames must be re-sent (`Panel` does this in a
+/// background thread).
+///
+/// Bytes 4–5 of the ACK are a little-endian value that sits around 2800–2900
+/// on a `0x2343` at room temperature; it appears to be the panel's own
+/// temperature sensor in hundredths of a degree Celsius.
 pub const KEEPALIVE_OPCODE: u8 = 0x82;
 
 /// "Begin image stream" bytes, zero-padded to [`CTRL_PKT_SIZE`].  Sent once
@@ -67,36 +73,35 @@ pub fn build_frame_begin() -> [u8; CTRL_PKT_SIZE] {
 /// - First packet:       `[0x08, total_count, 0x00, 0x80]` + up to 1020 image bytes
 /// - Subsequent packets: `[0x08, pkt_index,  0x00, 0x00]` + up to 1020 image bytes
 ///
-/// `pkt_index` is 1-based and increments only on packets after the first.
-/// The last packet is zero-padded to exactly 1024 bytes.
+/// `pkt_index` is the packet's position in the frame (1 for the second
+/// packet, and so on).  The last packet is zero-padded to exactly 1024 bytes.
+/// An empty payload still yields one (all-padding) packet.
+///
+/// # Panics
+/// If the payload needs more than 255 packets (over 260 100 bytes): the count
+/// is a single byte on the wire.
 pub fn build_image_packets(jpeg: &[u8]) -> Vec<[u8; IMG_PKT_SIZE]> {
     let total = jpeg.len().div_ceil(IMG_PAYLOAD_SIZE).max(1);
     let total_byte: u8 = total
         .try_into()
         .expect("JPEG too large for u8 packet count (>255 packets)");
-    let mut out = Vec::with_capacity(total);
 
-    let mut offset = 0usize;
-    let mut pkt_index: u8 = 1;
-    for i in 0..total {
-        let mut pkt = [0u8; IMG_PKT_SIZE];
-        pkt[0] = IMG_OPCODE;
-        if i == 0 {
-            pkt[1] = total_byte;
-            pkt[3] = 0x80;
-        } else {
-            pkt[1] = pkt_index;
-            pkt[3] = 0x00;
-            pkt_index = pkt_index.wrapping_add(1);
-        }
-
-        let take = (jpeg.len() - offset).min(IMG_PAYLOAD_SIZE);
-        pkt[IMG_HDR_SIZE..IMG_HDR_SIZE + take].copy_from_slice(&jpeg[offset..offset + take]);
-        offset += take;
-        out.push(pkt);
-    }
-
-    out
+    (0..total)
+        .map(|i| {
+            let mut pkt = [0u8; IMG_PKT_SIZE];
+            pkt[0] = IMG_OPCODE;
+            if i == 0 {
+                pkt[1] = total_byte;
+                pkt[3] = 0x80;
+            } else {
+                pkt[1] = i as u8;
+            }
+            let chunk = &jpeg[(i * IMG_PAYLOAD_SIZE).min(jpeg.len())
+                ..((i + 1) * IMG_PAYLOAD_SIZE).min(jpeg.len())];
+            pkt[IMG_HDR_SIZE..IMG_HDR_SIZE + chunk.len()].copy_from_slice(chunk);
+            pkt
+        })
+        .collect()
 }
 
 // ─── Tests ───────────────────────────────────────────────────────────────────
@@ -161,5 +166,35 @@ mod tests {
         assert_eq!(indices, vec![5, 1, 2, 3, 4]);
         let flags: Vec<u8> = pkts.iter().map(|p| p[3]).collect();
         assert_eq!(flags, vec![0x80, 0x00, 0x00, 0x00, 0x00]);
+    }
+
+    #[test]
+    fn empty_payload_yields_one_padding_packet() {
+        let pkts = build_image_packets(&[]);
+        assert_eq!(pkts.len(), 1);
+        assert_eq!(&pkts[0][..4], &[0x08, 1, 0x00, 0x80]);
+        assert!(pkts[0][4..].iter().all(|&b| b == 0));
+    }
+
+    #[test]
+    fn largest_frame_uses_all_255_packets_and_reassembles() {
+        let jpeg: Vec<u8> = (0..255 * IMG_PAYLOAD_SIZE)
+            .map(|i| (i % 251) as u8)
+            .collect();
+        let pkts = build_image_packets(&jpeg);
+        assert_eq!(pkts.len(), 255);
+        assert_eq!(pkts[0][1], 255);
+        assert_eq!(pkts[254][1], 254);
+        let body: Vec<u8> = pkts
+            .iter()
+            .flat_map(|p| p[IMG_HDR_SIZE..].iter().copied())
+            .collect();
+        assert_eq!(body, jpeg);
+    }
+
+    #[test]
+    #[should_panic(expected = "JPEG too large")]
+    fn oversized_frame_panics() {
+        build_image_packets(&vec![0u8; 255 * IMG_PAYLOAD_SIZE + 1]);
     }
 }

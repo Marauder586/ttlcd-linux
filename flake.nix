@@ -21,18 +21,33 @@
       pkgs = import nixpkgs {inherit system overlays;};
       rust = pkgs.rust-bin.stable.latest.default.override {
         extensions = ["rust-src" "rust-analyzer" "clippy" "rustfmt"];
+        # The web UI (web/) is compiled to WebAssembly.
+        targets = ["wasm32-unknown-unknown"];
       };
 
       # ── package derivation ───────────────────────────────────────
-      ttlcd = pkgs.rustPlatform.buildRustPackage {
+      # Build with the toolchain above so the wasm32 target is available.
+      rustPlatform = pkgs.makeRustPlatform {
+        cargo = rust;
+        rustc = rust;
+      };
+
+      ttlcd = rustPlatform.buildRustPackage {
         pname = "ttlcd";
-        version = "0.9.0";
+        version = "0.22.0";
         src = ./.;
 
         cargoLock.lockFile = ./Cargo.lock;
 
-        nativeBuildInputs = with pkgs; [pkg-config];
+        # wasm-bindgen-cli must be the same version as the wasm-bindgen crate
+        # pinned in web/Cargo.toml.
+        nativeBuildInputs = with pkgs; [pkg-config makeWrapper wasm-bindgen-cli];
         buildInputs = with pkgs; [libusb1];
+
+        # The daemon embeds the web UI, so build that first.
+        preBuild = ''
+          bash scripts/build-web.sh --offline
+        '';
 
         # The binary needs libusb at runtime
         postInstall = ''
@@ -62,6 +77,8 @@
           pkgs.libusb1
           pkgs.pkg-config
           pkgs.usbutils
+          # Generates the JS loader for the web UI (scripts/build-web.sh)
+          pkgs.wasm-bindgen-cli
           # Useful for testing the web UI without a device
           pkgs.websocat
           pkgs.curl

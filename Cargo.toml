@@ -10,7 +10,10 @@ path = "src/lib.rs"
 
 [[bin]]
 name = "ttlcd"
-path = "src/bin/ttlcd.rs"
+path = "src/bin/ttlcd/main.rs"
+
+[lints]
+workspace = true
 
 [dependencies]
 anyhow      = "1"
@@ -55,3 +58,37 @@ toml        = { version = "0.8", default-features = false, features = ["parse"] 
 lto     = "thin"
 strip   = true
 opt-level = 3
+
+# The web UI is a separate crate built for wasm32 (see scripts/build-web.sh).
+# It is not a default member, so plain `cargo build` / `cargo test` at the
+# root still mean the driver and daemon.
+[workspace]
+members = [".", "web"]
+default-members = ["."]
+
+# Lints shared by both crates; each opts in with `[lints] workspace = true`.
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+# Clippy's default groups (correctness, suspicious, style, complexity, perf).
+all = { level = "warn", priority = -1 }
+# Leftovers that should not be committed.
+dbg_macro = "warn"
+todo = "warn"
+unimplemented = "warn"
+# A few pedantic lints that catch real slips or keep the code plain.
+cloned_instead_of_copied = "warn"
+explicit_iter_loop = "warn"
+implicit_clone = "warn"
+inefficient_to_string = "warn"
+manual_let_else = "warn"
+map_unwrap_or = "warn"
+match_wildcard_for_single_variants = "warn"
+redundant_closure_for_method_calls = "warn"
+semicolon_if_nothing_returned = "warn"
+uninlined_format_args = "warn"
+unnested_or_patterns = "warn"
+
+[profile.release.package.ttlcd-web]
+opt-level = "s"
