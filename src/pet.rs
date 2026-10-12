@@ -147,7 +147,11 @@ pub fn format_hex_color(c: [u8; 3]) -> String {
 // ─── Sprites ─────────────────────────────────────────────────────────────────
 //
 // Legend:  . transparent   o outline   b body   w light fur (chest, muzzle,
-//          paws)   s tabby stripe   e open eye   c closed eye   p pink
+//          paws)   s tabby stripe   e open eye   h half-closed eye
+//          c closed eye   p pink
+//
+// Most sprites face the viewer. The running pair faces right; the scene
+// mirrors them when the cat heads left.
 
 type Sprite = [&'static str; SPRITE as usize];
 
@@ -167,6 +171,18 @@ enum Pose {
     LookUp,
     Swat,
     SwatUp,
+    SitTail2,
+    SitHalf,
+    SitEar,
+    KneadA,
+    KneadB,
+    Tilt,
+    Yawn,
+    Puffed,
+    GroomA,
+    GroomB,
+    RunA,
+    RunB,
 }
 
 const SIT: Sprite = [
@@ -435,6 +451,246 @@ const SWAT_UP: Sprite = [
     ".oooooooooo.....",
 ];
 
+/// Tail tip flicked the other way from `SIT_TAIL`.
+const SIT_TAIL2: Sprite = [
+    "................",
+    "..o.....o.......",
+    ".opo...opo......",
+    ".obbooobbo......",
+    ".obsbsbsbo......",
+    ".obebbbebo......",
+    ".obwwpwwbo......",
+    "..owwwwwo.......",
+    ".obbwwwbbo......",
+    ".obbwwwbbo.o....",
+    "obbbwwwbbboobo..",
+    "obbbwwwbbbo.obo.",
+    "obbbbwbbbbo.obo.",
+    "obbbbbbbbbooobo.",
+    "obbowwowwobbbo..",
+    ".ooooooooooooo..",
+];
+
+/// Eyes half closed, between `SIT` and `SIT_BLINK`.
+const SIT_HALF: Sprite = [
+    "................",
+    "..o.....o.......",
+    ".opo...opo......",
+    ".obbooobbo......",
+    ".obsbsbsbo......",
+    ".obhbbbhbo......",
+    ".obwwpwwbo......",
+    "..owwwwwo.......",
+    ".obbwwwbbo......",
+    ".obbwwwbbo..o...",
+    "obbbwwwbbbo.obo.",
+    "obbbwwwbbbo.obo.",
+    "obbbbwbbbbo.obo.",
+    "obbbbbbbbbooobo.",
+    "obbowwowwobbbo..",
+    ".ooooooooooooo..",
+];
+
+/// One ear turned outwards, listening.
+const SIT_EAR: Sprite = [
+    "................",
+    "..o......o......",
+    ".opo...obo......",
+    ".obbooobbo......",
+    ".obsbsbsbo......",
+    ".obebbbebo......",
+    ".obwwpwwbo......",
+    "..owwwwwo.......",
+    ".obbwwwbbo......",
+    ".obbwwwbbo..o...",
+    "obbbwwwbbbo.obo.",
+    "obbbwwwbbbo.obo.",
+    "obbbbwbbbbo.obo.",
+    "obbbbbbbbbooobo.",
+    "obbowwowwobbbo..",
+    ".ooooooooooooo..",
+];
+
+/// Kneading, left paw up.
+const KNEAD_A: Sprite = [
+    "................",
+    "..o.....o.......",
+    ".opo...opo......",
+    ".obbooobbo......",
+    ".obsbsbsbo......",
+    ".obcbbbcbo......",
+    ".obwwpwwbo......",
+    "..owwwwwo.......",
+    ".obbwwwbbo......",
+    ".obbwwwbbo..o...",
+    "obbbwwwbbbo.obo.",
+    "obbbwwwbbbo.obo.",
+    "obbbbwbbbbo.obo.",
+    "obbowwobbbooobo.",
+    "obbbooowwobbbo..",
+    ".ooooooooooooo..",
+];
+
+/// Kneading, right paw up.
+const KNEAD_B: Sprite = [
+    "................",
+    "..o.....o.......",
+    ".opo...opo......",
+    ".obbooobbo......",
+    ".obsbsbsbo......",
+    ".obcbbbcbo......",
+    ".obwwpwwbo......",
+    "..owwwwwo.......",
+    ".obbwwwbbo......",
+    ".obbwwwbbo..o...",
+    "obbbwwwbbbo.obo.",
+    "obbbwwwbbbo.obo.",
+    "obbbbwbbbbo.obo.",
+    "obbbbbowwoooobo.",
+    "obbowwooobbbbo..",
+    ".ooooooooooooo..",
+];
+
+/// Head leaning to one side.
+const TILT: Sprite = [
+    "................",
+    "...o.....o......",
+    "..opo...opo.....",
+    "..obbooobbo.....",
+    "..obsbsbsbo.....",
+    "..obebbbebo.....",
+    "..obwwpwwbo.....",
+    "...owwwwwo......",
+    ".obbwwwbbo......",
+    ".obbwwwbbo..o...",
+    "obbbwwwbbbo.obo.",
+    "obbbwwwbbbo.obo.",
+    "obbbbwbbbbo.obo.",
+    "obbbbbbbbbooobo.",
+    "obbowwowwobbbo..",
+    ".ooooooooooooo..",
+];
+
+/// Mid-yawn.
+const YAWN: Sprite = [
+    "................",
+    "..o.....o.......",
+    ".opo...opo......",
+    ".obbooobbo......",
+    ".obsbsbsbo......",
+    ".obcbbbcbo......",
+    ".obwwpwwbo......",
+    "..owpppwo.......",
+    ".obbwpwbbo......",
+    ".obbwwwbbo..o...",
+    "obbbwwwbbbo.obo.",
+    "obbbwwwbbbo.obo.",
+    "obbbbwbbbbo.obo.",
+    "obbbbbbbbbooobo.",
+    "obbowwowwobbbo..",
+    ".ooooooooooooo..",
+];
+
+/// Startled: tail fluffed up.
+const PUFFED: Sprite = [
+    "................",
+    "..o.....o.......",
+    ".opo...opo......",
+    ".obbooobbo......",
+    ".obsbsbsbo......",
+    ".obebbbebo......",
+    ".obwwpwwbo......",
+    "..owwwwwo.......",
+    ".obbwwwbbo.ooo..",
+    ".obbwwwbbooobbbo",
+    "obbbwwwbbboobbbo",
+    "obbbwwwbbbo.obbo",
+    "obbbbwbbbbo.obo.",
+    "obbbbbbbbbooobo.",
+    "obbowwowwobbbo..",
+    ".ooooooooooooo..",
+];
+
+/// Twisted round to lick its flank.
+const GROOM_A: Sprite = [
+    "................",
+    "................",
+    "................",
+    "....oooo........",
+    "...obbbbo.o.o...",
+    "..obbsbsbobobo..",
+    "..obbbbbbobbbbo.",
+    ".obbsbsbbocbwbo.",
+    ".obbbbbbbbowpwo.",
+    "obbbbbbbbbbooo..",
+    "obbsbsbbbbbbo...",
+    "obbbbbbbbbbbbo..",
+    "obbbbwbbbbbbbo..",
+    "obbbbbbbbbbbbo..",
+    "obbowwowwobbbo..",
+    ".ooooooooooooo..",
+];
+
+/// The same, head a little lower.
+const GROOM_B: Sprite = [
+    "................",
+    "................",
+    "................",
+    "....oooo........",
+    "...obbbbo.......",
+    "..obbsbsbo.o.o..",
+    "..obbbbbbobobo..",
+    ".obbsbsbbobbbbo.",
+    ".obbbbbbbbocbwbo",
+    "obbbbbbbbbbowpwo",
+    "obbsbsbbbbbbooo.",
+    "obbbbbbbbbbbbo..",
+    "obbbbwbbbbbbbo..",
+    "obbbbbbbbbbbbo..",
+    "obbowwowwobbbo..",
+    ".ooooooooooooo..",
+];
+
+/// Running to the right, legs stretched out.
+const RUN_A: Sprite = [
+    "................",
+    "................",
+    "................",
+    "................",
+    "................",
+    "................",
+    "................",
+    "..o.........o.o.",
+    ".obo.......obobo",
+    ".obooooooooobbbo",
+    "..obbsbsbsbbbebo",
+    "..obbbbbbbbbbwpo",
+    "..obbbbbbbbbwwo.",
+    "..obooooooooobo.",
+    ".obo........obo.",
+    "oo...........oo.",
+];
+
+/// Running to the right, legs gathered.
+const RUN_B: Sprite = [
+    "................",
+    "................",
+    "................",
+    "................",
+    "................",
+    "................",
+    "................",
+    "..o.........o.o.",
+    ".obo.......obobo",
+    ".obooooooooobbbo",
+    "..obbsbsbsbbbebo",
+    "..obbbbbbbbbbwpo",
+    "..obbbbbbbbbwwo.",
+    "..obbooooooobbo.",
+    "...obo....obo...",
+    "....oo....oo....",
+];
+
 impl Pose {
     fn sprite(self) -> &'static Sprite {
         match self {
@@ -452,6 +708,18 @@ impl Pose {
             Pose::LookUp => &LOOK_UP,
             Pose::Swat => &SWAT,
             Pose::SwatUp => &SWAT_UP,
+            Pose::SitTail2 => &SIT_TAIL2,
+            Pose::SitHalf => &SIT_HALF,
+            Pose::SitEar => &SIT_EAR,
+            Pose::KneadA => &KNEAD_A,
+            Pose::KneadB => &KNEAD_B,
+            Pose::Tilt => &TILT,
+            Pose::Yawn => &YAWN,
+            Pose::Puffed => &PUFFED,
+            Pose::GroomA => &GROOM_A,
+            Pose::GroomB => &GROOM_B,
+            Pose::RunA => &RUN_A,
+            Pose::RunB => &RUN_B,
         }
     }
 }
@@ -488,6 +756,8 @@ fn coat_color(coat: Coat, ch: u8) -> Option<[u8; 3]> {
         b'w' => Some(light),
         b's' => Some(stripe),
         b'e' => Some(eye),
+        // A half-closed eye: the lid halfway down over the eye colour.
+        b'h' => Some([0, 1, 2].map(|i| ((u16::from(eye[i]) + u16::from(outline[i])) / 2) as u8)),
         b'p' => Some([240, 150, 160]),
         _ => None,
     }
@@ -538,6 +808,94 @@ const STRETCH_SCRIPT: Script = &[
     (Pose::Crouch, 8),
 ];
 
+/// A slow swish each way, then a burst of quick twitches.
+const TAIL_FLICK_SCRIPT: Script = &[
+    (Pose::SitTail, 16),
+    (Pose::Sit, 14),
+    (Pose::SitTail2, 16),
+    (Pose::Sit, 10),
+    (Pose::SitTail, 3),
+    (Pose::SitTail2, 3),
+    (Pose::SitTail, 3),
+    (Pose::SitTail2, 3),
+    (Pose::SitTail, 3),
+    (Pose::Sit, 16),
+];
+
+const SLOW_BLINK_SCRIPT: Script = &[
+    (Pose::SitHalf, 10),
+    (Pose::SitBlink, 26),
+    (Pose::SitHalf, 10),
+    (Pose::Sit, 14),
+    (Pose::SitHalf, 8),
+    (Pose::SitBlink, 18),
+    (Pose::SitHalf, 8),
+];
+
+const EAR_SWIVEL_SCRIPT: Script = &[
+    (Pose::SitEar, 22),
+    (Pose::Sit, 10),
+    (Pose::SitEar, 12),
+    (Pose::Sit, 6),
+    (Pose::SitEar, 18),
+];
+
+/// Settles into a loaf and dozes without quite falling asleep.
+const LOAF_SCRIPT: Script = &[
+    (Pose::Crouch, 8),
+    (Pose::Loaf, 70),
+    (Pose::SleepA, 24),
+    (Pose::Loaf, 60),
+    (Pose::SleepA, 8),
+    (Pose::Loaf, 40),
+    (Pose::Crouch, 8),
+];
+
+const KNEAD_SCRIPT: Script = &[
+    (Pose::KneadA, 7),
+    (Pose::KneadB, 7),
+    (Pose::KneadA, 7),
+    (Pose::KneadB, 7),
+    (Pose::KneadA, 7),
+    (Pose::KneadB, 7),
+    (Pose::KneadA, 7),
+    (Pose::KneadB, 7),
+    (Pose::KneadA, 7),
+    (Pose::KneadB, 7),
+    (Pose::KneadA, 7),
+    (Pose::KneadB, 7),
+    (Pose::SitBlink, 12),
+];
+
+const YAWN_SCRIPT: Script = &[
+    (Pose::SitHalf, 8),
+    (Pose::SitBlink, 6),
+    (Pose::Yawn, 26),
+    (Pose::SitBlink, 8),
+    (Pose::SitHalf, 8),
+];
+
+const GROOM_SCRIPT: Script = &[
+    (Pose::Crouch, 6),
+    (Pose::GroomA, 8),
+    (Pose::GroomB, 8),
+    (Pose::GroomA, 8),
+    (Pose::GroomB, 8),
+    (Pose::GroomA, 8),
+    (Pose::GroomB, 8),
+    (Pose::GroomA, 8),
+    (Pose::GroomB, 8),
+    (Pose::Crouch, 6),
+];
+
+/// Night forest only: gazes up at the fireflies.
+const WATCH_SCRIPT: Script = &[
+    (Pose::LookUp, 40),
+    (Pose::Tilt, 26),
+    (Pose::LookUp, 34),
+    (Pose::SitBlink, 6),
+];
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Anim {
     Idle,
@@ -545,17 +903,160 @@ enum Anim {
     Lick,
     Stretch,
     Ball,
+    TailFlick,
+    SlowBlink,
+    EarSwivel,
+    Loaf,
+    Knead,
+    Yawn,
+    Groom,
+    /// Follows a moth across the room with its eyes.
+    Stare,
+    /// Tears off one side of the screen and back in from the other.
+    Zoomies,
+    /// Crouch, wiggle, leap. In the dungeon it is after a spider and in the
+    /// forest a butterfly; elsewhere it pounces on nothing.
+    Pounce,
+    /// Living room only: a box arrives and the cat sits in it.
+    Box,
+    /// Night forest only.
+    Watch,
 }
 
 impl Anim {
+    /// Animations every environment has, besides idling.
+    const COMMON: [Anim; 14] = [
+        Anim::Sleep,
+        Anim::Lick,
+        Anim::Stretch,
+        Anim::Ball,
+        Anim::TailFlick,
+        Anim::SlowBlink,
+        Anim::EarSwivel,
+        Anim::Loaf,
+        Anim::Knead,
+        Anim::Yawn,
+        Anim::Groom,
+        Anim::Stare,
+        Anim::Zoomies,
+        Anim::Pounce,
+    ];
+
+    /// The animations that play in `env`.
+    fn repertoire(env: Environment) -> Vec<Anim> {
+        let mut anims = Self::COMMON.to_vec();
+        match env {
+            Environment::LivingRoom => anims.push(Anim::Box),
+            Environment::NightForest => anims.push(Anim::Watch),
+            _ => {}
+        }
+        anims
+    }
+
+    /// The pose sequence, for animations that are just that.
     fn script(self) -> Option<Script> {
         match self {
             Anim::Sleep => Some(SLEEP_SCRIPT),
             Anim::Lick => Some(LICK_SCRIPT),
             Anim::Stretch => Some(STRETCH_SCRIPT),
-            Anim::Idle | Anim::Ball => None,
+            Anim::TailFlick => Some(TAIL_FLICK_SCRIPT),
+            Anim::SlowBlink => Some(SLOW_BLINK_SCRIPT),
+            Anim::EarSwivel => Some(EAR_SWIVEL_SCRIPT),
+            Anim::Loaf => Some(LOAF_SCRIPT),
+            Anim::Knead => Some(KNEAD_SCRIPT),
+            Anim::Yawn => Some(YAWN_SCRIPT),
+            Anim::Groom => Some(GROOM_SCRIPT),
+            Anim::Watch => Some(WATCH_SCRIPT),
+            Anim::Idle | Anim::Ball | Anim::Stare | Anim::Zoomies | Anim::Pounce | Anim::Box => {
+                None
+            }
         }
     }
+}
+
+/// Something the cat interacts with during an animation.
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum PropKind {
+    Moth,
+    Butterfly,
+    Spider,
+    Box,
+}
+
+/// A prop and the position of its top-left corner.
+#[derive(Clone, Copy, PartialEq, Debug)]
+struct Prop {
+    kind: PropKind,
+    x: f32,
+    y: f32,
+}
+
+/// Just past the right-hand edge, where props enter and leave.
+const OFFSTAGE_X: f32 = GRID as f32 + 2.0;
+
+// Zoomies
+/// Steps spent crouched and twitching before the dash.
+const ZOOM_WIND_UP: u32 = 12;
+const ZOOM_SPEED: f32 = 2.4;
+const ZOOM_LAPS: f32 = 2.0;
+/// Distance from the cat's spot to fully off either edge.
+const ZOOM_EDGE: f32 = (GRID - CAT_X + 2) as f32;
+const ZOOM_SKID: u32 = 8;
+
+// Pounce
+const POUNCE_STALK: u32 = 24;
+const POUNCE_WIGGLE: u32 = 20;
+const POUNCE_LEAP: u32 = 12;
+const POUNCE_LAND: u32 = 14;
+/// How far the leap carries the cat, and how high.
+const POUNCE_DIST: f32 = 12.0;
+const POUNCE_HEIGHT: f32 = 6.0;
+/// Width allowed for the prey when placing it.
+const PREY_W: f32 = 5.0;
+
+/// For a pounce in direction `dir` (+1 right, -1 left): where the prey
+/// waits, just beyond where the leap lands, and the off-screen point it
+/// comes from and flees to.
+fn prey_track(dir: f32) -> (f32, f32) {
+    if dir > 0.0 {
+        ((CAT_X + SPRITE) as f32 + POUNCE_DIST - 2.0, OFFSTAGE_X)
+    } else {
+        (CAT_X as f32 - POUNCE_DIST - PREY_W + 2.0, -PREY_W - 2.0)
+    }
+}
+
+// Box
+const BOX_SLIDE: u32 = 20;
+const BOX_NOTICE: u32 = 24;
+/// How far the cat walks to reach the box.
+const BOX_WALK: u32 = 20;
+const BOX_SIT: u32 = 150;
+const BOX_W: i32 = SPRITE;
+const BOX_H: i32 = 7;
+
+// Stare
+const STARE_STEPS: u32 = 110;
+
+/// The two running frames, alternating.
+fn run_pose(step: u32) -> Pose {
+    if (step / 3).is_multiple_of(2) {
+        Pose::RunA
+    } else {
+        Pose::RunB
+    }
+}
+
+/// Top-left of the library's flying book, `p` (0–1) of the way through its
+/// flight. Odd-numbered flights go right to left.
+fn book_position(p: f32, slot: u64) -> (f32, f32) {
+    let x = -9.0 + p * (GRID as f32 + 18.0);
+    let x = if slot.is_multiple_of(2) {
+        x
+    } else {
+        GRID as f32 - 7.0 - x
+    };
+    let y = 8.0 + (p * std::f32::consts::PI).sin() * 16.0 + (p * 14.0).sin() * 1.5;
+    (x, y)
 }
 
 const BALL_RADIUS: f32 = 2.0;
@@ -593,6 +1094,14 @@ struct PetState {
     ball_gone: u32,
     /// Floating "z"s: (x, y, age).
     zs: Vec<(f32, f32, u32)>,
+    /// The scene the cat is in; decides which animations it has.
+    env: Environment,
+    /// How far the cat is from its usual spot, in cells.
+    dx: f32,
+    dy: f32,
+    /// Facing left: the sprite is mirrored.
+    flip: bool,
+    prop: Option<Prop>,
     /// Steps since start; drives the animated scenery.
     tick: u64,
     rng: u32,
@@ -617,6 +1126,11 @@ impl PetState {
             swat_timer: 0,
             ball_gone: 0,
             zs: Vec::new(),
+            env: Environment::Solid,
+            dx: 0.0,
+            dy: 0.0,
+            flip: false,
+            prop: None,
             tick: 0,
             rng: 0x0C47_F00D,
             last: Instant::now(),
@@ -632,6 +1146,8 @@ impl PetState {
     fn start(&mut self, anim: Anim) {
         self.anim = anim;
         self.step = 0;
+        // Every animation starts and ends with the cat at home, facing out.
+        (self.dx, self.dy, self.flip, self.prop) = (0.0, 0.0, false, None);
         match anim {
             Anim::Idle => self.idle_len = 60 + (self.rand() * 60.0) as u32,
             Anim::Ball => {
@@ -652,13 +1168,15 @@ impl PetState {
 
     fn next_from_bag(&mut self) -> Anim {
         if self.bag.is_empty() {
-            self.bag = vec![Anim::Sleep, Anim::Lick, Anim::Stretch, Anim::Ball];
+            self.bag = Anim::repertoire(self.env);
             for i in (1..self.bag.len()).rev() {
                 let j = (self.rand() * (i + 1) as f32) as usize;
                 self.bag.swap(i, j.min(i));
             }
+            // The bag is popped from the end; don't open with a repeat.
             if self.bag.last() == Some(&self.last_played) {
-                self.bag.swap(0, 3);
+                let last = self.bag.len() - 1;
+                self.bag.swap(0, last);
             }
         }
         let next = self.bag.pop().unwrap();
@@ -673,6 +1191,8 @@ impl PetState {
                     let next = self.next_from_bag();
                     self.start(next);
                     Pose::Sit
+                } else if let Some(pose) = self.scenery_reaction() {
+                    pose
                 } else if self.step % 75 >= 71 {
                     Pose::SitBlink
                 } else if (self.step / 18) % 4 == 3 {
@@ -682,6 +1202,10 @@ impl PetState {
                 }
             }
             Anim::Ball => self.step_ball(),
+            Anim::Stare => self.step_stare(),
+            Anim::Zoomies => self.step_zoomies(),
+            Anim::Pounce => self.step_pounce(),
+            Anim::Box => self.step_box(),
             scripted => {
                 let script = scripted.script().unwrap();
                 let mut t = self.step;
@@ -711,7 +1235,8 @@ impl PetState {
         }
 
         // Sleeping "z"s drift up and to the right.
-        if matches!(self.pose, Pose::SleepA | Pose::SleepB) && self.step.is_multiple_of(40) {
+        let asleep = self.anim == Anim::Sleep && matches!(self.pose, Pose::SleepA | Pose::SleepB);
+        if asleep && self.step.is_multiple_of(40) {
             self.zs.push((CAT_X as f32 + 5.0, (FLOOR_Y - 10) as f32, 0));
         }
         for z in &mut self.zs {
@@ -720,6 +1245,215 @@ impl PetState {
             z.2 += 1;
         }
         self.zs.retain(|z| z.2 < 90);
+    }
+
+    /// While idle, how the cat responds to something passing through the
+    /// scene: it swats at the library's flying book, and bristles when the
+    /// night forest's bat or witch appears.
+    fn scenery_reaction(&self) -> Option<Pose> {
+        match self.env {
+            Environment::Library => {
+                let (p, slot) = BOOK_EVENT.progress(self.tick)?;
+                let (x, y) = book_position(p, slot);
+                let overhead = (x + 3.0 - (CAT_X + SPRITE / 2) as f32).abs() < 7.0;
+                Some(if overhead && y > 20.0 {
+                    Pose::SwatUp
+                } else {
+                    Pose::LookUp
+                })
+            }
+            Environment::NightForest => {
+                let (p, _) = BAT_EVENT
+                    .progress(self.tick)
+                    .or_else(|| WITCH_EVENT.progress(self.tick))?;
+                // A fright at first, then it watches the thing go.
+                Some(if p < 0.35 { Pose::Puffed } else { Pose::LookUp })
+            }
+            _ => None,
+        }
+    }
+
+    /// A moth crosses overhead; the cat's head follows it.
+    fn step_stare(&mut self) -> Pose {
+        let t = self.step;
+        if t >= STARE_STEPS + 10 {
+            self.start(Anim::Idle);
+            return Pose::Sit;
+        }
+        if t >= STARE_STEPS {
+            self.prop = None;
+            return Pose::SitBlink;
+        }
+        let p = t as f32 / STARE_STEPS as f32;
+        let x = -3.0 + p * (GRID as f32 + 6.0);
+        let y = (FLOOR_Y - 27) as f32 + (p * 19.0).sin() * 3.0;
+        self.prop = Some(Prop {
+            kind: PropKind::Moth,
+            x,
+            y,
+        });
+        if x < (CAT_X + SPRITE - 2) as f32 {
+            Pose::LookUp
+        } else {
+            Pose::Tilt
+        }
+    }
+
+    /// A wind-up, then laps: out of one edge and back in from the other.
+    fn step_zoomies(&mut self) -> Pose {
+        let t = self.step;
+        if t < ZOOM_WIND_UP {
+            self.dx = if t % 4 < 2 { 0.0 } else { 1.0 };
+            return Pose::Crouch;
+        }
+        let run = t - ZOOM_WIND_UP;
+        let travelled = run as f32 * ZOOM_SPEED;
+        let total = ZOOM_LAPS * 2.0 * ZOOM_EDGE;
+        if travelled < total {
+            // Position on a loop that leaves at +EDGE and re-enters at -EDGE.
+            self.dx = (travelled + ZOOM_EDGE).rem_euclid(2.0 * ZOOM_EDGE) - ZOOM_EDGE;
+            return run_pose(run);
+        }
+        self.dx = 0.0;
+        if travelled >= total + ZOOM_SKID as f32 * ZOOM_SPEED {
+            self.start(Anim::Idle);
+            return Pose::Sit;
+        }
+        Pose::Crouch
+    }
+
+    /// What the cat pounces on in this scene, if anything.
+    fn prey(&self) -> Option<PropKind> {
+        match self.env {
+            Environment::Dungeon => Some(PropKind::Spider),
+            Environment::Forest => Some(PropKind::Butterfly),
+            _ => None,
+        }
+    }
+
+    /// Which way the cat pounces: +1 right, -1 left. In the dungeon the
+    /// cauldron stands to the right, so it goes left there.
+    fn pounce_dir(&self) -> f32 {
+        if self.env == Environment::Dungeon {
+            -1.0
+        } else {
+            1.0
+        }
+    }
+
+    fn step_pounce(&mut self) -> Pose {
+        let t = self.step;
+        let dir = self.pounce_dir();
+        let leap_at = POUNCE_STALK + POUNCE_WIGGLE;
+        let land_at = leap_at + POUNCE_LEAP;
+        let return_at = land_at + POUNCE_LAND;
+
+        // The prey wanders in from the edge during the stalk and bolts once
+        // the cat is in the air: the spider along the floor, the butterfly
+        // upwards.
+        if let Some(kind) = self.prey() {
+            let (wait_x, edge_x) = prey_track(dir);
+            let rest_y = match kind {
+                PropKind::Spider => (FLOOR_Y - 3) as f32,
+                _ => (FLOOR_Y - 9) as f32 + (t as f32 * 0.4).sin() * 1.5,
+            };
+            let (x, y) = if t < POUNCE_STALK {
+                let p = t as f32 / POUNCE_STALK as f32;
+                (edge_x + (wait_x - edge_x) * p, rest_y)
+            } else if t < leap_at + 3 {
+                (wait_x, rest_y)
+            } else {
+                let fled = (t - leap_at - 3) as f32;
+                match kind {
+                    PropKind::Spider => (wait_x + dir * fled * 1.6, rest_y),
+                    _ => (wait_x + dir * fled * 0.9, rest_y - fled * 1.4),
+                }
+            };
+            let gone = (x - edge_x) * dir > 0.0 || y < -4.0;
+            self.prop = (!gone).then_some(Prop { kind, x, y });
+        }
+
+        // The running sprite faces right, so it is mirrored to go left.
+        if t < POUNCE_STALK {
+            Pose::Crouch
+        } else if t < leap_at {
+            // The wiggle before the leap.
+            self.dx = if (t / 2).is_multiple_of(2) { 0.0 } else { 1.0 };
+            Pose::Crouch
+        } else if t < land_at {
+            let p = (t - leap_at) as f32 / POUNCE_LEAP as f32;
+            self.dx = dir * POUNCE_DIST * p;
+            self.dy = -POUNCE_HEIGHT * 4.0 * p * (1.0 - p);
+            self.flip = dir < 0.0;
+            Pose::RunA
+        } else if t < return_at {
+            (self.dx, self.dy, self.flip) = (dir * POUNCE_DIST, 0.0, false);
+            Pose::Crouch
+        } else {
+            // Trot back home, facing the other way.
+            let back = (t - return_at) as f32;
+            if back >= POUNCE_DIST {
+                self.start(Anim::Idle);
+                return Pose::Sit;
+            }
+            (self.dx, self.flip) = (dir * (POUNCE_DIST - back), dir > 0.0);
+            run_pose(t)
+        }
+    }
+
+    /// A box slides in; the cat goes over, sits in it for a while, then
+    /// comes back and the box slides away.
+    fn step_box(&mut self) -> Pose {
+        let t = self.step;
+        let box_x = (CAT_X + BOX_WALK as i32) as f32;
+        let box_y = (FLOOR_Y - BOX_H) as f32;
+        let walk_at = BOX_SLIDE + BOX_NOTICE;
+        let sit_at = walk_at + BOX_WALK;
+        let leave_at = sit_at + BOX_SIT;
+        let home_at = leave_at + BOX_WALK;
+
+        let slide = |progress: f32| box_x + (OFFSTAGE_X - box_x) * progress;
+        let x = if t < BOX_SLIDE {
+            slide(1.0 - t as f32 / BOX_SLIDE as f32)
+        } else if t < home_at {
+            box_x
+        } else {
+            slide((t - home_at) as f32 / BOX_SLIDE as f32)
+        };
+        self.prop = Some(Prop {
+            kind: PropKind::Box,
+            x,
+            y: box_y,
+        });
+
+        if t < BOX_SLIDE {
+            Pose::Sit
+        } else if t < walk_at {
+            if t < BOX_SLIDE + BOX_NOTICE / 2 {
+                Pose::LookUp
+            } else {
+                Pose::Tilt
+            }
+        } else if t < sit_at {
+            self.dx = (t - walk_at) as f32;
+            run_pose(t)
+        } else if t < leave_at {
+            self.dx = BOX_WALK as f32;
+            if (t - sit_at) % 50 >= 45 {
+                Pose::SitBlink
+            } else {
+                Pose::Sit
+            }
+        } else if t < home_at {
+            (self.dx, self.flip) = ((home_at - t) as f32, true);
+            run_pose(t)
+        } else if t < home_at + BOX_SLIDE {
+            (self.dx, self.flip) = (0.0, false);
+            Pose::Sit
+        } else {
+            self.start(Anim::Idle);
+            Pose::Sit
+        }
     }
 
     fn step_ball(&mut self) -> Pose {
@@ -885,16 +1619,28 @@ impl Canvas {
         }
     }
 
-    /// Draw the cat part-way (`t` in 0–1) through a cross-fade from `from`
-    /// to `to`.  Each cell fades between what the two poses show there (the
+    /// Draw the cat, mirrored if `flip`, part-way (`t` in 0–1) through a
+    /// cross-fade from `from` to `to`.  Each cell fades between what the two poses show there (the
     /// background where a pose is transparent), so cells that are the same
     /// in both poses stay solid instead of ghosting.
-    fn cat(&mut self, from: &Sprite, to: &Sprite, coat: Coat, x0: i32, y0: i32, t: f32) {
+    #[allow(clippy::too_many_arguments)]
+    fn cat(
+        &mut self,
+        from: &Sprite,
+        to: &Sprite,
+        coat: Coat,
+        x0: i32,
+        y0: i32,
+        t: f32,
+        flip: bool,
+    ) {
         for row in 0..SPRITE {
             for col in 0..SPRITE {
                 let (x, y) = (x0 + col, y0 + row);
                 let Some(bg) = self.get(x, y) else { continue };
-                let cell = |s: &Sprite| s[row as usize].as_bytes()[col as usize];
+                // Mirrored, the sprite's right-hand column is drawn first.
+                let source = if flip { SPRITE - 1 - col } else { col };
+                let cell = |s: &Sprite| s[row as usize].as_bytes()[source as usize];
                 let a = coat_color(coat, cell(from)).unwrap_or(bg);
                 let b = coat_color(coat, cell(to)).unwrap_or(bg);
                 self.set(x, y, a);
@@ -1484,13 +2230,7 @@ fn paint_library(c: &mut Canvas, tick: u64) {
 
     // Now and then a book flaps past, swooping low through the room
     if let Some((p, slot)) = BOOK_EVENT.progress(tick) {
-        let x = -9.0 + p * (GRID as f32 + 18.0);
-        let x = if slot % 2 == 0 {
-            x
-        } else {
-            GRID as f32 - 7.0 - x
-        };
-        let y = 8.0 + (p * std::f32::consts::PI).sin() * 16.0 + (p * 14.0).sin() * 1.5;
+        let (x, y) = book_position(p, slot);
         let (x, y) = (x.round() as i32, y.round() as i32);
         let cover = SPINES[(slot % 6) as usize];
         let up = (tick / 5).is_multiple_of(2);
@@ -1527,6 +2267,59 @@ fn paint_ball(c: &mut Canvas, ball: &Ball) {
     }
 }
 
+const CARDBOARD: [u8; 3] = [176, 134, 84];
+const CARDBOARD_DARK: [u8; 3] = [132, 96, 56];
+
+/// The part of a prop that sits behind the cat. Only the box has one: its
+/// far rim and the dark inside.
+fn paint_prop_behind(c: &mut Canvas, prop: &Prop) {
+    if prop.kind == PropKind::Box {
+        let (x, y) = (prop.x.round() as i32, prop.y.round() as i32);
+        c.rect(x, y - 2, x + BOX_W - 1, y - 2, CARDBOARD_DARK);
+        c.rect(x + 1, y - 1, x + BOX_W - 2, y, [70, 50, 32]);
+    }
+}
+
+/// A prop, or for the box its near side, drawn over the cat.
+fn paint_prop(c: &mut Canvas, prop: &Prop, tick: u64) {
+    let (x, y) = (prop.x.round() as i32, prop.y.round() as i32);
+    let beat = (tick / 4).is_multiple_of(2);
+    match prop.kind {
+        PropKind::Moth => {
+            let wing = if beat { -1 } else { 1 };
+            c.set(x, y, [226, 220, 200]);
+            c.set(x - 1, y + wing, [190, 184, 166]);
+            c.set(x + 1, y + wing, [190, 184, 166]);
+        }
+        PropKind::Butterfly => {
+            const WINGS: [[&str; 3]; 2] = [["o.o", "ooo", "o.o"], [".o.", ".o.", ".o."]];
+            c.stamp(&WINGS[usize::from(beat)], x, y, [255, 214, 236], false);
+            c.set(x + 1, y + 1, [40, 30, 30]);
+        }
+        PropKind::Spider => c.stamp(&SPIDER[usize::from(beat)], x, y, [18, 14, 22], false),
+        PropKind::Box => {
+            c.rect(x, y, x + BOX_W - 1, y + BOX_H - 1, CARDBOARD);
+            c.rect(x, y, x + BOX_W - 1, y, CARDBOARD_DARK);
+            c.rect(x, y, x, y + BOX_H - 1, CARDBOARD_DARK);
+            c.rect(
+                x + BOX_W - 1,
+                y,
+                x + BOX_W - 1,
+                y + BOX_H - 1,
+                CARDBOARD_DARK,
+            );
+            // Packing tape down the middle.
+            c.rect(
+                x + BOX_W / 2 - 1,
+                y + 1,
+                x + BOX_W / 2,
+                y + BOX_H - 1,
+                [206, 172, 120],
+            );
+        }
+    }
+}
+
 fn paint_scene(st: &PetState, cfg: PetConfig) -> Canvas {
     let mut c = Canvas::new(cfg.background);
     match cfg.environment {
@@ -1539,7 +2332,7 @@ fn paint_scene(st: &PetState, cfg: PetConfig) -> Canvas {
     }
 
     // Soft ground shadows
-    let cat_cx = CAT_X as f32 + 7.0;
+    let cat_cx = CAT_X as f32 + st.dx + 7.0;
     for x in 0..GRID {
         let dx = (x as f32 - cat_cx) / 9.0;
         if dx * dx <= 1.0 {
@@ -1552,16 +2345,25 @@ fn paint_scene(st: &PetState, cfg: PetConfig) -> Canvas {
         }
     }
 
+    if let Some(prop) = &st.prop {
+        paint_prop_behind(&mut c, prop);
+    }
+
     // Cat: cross-fade from the previous pose to the current one.
     let t = ((st.since_pose + 1) as f32 / FADE_STEPS as f32).min(1.0);
     c.cat(
         st.prev_pose.sprite(),
         st.pose.sprite(),
         cfg.coat,
-        CAT_X,
-        FLOOR_Y - SPRITE,
+        CAT_X + st.dx.round() as i32,
+        FLOOR_Y - SPRITE + st.dy.round() as i32,
         t,
+        st.flip,
     );
+
+    if let Some(prop) = &st.prop {
+        paint_prop(&mut c, prop, st.tick);
+    }
 
     if let Some(ball) = &st.ball {
         paint_ball(&mut c, ball);
@@ -1591,6 +2393,7 @@ pub fn render_pet_cat() -> DynamicImage {
 
     // Run however many 30 Hz steps have elapsed (capped, so a long pause in
     // rendering doesn't fast-forward through whole animations).
+    st.env = config().environment;
     let now = Instant::now();
     st.carry += now.duration_since(st.last);
     st.last = now;
@@ -1618,7 +2421,7 @@ pub fn render_pet_cat() -> DynamicImage {
 mod tests {
     use super::*;
 
-    const ALL_POSES: [Pose; 14] = [
+    const ALL_POSES: [Pose; 26] = [
         Pose::Sit,
         Pose::SitBlink,
         Pose::SitTail,
@@ -1633,6 +2436,18 @@ mod tests {
         Pose::LookUp,
         Pose::Swat,
         Pose::SwatUp,
+        Pose::SitTail2,
+        Pose::SitHalf,
+        Pose::SitEar,
+        Pose::KneadA,
+        Pose::KneadB,
+        Pose::Tilt,
+        Pose::Yawn,
+        Pose::Puffed,
+        Pose::GroomA,
+        Pose::GroomB,
+        Pose::RunA,
+        Pose::RunB,
     ];
 
     #[test]
@@ -1641,7 +2456,7 @@ mod tests {
             for (row, line) in pose.sprite().iter().enumerate() {
                 assert_eq!(line.len(), 16, "{pose:?} row {row}");
                 assert!(
-                    line.bytes().all(|b| b".obwsecp".contains(&b)),
+                    line.bytes().all(|b| b".obwsehcp".contains(&b)),
                     "{pose:?} row {row}: {line}"
                 );
             }
@@ -1653,7 +2468,8 @@ mod tests {
         let mut st = PetState::new();
         let mut seen = Vec::new();
         let mut order = Vec::new();
-        for _ in 0..30 * 240 {
+        // Long enough for several rounds of the whole repertoire.
+        for _ in 0..30 * 900 {
             st.step();
             if !seen.contains(&st.anim) {
                 seen.push(st.anim);
@@ -1669,15 +2485,12 @@ mod tests {
         let played: Vec<Anim> = order.into_iter().filter(|a| *a != Anim::Idle).collect();
         assert!(played.len() > 8);
         assert!(played.windows(2).all(|w| w[0] != w[1]), "{played:?}");
-        for anim in [
-            Anim::Idle,
-            Anim::Sleep,
-            Anim::Lick,
-            Anim::Stretch,
-            Anim::Ball,
-        ] {
+        assert!(seen.contains(&Anim::Idle));
+        for anim in Anim::COMMON {
             assert!(seen.contains(&anim), "{anim:?} never played");
         }
+        // Scene-specific animations stay out of other scenes.
+        assert!(!seen.contains(&Anim::Box) && !seen.contains(&Anim::Watch));
     }
 
     #[test]
@@ -1782,7 +2595,19 @@ mod tests {
 
     #[test]
     fn scripted_animations_begin_and_end_by_way_of_the_sitting_cat() {
-        for anim in [Anim::Sleep, Anim::Lick, Anim::Stretch] {
+        for anim in [
+            Anim::Sleep,
+            Anim::Lick,
+            Anim::Stretch,
+            Anim::TailFlick,
+            Anim::SlowBlink,
+            Anim::EarSwivel,
+            Anim::Loaf,
+            Anim::Knead,
+            Anim::Yawn,
+            Anim::Groom,
+            Anim::Watch,
+        ] {
             let mut st = PetState::new();
             st.start(anim);
             let mut poses = Vec::new();
@@ -2091,6 +2916,265 @@ mod tests {
                 0,
                 "{env:?}: still there after the event"
             );
+        }
+    }
+
+    /// Run `anim` in `env` to the end, calling `watch` after every step.
+    fn play(env: Environment, anim: Anim, mut watch: impl FnMut(&PetState)) -> PetState {
+        let mut st = PetState::new();
+        st.env = env;
+        st.start(anim);
+        let mut steps = 0;
+        while st.anim == anim {
+            st.step();
+            watch(&st);
+            steps += 1;
+            assert!(steps < 30 * 60, "{anim:?} never finished");
+        }
+        st
+    }
+
+    #[test]
+    fn every_scene_has_the_common_animations_plus_its_own() {
+        for env in Environment::ALL {
+            let anims = Anim::repertoire(env);
+            assert!(Anim::COMMON.iter().all(|a| anims.contains(a)), "{env:?}");
+            assert!(!anims.contains(&Anim::Idle));
+            assert_eq!(anims.contains(&Anim::Box), env == Environment::LivingRoom);
+            assert_eq!(
+                anims.contains(&Anim::Watch),
+                env == Environment::NightForest
+            );
+        }
+        // A full round in the living room does include the box.
+        let mut st = PetState::new();
+        st.env = Environment::LivingRoom;
+        let round: Vec<Anim> = (0..15).map(|_| st.next_from_bag()).collect();
+        assert!(round.contains(&Anim::Box), "{round:?}");
+    }
+
+    #[test]
+    fn animations_that_move_the_cat_bring_it_home_facing_out() {
+        for env in Environment::ALL {
+            for anim in [Anim::Stare, Anim::Zoomies, Anim::Pounce, Anim::Box] {
+                let st = play(env, anim, |_| {});
+                assert_eq!(st.anim, Anim::Idle, "{env:?} {anim:?}");
+                assert_eq!(
+                    (st.dx, st.dy, st.flip),
+                    (0.0, 0.0, false),
+                    "{env:?} {anim:?}"
+                );
+                assert_eq!(st.prop, None, "{env:?} {anim:?}");
+                assert_eq!(st.pose, Pose::Sit, "{env:?} {anim:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn zoomies_leave_by_one_edge_and_return_by_the_other() {
+        let (mut left, mut right, mut wraps, mut last) = (0.0f32, 0.0f32, 0, 0.0f32);
+        let mut ran = false;
+        play(Environment::Solid, Anim::Zoomies, |st| {
+            left = left.min(st.dx);
+            right = right.max(st.dx);
+            // A jump from far right to far left is the cat going round.
+            if last - st.dx > ZOOM_EDGE {
+                wraps += 1;
+            }
+            last = st.dx;
+            ran |= matches!(st.pose, Pose::RunA | Pose::RunB);
+        });
+        // Off-screen means the whole sprite is past the edge.
+        assert!(CAT_X as f32 + right >= GRID as f32, "never left: {right}");
+        assert!(
+            CAT_X as f32 + left + SPRITE as f32 <= 0.0,
+            "never came in from the left: {left}"
+        );
+        assert_eq!(wraps, ZOOM_LAPS as i32);
+        assert!(ran);
+    }
+
+    #[test]
+    fn pounce_leaps_at_the_prey_and_the_prey_gets_away() {
+        for (env, prey) in [
+            (Environment::Dungeon, Some(PropKind::Spider)),
+            (Environment::Forest, Some(PropKind::Butterfly)),
+            (Environment::Solid, None),
+        ] {
+            let (mut highest, mut furthest, mut faced_left) = (0.0f32, 0.0f32, false);
+            let dir = if env == Environment::Dungeon {
+                -1.0
+            } else {
+                1.0
+            };
+            let mut kinds = Vec::new();
+            let mut waited_at = None;
+            play(env, Anim::Pounce, |st| {
+                highest = highest.min(st.dy);
+                furthest = furthest.max(st.dx * dir);
+                faced_left |= st.flip;
+                if let Some(prop) = st.prop {
+                    if !kinds.contains(&prop.kind) {
+                        kinds.push(prop.kind);
+                    }
+                    if st.step == POUNCE_STALK + 2 {
+                        waited_at = Some(prop.x);
+                    }
+                }
+            });
+            assert!(
+                highest <= -POUNCE_HEIGHT + 0.5,
+                "{env:?}: barely left the ground"
+            );
+            assert_eq!(furthest, POUNCE_DIST, "{env:?}");
+            assert!(
+                faced_left,
+                "{env:?}: should face left on the way out or back"
+            );
+            assert_eq!(kinds, prey.into_iter().collect::<Vec<_>>(), "{env:?}");
+            // The prey sits where the leap ends, in front of the cat.
+            assert_eq!(waited_at, prey.map(|_| prey_track(dir).0), "{env:?}");
+        }
+    }
+
+    #[test]
+    fn dungeon_pounce_goes_left_clear_of_the_cauldron() {
+        let mut reach = 0.0f32;
+        let mut prey_x = Vec::new();
+        play(Environment::Dungeon, Anim::Pounce, |st| {
+            reach = reach.min(st.dx);
+            prey_x.extend(st.prop.map(|p| p.x));
+        });
+        assert_eq!(reach, -POUNCE_DIST);
+        // The spider stays on the floor to the cat's left and on screen
+        // while it waits.
+        let wait = prey_track(-1.0).0;
+        assert!(wait >= 0.0 && wait + PREY_W <= CAT_X as f32, "{wait}");
+        assert!(prey_x.iter().all(|x| *x <= wait), "{prey_x:?}");
+        // Elsewhere the prey is to the right of where the cat sits.
+        assert!(prey_track(1.0).0 >= (CAT_X + SPRITE) as f32);
+    }
+
+    #[test]
+    fn cat_sits_in_the_box_with_only_its_top_half_showing() {
+        let cfg = PetConfig {
+            environment: Environment::LivingRoom,
+            ..PetConfig::DEFAULT
+        };
+        let mut seated = None;
+        play(Environment::LivingRoom, Anim::Box, |st| {
+            let sit_at = BOX_SLIDE + BOX_NOTICE + BOX_WALK;
+            if st.step == sit_at + 30 {
+                seated = Some((st.dx, st.prop, paint_scene(st, cfg)));
+            }
+        });
+        let (dx, prop, canvas) = seated.expect("the cat never sat");
+        let prop = prop.expect("the box left early");
+        assert_eq!(prop.kind, PropKind::Box);
+        // The cat is in the box, not beside it.
+        assert_eq!(CAT_X as f32 + dx, prop.x);
+        // Its feet are behind cardboard; its head is above the rim.
+        let (x, feet_y, head_y) = (prop.x as i32 + 4, FLOOR_Y - 2, FLOOR_Y - SPRITE + 5);
+        assert_eq!(canvas.get(x, feet_y), Some(CARDBOARD));
+        let eye = coat_color(cfg.coat, b'e').unwrap();
+        assert_eq!(canvas.get(prop.x as i32 + 3, head_y), Some(eye));
+    }
+
+    #[test]
+    fn stare_follows_a_moth_from_one_side_to_the_other() {
+        let (mut first, mut last) = (None, None);
+        let mut poses = Vec::new();
+        play(Environment::Solid, Anim::Stare, |st| {
+            if let Some(prop) = st.prop {
+                assert_eq!(prop.kind, PropKind::Moth);
+                first.get_or_insert(prop.x);
+                last = Some(prop.x);
+            }
+            if poses.last() != Some(&st.pose) {
+                poses.push(st.pose);
+            }
+        });
+        assert!(first.unwrap() < 0.0 && last.unwrap() > (GRID - 2) as f32);
+        // Looks up as it approaches, tilts its head as it passes.
+        assert_eq!(poses[..2], [Pose::LookUp, Pose::Tilt], "{poses:?}");
+    }
+
+    /// The idle poses seen in `env` over `steps` steps starting at `tick`.
+    fn idle_poses(env: Environment, tick: u64, steps: u64) -> Vec<Pose> {
+        let mut st = PetState::new();
+        (st.env, st.tick, st.idle_len) = (env, tick, u32::MAX);
+        let mut seen = Vec::new();
+        for _ in 0..steps {
+            st.step();
+            if !seen.contains(&st.pose) {
+                seen.push(st.pose);
+            }
+        }
+        seen
+    }
+
+    #[test]
+    fn library_cat_swats_at_the_flying_book() {
+        let flight = first_play(&BOOK_EVENT);
+        let during = idle_poses(Environment::Library, flight, BOOK_EVENT.duration);
+        // It watches the book come in, swats as it passes overhead, then
+        // watches it go.
+        assert_eq!(during, [Pose::LookUp, Pose::SwatUp], "{during:?}");
+        // Other scenes ignore the same moment; so does the library once
+        // the book has gone.
+        let elsewhere = idle_poses(Environment::Dungeon, flight, BOOK_EVENT.duration);
+        assert!(!elsewhere.contains(&Pose::SwatUp) && !elsewhere.contains(&Pose::LookUp));
+        let after = idle_poses(Environment::Library, flight + BOOK_EVENT.duration, 60);
+        assert!(!after.contains(&Pose::SwatUp) && !after.contains(&Pose::LookUp));
+    }
+
+    #[test]
+    fn night_forest_cat_bristles_at_the_bat_and_the_witch() {
+        for event in [&BAT_EVENT, &WITCH_EVENT] {
+            let start = first_play(event);
+            let during = idle_poses(Environment::NightForest, start, event.duration);
+            assert_eq!(during, [Pose::Puffed, Pose::LookUp], "{during:?}");
+            let elsewhere = idle_poses(Environment::Forest, start, event.duration);
+            assert!(!elsewhere.contains(&Pose::Puffed), "{elsewhere:?}");
+        }
+    }
+
+    #[test]
+    fn dozing_in_a_loaf_makes_no_zs() {
+        let mut most = 0;
+        play(Environment::Solid, Anim::Loaf, |st| {
+            most = most.max(st.zs.len());
+        });
+        assert_eq!(most, 0);
+    }
+
+    #[test]
+    fn a_flipped_cat_is_the_mirror_image() {
+        let draw = |flip| {
+            let mut c = Canvas::new([1, 2, 3]);
+            c.cat(&RUN_A, &RUN_A, Coat::Orange, 10, 10, 1.0, flip);
+            c
+        };
+        let (normal, flipped) = (draw(false), draw(true));
+        assert_ne!(normal.px, flipped.px);
+        for row in 0..SPRITE {
+            for col in 0..SPRITE {
+                assert_eq!(
+                    flipped.get(10 + col, 10 + row),
+                    normal.get(10 + SPRITE - 1 - col, 10 + row)
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn half_closed_eyes_are_between_open_and_closed() {
+        for coat in Coat::ALL {
+            let [open, half, closed] = [b'e', b'h', b'c'].map(|ch| coat_color(coat, ch).unwrap());
+            assert!(half != open && half != closed, "{coat:?}");
+            for i in 0..3 {
+                assert!(half[i] >= open[i].min(closed[i]) && half[i] <= open[i].max(closed[i]));
+            }
         }
     }
 }
