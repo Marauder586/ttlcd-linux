@@ -86,7 +86,9 @@
         env.RUST_BACKTRACE = "1";
         env.RUST_LOG = "info";
       };
-
+    })
+    // {
+      # Not per-system: NixOS expects modules at `nixosModules.<name>`.
       # ── NixOS module ─────────────────────────────────────────────
       # Import as:  imports = [ ttlcd-linux.nixosModules.default ];
       nixosModules.default = {
@@ -165,36 +167,50 @@
             description = "Seconds between auto-rotation advances (0 = disabled).";
           };
 
-          user = lib.mkOption {
-            type = lib.types.str;
-            default = "marauder";
-            description = "User to run the daemon as.";
-          };
-
           package = lib.mkOption {
             type = lib.types.package;
-            default = ttlcd;
+            default = self.packages.${pkgs.stdenv.hostPlatform.system}.default;
+            defaultText = lib.literalExpression "ttlcd.packages.\${pkgs.stdenv.hostPlatform.system}.default";
             description = "ttlcd package to use.";
           };
         };
 
-        config = lib.mkIf cfg.enable {
-          # Udev rule: grant seat-local access to the USB panel without root.
-          # TAG+="uaccess" handles loginctl seat sessions; MODE/GROUP covers
-          # non-seat services running as cfg.user.
-          services.udev.extraRules = ''
-            # XinWeiYe/Thermaltake 480x480 panel (0x264a:0x2343)
-            SUBSYSTEM=="usb", ATTRS{idVendor}=="264a", ATTRS{idProduct}=="2343", TAG+="uaccess", MODE="0660", GROUP="users"
-            # Sibling SKU 128-height panel (0x264a:0x233d)
-            SUBSYSTEM=="usb", ATTRS{idVendor}=="264a", ATTRS{idProduct}=="233d", TAG+="uaccess", MODE="0660", GROUP="users"
-            # Alternate Thermaltake SKU (0x264a:0x2428)
-            SUBSYSTEM=="usb", ATTRS{idVendor}=="264a", ATTRS{idProduct}=="2428", TAG+="uaccess", MODE="0660", GROUP="users"
-          '';
+        # The daemon used to be a system service running as a named user.
+        imports = [
+          (lib.mkRemovedOptionModule ["services" "ttlcd" "user"] ''
+            ttlcd now runs as a systemd user service for whoever is logged
+            in, so there is no user to configure.
+          '')
+        ];
 
-          systemd.services.ttlcd = {
+        config = lib.mkIf cfg.enable {
+          # Let the user at the local seat open the panel without root.
+          # TAG+="uaccess" only takes effect in a rules file ordered before
+          # systemd's 73-seat-late.rules, which `services.udev.extraRules`
+          # (99-local.rules) is not, so ship a rules file of our own.
+          # MODE/GROUP additionally covers sessions without a seat (SSH,
+          # lingering users).
+          services.udev.packages = [
+            (pkgs.writeTextFile {
+              name = "ttlcd-udev-rules";
+              destination = "/etc/udev/rules.d/70-ttlcd.rules";
+              text = ''
+                # XinWeiYe/Thermaltake 480x480 panel (0x264a:0x2343)
+                SUBSYSTEM=="usb", ATTRS{idVendor}=="264a", ATTRS{idProduct}=="2343", TAG+="uaccess", MODE="0660", GROUP="users"
+                # Sibling SKU 128-height panel (0x264a:0x233d)
+                SUBSYSTEM=="usb", ATTRS{idVendor}=="264a", ATTRS{idProduct}=="233d", TAG+="uaccess", MODE="0660", GROUP="users"
+                # Alternate Thermaltake SKU (0x264a:0x2428)
+                SUBSYSTEM=="usb", ATTRS{idVendor}=="264a", ATTRS{idProduct}=="2428", TAG+="uaccess", MODE="0660", GROUP="users"
+              '';
+            })
+          ];
+
+          # A user service: it starts when a user logs in and runs as them,
+          # so saved settings live in their ~/.config/ttlcd and the shell,
+          # log-tail and notification features act with their permissions.
+          systemd.user.services.ttlcd = {
             description = "ttlcd USB LCD panel daemon";
-            wantedBy = ["multi-user.target"];
-            after = ["udev.service"];
+            wantedBy = ["default.target"];
             serviceConfig = {
               ExecStart = lib.concatStrings [
                 "${cfg.package}/bin/ttlcd daemon"
@@ -207,12 +223,8 @@
                 modeArgs
                 rotIntervalArgs
               ];
-              User = cfg.user;
               Restart = "on-failure";
               RestartSec = 5;
-              # Allow USB device access
-              SupplementaryGroups = ["users"];
-              # Nice level — rendering is CPU-light
               Nice = 10;
             };
             environment = {
@@ -221,5 +233,5 @@
           };
         };
       };
-    });
+    };
 }
