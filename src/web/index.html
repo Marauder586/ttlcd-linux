@@ -1036,6 +1036,8 @@
         <tr><td><kbd>Shift</kbd>+<kbd>E</kbd></td><td>Switch to Game of Life mode</td></tr>
         <tr><td><kbd>Shift</kbd>+<kbd>X</kbd></td><td>Switch to LED Clock mode</td></tr>
         <tr><td><kbd>/</kbd></td><td>Focus mode search filter (Esc to clear)</td></tr>
+        <tr><td><kbd>Ctrl</kbd>+<kbd>K</kbd></td><td>Open the command palette</td></tr>
+        <tr><td><kbd>?</kbd></td><td>Show these shortcuts as an overlay</td></tr>
       </table>
       <p class="card-hint" style="margin-top:0.5rem">Shortcuts are disabled while a text input is focused.</p>
     </details>
@@ -1050,6 +1052,7 @@
     </section>
   </main>
 
-  <script src="/static/app.js"></script>
+  <!-- The UI logic is the web/ crate, compiled to WebAssembly. -->
+  <script type="module" src="/static/boot.js"></script>
 </body>
 </html>

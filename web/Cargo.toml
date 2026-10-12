@@ -1,0 +1,32 @@
+[package]
+name = "ttlcd-web"
+version = "0.22.0"
+edition = "2021"
+description = "ttlcd web UI, compiled to WebAssembly"
+publish = false
+
+[lib]
+# cdylib is the wasm module; rlib lets `cargo test -p ttlcd-web` run the
+# pure-logic tests on the host.
+crate-type = ["cdylib", "rlib"]
+
+[lints]
+workspace = true
+
+[dependencies]
+# Must match the wasm-bindgen CLI used to generate the JS glue (see flake.nix).
+wasm-bindgen         = "=0.2.117"
+wasm-bindgen-futures = "0.4"
+js-sys               = "0.3"
+
+[dependencies.web-sys]
+version = "0.3"
+features = [
+  "AddEventListenerOptions", "Blob", "BlobPropertyBag", "CanvasRenderingContext2d",
+  "CssStyleDeclaration", "DataTransfer", "Document", "DomRect", "DomTokenList",
+  "DragEvent", "Element", "Event", "EventSource", "EventTarget", "File", "FileList",
+  "FormData", "Headers", "HtmlCanvasElement", "HtmlElement", "HtmlInputElement",
+  "Location", "MessageEvent", "Node",
+  "NodeList", "RequestInit", "Response", "Storage", "Touch", "TouchEvent",
+  "TouchList", "Url", "Window",
+]
