@@ -120,6 +120,9 @@ pub(crate) struct PersistedState {
     /// Pet cat coat / environment / background colour.
     #[serde(default)]
     pub(crate) pet: Option<PetSettings>,
+    /// Whether RGB lighting follows the panel.
+    #[serde(default)]
+    pub(crate) lights_enabled: Option<bool>,
 }
 
 /// Pet cat settings as exposed by `/api/pet` and stored in the state file.
@@ -186,6 +189,7 @@ pub(crate) fn persist_state(state: &DaemonState) {
         rotate_deg: Some(*state.rotate_deg.lock().unwrap()),
         brightness: Some(*state.dim_factor.lock().unwrap()),
         pet: Some(PetSettings::current()),
+        lights_enabled: Some(state.lights.lock().unwrap().enabled),
     };
     save_persisted_state(&ps);
 }

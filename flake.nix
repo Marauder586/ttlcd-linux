@@ -118,6 +118,10 @@
           lib.optionalString (cfg.pet.coat != null) " --pet-coat ${cfg.pet.coat}"
           + lib.optionalString (cfg.pet.environment != null)
           " --pet-environment ${cfg.pet.environment}";
+        lightsArgs =
+          lib.optionalString cfg.lights.enable " --lights"
+          + lib.optionalString (cfg.lights.openrgbAddress != "127.0.0.1:6742")
+          " --openrgb ${cfg.lights.openrgbAddress}";
       in {
         options.services.ttlcd = {
           enable = lib.mkEnableOption "ttlcd LCD panel daemon";
@@ -183,6 +187,18 @@
             description = "Pet cat environment. If set, it replaces the choice saved from the web UI at every start.";
           };
 
+          lights.enable = lib.mkOption {
+            type = lib.types.bool;
+            default = false;
+            description = "Match the computer's RGB lighting to the panel through OpenRGB at every start. When false, the choice saved from the web UI is used. Needs an OpenRGB server, e.g. services.hardware.openrgb.";
+          };
+
+          lights.openrgbAddress = lib.mkOption {
+            type = lib.types.str;
+            default = "127.0.0.1:6742";
+            description = "Address of the OpenRGB SDK server.";
+          };
+
           package = lib.mkOption {
             type = lib.types.package;
             default = self.packages.${pkgs.stdenv.hostPlatform.system}.default;
@@ -239,6 +255,7 @@
                 modeArgs
                 rotIntervalArgs
                 petArgs
+                lightsArgs
               ];
               Restart = "on-failure";
               RestartSec = 5;

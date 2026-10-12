@@ -25,7 +25,7 @@ enum Place {
 use Place::{Settings, Tab};
 
 /// Every card, identified by any element inside it, and where it appears.
-const CARDS: [(&str, Place); 46] = [
+const CARDS: [(&str, Place); 47] = [
     // Settings of individual display modes.
     ("#cd-hours", Settings(&["countdown"])),
     ("#sw-display", Settings(&["stopwatch"])),
@@ -64,6 +64,7 @@ const CARDS: [(&str, Place); 46] = [
     ("#screensaver-section", Tab("automation")),
     // The panel itself and its alerts.
     ("#set-quality", Tab("panel")),
+    ("#lights-section", Tab("panel")),
     ("#thresholds-section", Tab("panel")),
     ("#prof-name", Tab("panel")),
     ("#settings-export-btn", Tab("panel")),

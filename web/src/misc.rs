@@ -31,6 +31,7 @@ pub fn init() {
     init_screensaver();
     init_night_mode();
     init_pet();
+    init_lights();
 }
 
 // ─── Keyboard shortcuts ──────────────────────────────────────────────────────
@@ -986,4 +987,67 @@ fn init_pet() {
             render_pet(&data);
         }
     });
+}
+
+// ─── System lights ───────────────────────────────────────────────────────────
+
+fn render_lights(data: &Js) {
+    let enabled = data.get("enabled").truthy();
+    El::id("lights-enabled-cb").set("checked", enabled);
+
+    let line = El::id("lights-status-line");
+    let devices: Vec<String> = data.get("devices").arr().iter().map(Js::show).collect();
+    let error = data.get("error").string();
+    if !enabled {
+        line.set_text("Off. The lights keep whatever they were last showing.")
+            .color("var(--overlay0)");
+    } else if !devices.is_empty() {
+        // A device may appear several times (two RAM sticks, say).
+        let mut names = devices.clone();
+        names.dedup();
+        let swatch = data.get("color").str().map_or(String::new(), |c| {
+            format!(
+                r#" <span style="display:inline-block;width:0.9em;height:0.9em;border-radius:3px;vertical-align:middle;background:{}"></span>"#,
+                esc(&c)
+            )
+        });
+        line.set_html(&format!(
+            "Driving {} device{}: {}{swatch}",
+            devices.len(),
+            plural(devices.len()),
+            esc(&names.join(", "))
+        ))
+        .color("var(--green)");
+    } else if error.is_empty() {
+        line.set_text("Connecting to OpenRGB…")
+            .color("var(--overlay0)");
+    } else {
+        line.set_text(&format!("OpenRGB unavailable: {error}"))
+            .color("var(--red)");
+    }
+}
+
+async fn fetch_lights() {
+    if let Ok(data) = api::get("/api/lights").await {
+        render_lights(&data);
+    }
+}
+
+fn init_lights() {
+    let toggle = El::id("lights-enabled-cb");
+    if !toggle.ok() {
+        return;
+    }
+    toggle.on_async("change", |_| async {
+        let enabled = El::id("lights-enabled-cb").checked();
+        match api::post("/api/lights", obj! { "enabled": enabled }).await {
+            Ok(data) => render_lights(&data),
+            Err(e) => {
+                El::id("lights-status-line")
+                    .set_text(&format!("Error: {e}"))
+                    .color("var(--red)");
+            }
+        }
+    });
+    dom::poll(5000, fetch_lights);
 }

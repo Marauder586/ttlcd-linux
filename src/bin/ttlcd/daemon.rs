@@ -11,6 +11,8 @@ pub(crate) struct DaemonState {
     pub(crate) prev_mode: Arc<Mutex<DisplayMode>>,
     pub(crate) pending_jpeg: Arc<Mutex<Option<Vec<u8>>>>,
     pub(crate) last_frame: Arc<Mutex<Option<Vec<u8>>>>,
+    /// RGB lighting sync: settings and status.
+    pub(crate) lights: Arc<Mutex<LightSync>>,
     /// Monotonically-increasing counter; incremented with each new stored frame.
     pub(crate) frame_seq: Arc<Mutex<u64>>,
     pub(crate) pending_text: Arc<Mutex<Option<CustomTextPayload>>>,
@@ -304,6 +306,17 @@ impl PomodoroState {
         self.phase_started_unix_ms = now_unix_ms();
     }
 }
+
+/// Command-line settings that take precedence over the saved state.
+pub(crate) struct StartupOverrides {
+    pub(crate) pet_coat: Option<ttlcd::pet::Coat>,
+    pub(crate) pet_environment: Option<ttlcd::pet::Environment>,
+    /// Turn light sync on regardless of the saved choice.
+    pub(crate) lights: bool,
+    /// OpenRGB server address.
+    pub(crate) openrgb: String,
+}
+
 #[tokio::main]
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn run_daemon(
@@ -317,7 +330,7 @@ pub(crate) async fn run_daemon(
     rotate_deg: u16,
     rotation_mode_names: Vec<String>,
     rotation_interval: u64,
-    pet_override: (Option<ttlcd::pet::Coat>, Option<ttlcd::pet::Environment>),
+    overrides: StartupOverrides,
 ) -> Result<()> {
     use actix_web::{web, App, HttpServer};
 
@@ -368,9 +381,10 @@ pub(crate) async fn run_daemon(
     // Command-line pet settings win over the saved ones. Changes made in the
     // web UI still apply, but only until the next start.
     let mut pet = ttlcd::pet::config();
-    pet.coat = pet_override.0.unwrap_or(pet.coat);
-    pet.environment = pet_override.1.unwrap_or(pet.environment);
+    pet.coat = overrides.pet_coat.unwrap_or(pet.coat);
+    pet.environment = overrides.pet_environment.unwrap_or(pet.environment);
     ttlcd::pet::set_config(pet);
+    let lights_enabled = overrides.lights || persisted.lights_enabled.unwrap_or(false);
     if persisted.mode.is_some() {
         log::info!(
             "restored persisted state: mode={} quality={} rotate={}°",
@@ -385,6 +399,10 @@ pub(crate) async fn run_daemon(
         mode: Arc::new(Mutex::new(initial_mode)),
         pending_jpeg: Arc::new(Mutex::new(None)),
         last_frame: Arc::new(Mutex::new(None)),
+        lights: Arc::new(Mutex::new(LightSync::new(
+            lights_enabled,
+            overrides.openrgb,
+        ))),
         frame_seq: Arc::new(Mutex::new(0)),
         pending_text: Arc::new(Mutex::new(None)),
         presets: Arc::new(Mutex::new(saved_presets)),
@@ -554,6 +572,12 @@ pub(crate) async fn run_daemon(
         *state.mode_schedule.lock().unwrap() = load_mode_schedule();
         let state6 = state.clone();
         thread::spawn(move || mode_schedule_loop(state6));
+    }
+
+    // ── RGB lighting sync ──────────────────────────────────────────────────
+    {
+        let lights_state = state.clone();
+        thread::spawn(move || light_sync_loop(lights_state));
     }
 
     // ── World clock persistence ────────────────────────────────────────────
@@ -997,6 +1021,8 @@ pub(crate) async fn run_daemon(
             // Pet cat
             .route("/api/pet", web::get().to(api_get_pet))
             .route("/api/pet", web::post().to(api_set_pet))
+            .route("/api/lights", web::get().to(api_get_lights))
+            .route("/api/lights", web::post().to(api_set_lights))
             .route("/api/night", web::get().to(api_get_night_mode))
             .route("/api/night", web::post().to(api_set_night_mode))
             .route("/api/modes/catalog", web::get().to(api_modes_catalog))

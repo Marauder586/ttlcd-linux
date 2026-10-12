@@ -6,6 +6,7 @@
 //! re-attached on [`Drop`]).
 
 pub mod display;
+pub mod lights;
 pub mod pet;
 pub mod proto;
 

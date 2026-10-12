@@ -74,6 +74,7 @@ mod api_status;
 mod api_system;
 mod background;
 mod daemon;
+mod light_sync;
 mod render_loop;
 mod state;
 #[cfg(test)]
@@ -87,6 +88,7 @@ use api_status::*;
 use api_system::*;
 use background::*;
 use daemon::*;
+use light_sync::*;
 use render_loop::*;
 use state::*;
 
@@ -226,6 +228,13 @@ enum Cmd {
         /// dungeon, library). Replaces the saved choice at every start
         #[arg(long, value_parser = parse_pet_environment)]
         pet_environment: Option<ttlcd::pet::Environment>,
+        /// Match the computer's RGB lighting to the panel, through OpenRGB.
+        /// Without this flag the choice saved from the web UI is used
+        #[arg(long)]
+        lights: bool,
+        /// Address of the OpenRGB SDK server used for --lights
+        #[arg(long, default_value = ttlcd::lights::DEFAULT_OPENRGB_ADDR)]
+        openrgb: String,
     },
 
     /// Live network I/O rates. Refreshes every ~3 seconds.
@@ -669,6 +678,8 @@ fn main() -> Result<()> {
             rotation_interval,
             pet_coat,
             pet_environment,
+            lights,
+            openrgb,
         } => {
             let eff_port = cfg.daemon.port.unwrap_or(port);
             let eff_bind = cfg.daemon.bind.clone().unwrap_or(bind);
@@ -710,7 +721,12 @@ fn main() -> Result<()> {
                 eff_rotate,
                 eff_rot_modes,
                 eff_rot_interval,
-                (pet_coat, pet_environment),
+                StartupOverrides {
+                    pet_coat,
+                    pet_environment,
+                    lights,
+                    openrgb,
+                },
             )?;
         }
 
