@@ -21,6 +21,47 @@ const MODE_SETTLE_TICKS: u8 = 2;
 const SEND_THRESHOLD: u8 = 3;
 /// Wait between attempts to reach OpenRGB while it is unavailable.
 const RETRY: Duration = Duration::from_secs(5);
+/// How often an unchanged colour is sent again. A device can lose its
+/// colour without any error (a write that arrives while it is still
+/// switching mode, a reset on resume), and a steady colour would otherwise
+/// never be written a second time.
+const REFRESH: Duration = Duration::from_secs(60);
+/// Just after connecting the colour is repeated this many times, this far
+/// apart, because devices are told to change mode at that moment and may
+/// drop a write that lands during the change.
+const SETTLE_REPEATS: u8 = 3;
+const SETTLE_INTERVAL: Duration = Duration::from_secs(1);
+
+/// Decides when a colour that has not changed should be sent again.
+pub(crate) struct Resend {
+    next: Instant,
+    settle_left: u8,
+}
+
+impl Resend {
+    /// Start the schedule for a connection made at `now`.
+    pub(crate) fn connected(now: Instant) -> Self {
+        Self {
+            next: now + SETTLE_INTERVAL,
+            settle_left: SETTLE_REPEATS,
+        }
+    }
+
+    /// Whether a repeat is due at `now`; if so, the next one is scheduled.
+    pub(crate) fn due(&mut self, now: Instant) -> bool {
+        if now < self.next {
+            return false;
+        }
+        self.settle_left = self.settle_left.saturating_sub(1);
+        self.next = now
+            + if self.settle_left > 0 {
+                SETTLE_INTERVAL
+            } else {
+                REFRESH
+            };
+        true
+    }
+}
 
 /// Light-sync settings and what the worker last observed.
 pub(crate) struct LightSync {
@@ -76,6 +117,7 @@ pub(crate) fn light_sync_loop(state: DaemonState) {
     let mut seen_seq = None;
     let mut last_mode = None;
     let mut settle = 0;
+    let mut resend = Resend::connected(Instant::now());
     let mut next_attempt = Instant::now();
 
     loop {
@@ -114,6 +156,7 @@ pub(crate) fn light_sync_loop(state: DaemonState) {
                     sync.devices = names;
                     client = Some(connected);
                     sent = None;
+                    resend = Resend::connected(Instant::now());
                 }
                 Err(e) => {
                     log::debug!("light sync: {e:#}");
@@ -158,7 +201,8 @@ pub(crate) fn light_sync_loop(state: DaemonState) {
         };
 
         let color = smoother.step(target, TICK.as_secs_f64());
-        if sent.is_some_and(|s| !differs(s, color, SEND_THRESHOLD)) {
+        let unchanged = sent.is_some_and(|s| !differs(s, color, SEND_THRESHOLD));
+        if unchanged && !resend.due(Instant::now()) {
             continue;
         }
         let Some(connected) = client.as_mut() else {

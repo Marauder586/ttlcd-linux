@@ -165,8 +165,13 @@ const MAX_LEDS: usize = u16::MAX as usize;
 const REQUEST_CONTROLLER_COUNT: u32 = 0;
 const REQUEST_CONTROLLER_DATA: u32 = 1;
 const SET_CLIENT_NAME: u32 = 50;
+const RESIZE_ZONE: u32 = 1000;
 const UPDATE_LEDS: u32 = 1050;
 const SET_CUSTOM_MODE: u32 = 1100;
+const UPDATE_MODE: u32 = 1101;
+
+/// The mode in which a device shows exactly the colours it is sent.
+const DIRECT_MODE: &str = "Direct";
 
 /// A lighting device as reported by OpenRGB.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -207,10 +212,34 @@ impl OpenRgb {
         for index in 0..count {
             client.send(index, REQUEST_CONTROLLER_DATA, &[])?;
             let data = client.receive(REQUEST_CONTROLLER_DATA)?;
-            let (name, leds) = parse_controller(&data)
+            let controller = parse_controller(&data)
                 .with_context(|| format!("cannot read OpenRGB device {index}"))?;
-            if leds > 0 {
-                client.send(index, SET_CUSTOM_MODE, &[])?;
+            if controller.leds > 0 {
+                // Re-apply the size of every resizable zone. After a
+                // restart OpenRGB remembers these sizes but has not told
+                // the hardware, and an MSI motherboard then lights none of
+                // its addressable headers until a resize is made. Going by
+                // way of a neighbouring size guarantees the resize is a
+                // real change and not skipped.
+                for (zone, sizes) in controller.zones.iter().enumerate() {
+                    for size in sizes.reapply() {
+                        client.send(index, RESIZE_ZONE, &resize_zone_payload(zone as u32, size))?;
+                    }
+                }
+                // Apply the Direct mode in full where the device has one,
+                // so the hardware is told to change mode; "set custom
+                // mode" is the fallback for devices that name it otherwise.
+                match &controller.direct {
+                    Some((mode, description)) => {
+                        client.send(
+                            index,
+                            UPDATE_MODE,
+                            &update_mode_payload(*mode, description),
+                        )?;
+                    }
+                    None => client.send(index, SET_CUSTOM_MODE, &[])?,
+                }
+                let Controller { name, leds, .. } = controller;
                 client.devices.push(Device { index, name, leds });
             }
         }
@@ -308,12 +337,64 @@ fn read_string(data: &mut &[u8]) -> Result<String> {
     Ok(String::from_utf8_lossy(text).into_owned())
 }
 
-/// Read a device's name and LED count from a protocol-version-0 controller
-/// description. The layout is: type, five strings, the modes, the zones,
-/// the LEDs, then the current colours. Everything but the name and the LED
-/// count is skipped, and the description must be consumed exactly, so a
-/// layout this parser does not understand is an error rather than a guess.
-fn parse_controller(data: &[u8]) -> Result<(String, usize)> {
+/// Payload applying a mode: total size, the mode's index, then the mode's
+/// description exactly as the server sent it.
+fn update_mode_payload(mode: u32, description: &[u8]) -> Vec<u8> {
+    let size = 4 + 4 + description.len();
+    let mut out = Vec::with_capacity(size);
+    out.extend_from_slice(&(size as u32).to_le_bytes());
+    out.extend_from_slice(&mode.to_le_bytes());
+    out.extend_from_slice(description);
+    out
+}
+
+/// Payload setting a zone's LED count: zone index, then the new size.
+fn resize_zone_payload(zone: u32, size: u32) -> Vec<u8> {
+    [zone.to_le_bytes(), size.to_le_bytes()].concat()
+}
+
+/// A zone's LED count and the range it may be resized within.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ZoneSize {
+    min: u32,
+    max: u32,
+    count: u32,
+}
+
+impl ZoneSize {
+    /// The sizes to set, in order, to re-apply the current size as a real
+    /// change: a neighbouring size, then the current one. Empty for a zone
+    /// that cannot be resized or has no LEDs.
+    fn reapply(self) -> Vec<u32> {
+        if self.min == self.max || self.count == 0 || self.count < self.min || self.count > self.max
+        {
+            return Vec::new();
+        }
+        let neighbour = if self.count > self.min {
+            self.count - 1
+        } else {
+            self.count + 1
+        };
+        vec![neighbour, self.count]
+    }
+}
+
+/// What this client needs to know about a device.
+#[derive(Debug, PartialEq, Eq)]
+struct Controller {
+    name: String,
+    leds: usize,
+    zones: Vec<ZoneSize>,
+    /// Index and raw description of the device's Direct mode, if it has one.
+    direct: Option<(u32, Vec<u8>)>,
+}
+
+/// Read a device from a protocol-version-0 controller description. The
+/// layout is: type, five strings, the modes, the zones, the LEDs, then the
+/// current colours. Most of it is skipped, and the description must be
+/// consumed exactly, so a layout this parser does not understand is an
+/// error rather than a guess.
+fn parse_controller(data: &[u8]) -> Result<Controller> {
     let mut d = data;
     let declared = read_u32(&mut d)? as usize;
     if declared != data.len() {
@@ -327,19 +408,30 @@ fn parse_controller(data: &[u8]) -> Result<(String, usize)> {
 
     let modes = read_u16(&mut d)?;
     read_u32(&mut d)?; // active mode
-    for _ in 0..modes {
-        read_string(&mut d)?;
+    let mut direct = None;
+    for index in 0..u32::from(modes) {
+        let start = d;
+        let mode_name = read_string(&mut d)?;
         // value, flags, speed min/max, colours min/max, speed, direction,
         // colour mode
         take(&mut d, 9 * 4)?;
         let colors = read_u16(&mut d)? as usize;
         take(&mut d, colors * 4)?;
+        if mode_name == DIRECT_MODE && direct.is_none() {
+            direct = Some((index, start[..start.len() - d.len()].to_vec()));
+        }
     }
 
-    let zones = read_u16(&mut d)?;
-    for _ in 0..zones {
+    let zone_count = read_u16(&mut d)?;
+    let mut zones = Vec::new();
+    for _ in 0..zone_count {
         read_string(&mut d)?;
-        take(&mut d, 4 * 4)?; // type, LEDs min/max/count
+        read_u32(&mut d)?; // zone type
+        zones.push(ZoneSize {
+            min: read_u32(&mut d)?,
+            max: read_u32(&mut d)?,
+            count: read_u32(&mut d)?,
+        });
         let matrix_len = read_u16(&mut d)? as usize;
         take(&mut d, matrix_len)?;
     }
@@ -358,7 +450,12 @@ fn parse_controller(data: &[u8]) -> Result<(String, usize)> {
             d.len()
         );
     }
-    Ok((name, leds))
+    Ok(Controller {
+        name,
+        leds,
+        zones,
+        direct,
+    })
 }
 
 #[cfg(test)]
@@ -504,7 +601,10 @@ mod tests {
         body.extend_from_slice(&[0; 4]);
         body.extend_from_slice(&1u16.to_le_bytes()); // zones
         string(&mut body, "Zone");
-        body.extend_from_slice(&[0; 16]);
+        body.extend_from_slice(&1u32.to_le_bytes()); // zone type
+        body.extend_from_slice(&0u32.to_le_bytes()); // fewest LEDs
+        body.extend_from_slice(&200u32.to_le_bytes()); // most LEDs
+        body.extend_from_slice(&u32::from(leds).to_le_bytes());
         body.extend_from_slice(&3u16.to_le_bytes()); // matrix bytes
         body.extend_from_slice(&[0; 3]);
         body.extend_from_slice(&leds.to_le_bytes());
@@ -523,11 +623,80 @@ mod tests {
     #[test]
     fn controller_description_yields_name_and_led_count() {
         let blob = controller_blob("Corsair Vengeance RGB DDR5", 10);
+        let controller = parse_controller(&blob).unwrap();
+        assert_eq!(controller.name, "Corsair Vengeance RGB DDR5");
+        assert_eq!(controller.leds, 10);
+        assert_eq!(parse_controller(&controller_blob("x", 0)).unwrap().leds, 0);
+
+        // The blob's only mode is "Direct": its index and its exact bytes
+        // (name, nine fields, one colour) are kept for applying it.
+        let (index, description) = controller.direct.unwrap();
+        assert_eq!(index, 0);
+        assert_eq!(description.len(), (2 + 7) + 36 + (2 + 4));
+        assert_eq!(&description[2..8], b"Direct");
+        assert!(blob.windows(description.len()).any(|w| w == description));
+
+        // Applying it sends size, index, then those bytes unchanged.
+        let payload = update_mode_payload(index, &description);
+        assert_eq!(payload[..4], (payload.len() as u32).to_le_bytes());
+        assert_eq!(payload[4..8], 0u32.to_le_bytes());
+        assert_eq!(payload[8..], description[..]);
+
+        // A device without a Direct mode has none to apply.
+        let other = blob.windows(6).position(|w| w == b"Direct").unwrap();
+        let mut renamed = blob.clone();
+        renamed[other..other + 6].copy_from_slice(b"Static");
+        assert_eq!(parse_controller(&renamed).unwrap().direct, None);
+    }
+
+    #[test]
+    fn resizable_zones_are_reapplied_by_way_of_a_neighbouring_size() {
+        let zones = parse_controller(&controller_blob("Fans", 60))
+            .unwrap()
+            .zones;
         assert_eq!(
-            parse_controller(&blob).unwrap(),
-            ("Corsair Vengeance RGB DDR5".to_string(), 10)
+            zones,
+            [ZoneSize {
+                min: 0,
+                max: 200,
+                count: 60
+            }]
         );
-        assert_eq!(parse_controller(&controller_blob("x", 0)).unwrap().1, 0);
+        assert_eq!(zones[0].reapply(), [59, 60]);
+        // At the bottom of its range the neighbour is the size above.
+        assert_eq!(
+            ZoneSize {
+                min: 12,
+                max: 200,
+                count: 12
+            }
+            .reapply(),
+            [13, 12]
+        );
+        // Fixed-size, empty and out-of-range zones are left alone.
+        assert!(ZoneSize {
+            min: 10,
+            max: 10,
+            count: 10
+        }
+        .reapply()
+        .is_empty());
+        assert!(ZoneSize {
+            min: 0,
+            max: 200,
+            count: 0
+        }
+        .reapply()
+        .is_empty());
+        assert!(ZoneSize {
+            min: 0,
+            max: 50,
+            count: 60
+        }
+        .reapply()
+        .is_empty());
+
+        assert_eq!(resize_zone_payload(3, 60), [3, 0, 0, 0, 60, 0, 0, 0]);
     }
 
     #[test]

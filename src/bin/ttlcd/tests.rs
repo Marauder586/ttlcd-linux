@@ -27,6 +27,20 @@ fn lights_colour_flag_takes_hex_with_or_without_a_hash() {
 }
 
 #[test]
+fn unchanged_light_colour_is_repeated_after_connecting_and_then_refreshed() {
+    let start = Instant::now();
+    let at = |secs: f64| start + Duration::from_secs_f64(secs);
+    let mut resend = Resend::connected(start);
+    // Checked four times a second, as the worker does, for five minutes.
+    let sends: Vec<f64> = (1..=1200)
+        .map(|tick| f64::from(tick) * 0.25)
+        .filter(|secs| resend.due(at(*secs)))
+        .collect();
+    // Three quick repeats while the devices settle, then one a minute.
+    assert_eq!(sends, [1.0, 2.0, 3.0, 63.0, 123.0, 183.0, 243.0]);
+}
+
+#[test]
 fn web_ui_page_satisfies_its_own_security_policy() {
     let script_src = WEB_UI_CSP
         .split(';')
